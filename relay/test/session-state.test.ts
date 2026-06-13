@@ -51,4 +51,27 @@ describe("SessionState", () => {
     const noPulse = s.snapshot();
     expect(find(noPulse.tree, "src/a.ts").pulse).toBeUndefined();
   });
+
+  it("invokes the summarizer when reasoning fails the gate, upgrading Now to model (REQ-033b)", async () => {
+    const updated: string[] = [];
+    const fakeSummarizer = { summarize: async () => "Refactoring the auth module" };
+    const s = new SessionState({ sessionId: "s1", provider: "claude", cwd: process.cwd(), clock: systemClock, summarizer: fakeSummarizer, onNowUpdate: (id: string) => updated.push(id) });
+    s.apply(ev({ eventId: "1", ts: 1, kind: "session_start", agentId: "s1", paths: [], op: null }));
+    s.apply(ev({ eventId: "2", ts: 2, kind: "post_tool", agentId: "s1", tool: "Bash", paths: [], op: "other", ok: true })); // no reasoning → template, summarizer fires
+    await new Promise((r) => setTimeout(r, 0));
+    expect(s.agents.get("s1")!.now).toBe("Refactoring the auth module");
+    expect(s.agents.get("s1")!.nowSource).toBe("model");
+    expect(updated).toContain("s1");
+  });
+  it("does NOT invoke the summarizer when reasoning passes the gate", async () => {
+    let called = 0;
+    const fakeSummarizer = { summarize: async () => { called += 1; return "x"; } };
+    const s = new SessionState({ sessionId: "s1", provider: "claude", cwd: process.cwd(), clock: systemClock, summarizer: fakeSummarizer });
+    s.apply(ev({ eventId: "1", ts: 1, kind: "session_start", agentId: "s1", paths: [], op: null }));
+    s.applyReasoning("s1", 2, "Refactoring the login flow");
+    s.refreshNow("s1");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(called).toBe(0);
+    expect(s.agents.get("s1")!.nowSource).toBe("reasoning");
+  });
 });

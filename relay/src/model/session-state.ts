@@ -4,11 +4,15 @@ import { validateEvent, type ClideEvent } from "../contract/event.js";
 import { RepoTree, type LeafNode } from "./tree.js";
 import { AgentModel } from "./agents.js";
 import { ReasoningStore, condense, templatePhrase, passesNowGate } from "./reasoning.js";
+import type { Summarizer, SummarizerEvent } from "../relay/summarizer.js";
 
 export interface SessionStateOpts {
   sessionId: string; provider: Provider; cwd: string; clock: Clock;
   halfLifeSeconds?: number; maxNodes?: number;
+  summarizer?: Summarizer; onNowUpdate?: (agentId: string) => void;
 }
+
+const NOW_TERMINAL = new Set(["done", "error"]);
 export interface DirDTO { path: string; type: "dir"; heat: number; children: Array<DirDTO | LeafDTO>; }
 export interface LeafDTO { path: string; type: "file"; loc: number; binary: boolean; heat: number; reads: number; edits: number; agents: string[]; synthetic?: boolean; count?: number; pulse?: boolean; }
 export interface SnapshotDTO { provider: Provider; sessionId: string; state: DiscoveryState; tree: DirDTO; agents: ReturnType<AgentModel["all"]>; }
@@ -21,6 +25,7 @@ export class SessionState {
   private seen = new Set<string>();
   private lastOp = new Map<string, { op: ClideEvent["op"]; path?: string }>();
   private maxNodes: number;
+  private recent = new Map<string, SummarizerEvent[]>();
 
   constructor(private opts: SessionStateOpts) {
     this.tree = new RepoTree(opts.cwd, opts.clock, opts.halfLifeSeconds);
@@ -39,6 +44,10 @@ export class SessionState {
     const e = v.event;
     if (this.seen.has(e.eventId)) return [];
     this.seen.add(e.eventId);
+    const r = this.recent.get(e.agentId) ?? [];
+    r.push({ kind: e.kind, tool: e.tool ?? null, op: e.op, paths: e.paths });
+    if (r.length > 8) r.shift();
+    this.recent.set(e.agentId, r);
     if (this.state === "ended") return []; // drop ingest in ENDED (REQ-096)
     const touched: LeafNode[] = [];
     switch (e.kind) {
@@ -77,6 +86,17 @@ export class SessionState {
     const last = this.lastOp.get(agentId);
     a.now = templatePhrase(last?.op ?? null, last?.path);
     a.nowSource = "template";
+    const sum = this.opts.summarizer;
+    if (sum && !NOW_TERMINAL.has(a.state)) {
+      const allEvents = this.recent.get(agentId) ?? [];
+      const events = allEvents.filter((e) => e.op !== null || e.tool !== null);
+      if (events.length === 0) return;
+      void sum.summarize(agentId, allEvents).then((phrase) => {
+        if (!phrase) return;
+        const cur = this.agents.get(agentId);
+        if (cur && !NOW_TERMINAL.has(cur.state)) { cur.now = phrase; cur.nowSource = "model"; this.opts.onNowUpdate?.(agentId); }
+      }).catch(() => { /* never throw from the Now pipeline */ });
+    }
   }
 
   tick(now: number): void { this.agents.tick(now); }
