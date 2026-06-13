@@ -3,9 +3,10 @@ import { SseClient } from "../src/sse-client.js";
 import { Store } from "../src/store.js";
 import type { Frame } from "../src/protocol.js";
 
-/** Build a fake fetch whose Response body streams the given SSE text. */
-function fakeFetch(sseText: string): typeof fetch {
-  return (async () => {
+/** Build a fake fetch whose Response body streams the given SSE text; records the Authorization header. */
+function fakeFetch(sseText: string, recorder?: (auth: string) => void): typeof fetch {
+  return (async (_url: any, init: any) => {
+    if (recorder) recorder(init?.headers?.Authorization ?? "");
     const body = new ReadableStream<Uint8Array>({
       start(c) { c.enqueue(new TextEncoder().encode(sseText)); c.close(); },
     });
@@ -25,17 +26,19 @@ describe("SSE → Store integration", () => {
     const sse = `data: ${JSON.stringify(snapFrame)}\n\n`;
     const store = new Store("s1");
     let connected = false;
+    let seenAuth = "";
     await new Promise<void>((resolve) => {
       const client = new SseClient({
         url: "http://127.0.0.1:1/stream", token: "tok",
         onFrame: (f) => { store.apply(f); resolve(); },
         onStatus: (s) => { if (s === "connected") connected = true; },
-        fetchImpl: fakeFetch(sse),
+        fetchImpl: fakeFetch(sse, (auth) => { seenAuth = auth; }),
       });
       client.start();
     });
     expect(connected).toBe(true);
     expect(store.state.sessionId).toBe("s1");
     expect(store.state.maxLeafHeat).toBe(3);
+    expect(seenAuth).toBe("Bearer tok");
   });
 });

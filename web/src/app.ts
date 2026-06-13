@@ -43,6 +43,7 @@ export class App {
     renderChrome(this.chromeEl, { breadcrumb: this.view.breadcrumb(), status: this.status, sessionState: st.sessionState, provider: st.provider, specs: st.specs }, {
       onCrumb: (p) => { this.view.zoomOut(p); this.render(); },
       onSpec: (p) => this.host.openFile(p),
+      onToggleShape: () => this.toggleShape(),
     });
   }
 }

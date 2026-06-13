@@ -5,7 +5,7 @@ export interface ChromeModel {
   provider: string | null;
   specs: string[];
 }
-export interface ChromeCallbacks { onCrumb: (path: string) => void; onSpec: (path: string) => void; }
+export interface ChromeCallbacks { onCrumb: (path: string) => void; onSpec: (path: string) => void; onToggleShape: () => void; }
 
 export function renderChrome(el: HTMLElement, m: ChromeModel, cb: ChromeCallbacks): void {
   el.innerHTML = "";
@@ -39,4 +39,9 @@ export function renderChrome(el: HTMLElement, m: ChromeModel, cb: ChromeCallback
     specs.appendChild(s);
   }
   el.appendChild(specs);
+  const toggle = document.createElement("button");
+  toggle.setAttribute("data-toggle-shape", "");
+  toggle.textContent = "Toggle shape (T)";
+  toggle.addEventListener("click", () => cb.onToggleShape());
+  el.appendChild(toggle);
 }
