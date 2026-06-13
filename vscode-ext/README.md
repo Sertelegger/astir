@@ -14,7 +14,7 @@ To emit JavaScript for packaging, use esbuild or set `"noEmit": false` in tsconf
 
 ```sh
 npx esbuild src/extension.ts --bundle --outfile=dist/extension.js \
-  --external:vscode --platform=node --format=cjs
+  --external:vscode --platform=node --format=esm
 ```
 
 ## Bundle P2 clide-web
