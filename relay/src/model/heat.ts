@@ -20,7 +20,7 @@ export class FileHeat {
   private decayTo(mono: number): void {
     const dt = Math.min(Math.max(mono - this.lastMono, 0), DT_CAP_SECONDS);
     if (dt > 0) this.heat *= Math.pow(0.5, dt / this.halfLifeSeconds);
-    this.lastMono = mono;
+    if (mono > this.lastMono) this.lastMono = mono; // only advance forward (monotonic guard)
   }
 
   touch(op: Op, wallTs: number, weightsOrWeight?: Partial<Record<Op, number>>): void {

@@ -35,4 +35,14 @@ describe("FileHeat", () => {
     expect(fh.value()).toBeLessThanOrEqual(3);
     expect(fh.value()).toBeGreaterThan(0);
   });
+  it("does not over-decay after a backward clock jump (lastMono only advances forward)", () => {
+    const c = fakeClock(100);
+    const fh = new FileHeat(c, 30);
+    fh.touch("write", 0);            // heat = 3 at mono=100
+    (c as any).advance(-50);         // backward to mono=50
+    fh.value();                      // observe during the backward window (no growth, no baseline regression)
+    (c as any).advance(60);          // forward to mono=110 — real elapsed since touch is 10s
+    // Correct: decay over dt=10 → 3 * 0.5^(10/30) ≈ 2.381. Buggy (baseline regressed to 50): dt=60 → ~0.75.
+    expect(fh.value()).toBeCloseTo(3 * Math.pow(0.5, 10 / 30), 3);
+  });
 });
