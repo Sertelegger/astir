@@ -10,6 +10,8 @@ import { generateToken } from "../security/token.js";
 import { writeDiscovery } from "../security/discovery.js";
 import type { Provider } from "../contract/types.js";
 import { makeSummarizer } from "./model-providers.js";
+import { DEFAULT_SPEC_GLOBS } from "./spec-watch.js";
+import { launchViewer } from "./spec-viewer.js";
 
 async function run(): Promise<void> {
   const sessionId = process.env.CLIDE_SESSION_ID ?? "local";
@@ -21,7 +23,14 @@ async function run(): Promise<void> {
   /* c8 ignore start — entry-point glue; verified manually */
   const summarizer = makeSummarizer({ mode: (process.env.CLIDE_SUMMARIZER as "auto" | "off") ?? "auto", provider });
   let serverRef: RelayServer;
-  const state = new SessionState({ sessionId, provider, cwd, clock: systemClock, summarizer, onNowUpdate: () => serverRef.poke() });
+  const state = new SessionState({
+    sessionId, provider, cwd, clock: systemClock, summarizer, onNowUpdate: () => serverRef.poke(),
+    specGlobs: process.env.CLIDE_SPEC_GLOBS?.split(",") ?? DEFAULT_SPEC_GLOBS,
+    onSpec: (path, changeKind) => {
+      serverRef.emitSpec(path, changeKind);
+      if (changeKind === "created" && process.env.CLIDE_SPEC_VIEWER) launchViewer(process.env.CLIDE_SPEC_VIEWER, join(cwd, path));
+    },
+  });
   /* c8 ignore stop */
   state.build();
   const counters = new Counters();
