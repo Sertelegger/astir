@@ -9,6 +9,7 @@ import { Lifecycle } from "./lifecycle.js";
 import { generateToken } from "../security/token.js";
 import { writeDiscovery } from "../security/discovery.js";
 import type { Provider } from "../contract/types.js";
+import { makeSummarizer } from "./model-providers.js";
 
 async function run(): Promise<void> {
   const sessionId = process.env.CLIDE_SESSION_ID ?? "local";
@@ -17,10 +18,15 @@ async function run(): Promise<void> {
   const sessionPid = Number(process.env.CLIDE_SESSION_PID ?? process.ppid);
   const token = generateToken();
 
-  const state = new SessionState({ sessionId, provider, cwd, clock: systemClock });
+  /* c8 ignore start — entry-point glue; verified manually */
+  const summarizer = makeSummarizer({ mode: (process.env.CLIDE_SUMMARIZER as "auto" | "off") ?? "auto", provider });
+  let serverRef: RelayServer;
+  const state = new SessionState({ sessionId, provider, cwd, clock: systemClock, summarizer, onNowUpdate: () => serverRef.poke() });
+  /* c8 ignore stop */
   state.build();
   const counters = new Counters();
   const server = new RelayServer({ state, token, counters });
+  serverRef = server;
   const port = await server.listen();
 
   const discoveryPath = join(homedir(), ".clide", "sessions", `${sessionId}.json`);

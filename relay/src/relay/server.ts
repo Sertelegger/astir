@@ -78,6 +78,9 @@ export class RelayServer {
     res.on("close", () => { this.clients.delete(res); this.opts.counters.set("sseClients", this.clients.size); });
   }
 
+  /** Schedule an SSE flush (e.g., after an async summarizer Now update). */
+  poke(): void { this.scheduleFlush(); }
+
   /** Coalesce to ≤1 delta frame per flushMs (REQ-015). */
   private scheduleFlush(): void {
     this.pending = true;
