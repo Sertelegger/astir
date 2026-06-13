@@ -108,7 +108,7 @@ export class SessionState {
     for (const l of leaves) {
       const slash = l.path.lastIndexOf("/");
       const dir = ensureDir(slash === -1 ? "" : l.path.slice(0, slash));
-      const heat = l.heat.heat;
+      const heat = l.heat.value();
       dir.children.push({ path: l.path, type: "file", loc: l.loc, binary: l.binary, heat, reads: l.heat.reads, edits: l.heat.edits, agents: this.leafAgents(l.path) });
       let p: string | undefined = dir.path; // roll heat up to all ancestors
       for (let cur: DirDTO | undefined = dir; cur; cur = p === undefined ? undefined : dirIndex.get(p)) {
@@ -121,7 +121,7 @@ export class SessionState {
   }
 
   private aggregate(leaves: LeafNode[]): LeafNode[] {
-    const sorted = [...leaves].sort((a, b) => (b.heat.heat - a.heat.heat) || (b.loc - a.loc));
+    const sorted = [...leaves].sort((a, b) => (b.heat.value() - a.heat.value()) || (b.loc - a.loc));
     return sorted.slice(0, this.maxNodes);
   }
 }

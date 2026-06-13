@@ -40,6 +40,7 @@ describe("end-to-end via synthetic driver", () => {
     await d.eventRaw({ v: 1, provider: "claude", sessionId: "s1", ts: 1, paths: [], ...dup });
     const snap = await d.state();
     const leaf = (function find(n: any): any { if (n.type === "file" && n.path === "src/x.ts") return n; return (n.children ?? []).map(find).find(Boolean); })(snap.tree);
-    expect(leaf.heat).toBeCloseTo(3, 4); // single edit
+    expect(leaf.heat).toBeGreaterThan(2.9);   // single edit (~3, minus negligible decay); a double-count would be ~6
+    expect(leaf.heat).toBeLessThan(3.05);
   });
 });
