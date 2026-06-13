@@ -28,6 +28,8 @@ export class SessionState {
     this.maxNodes = opts.maxNodes ?? 2000;
   }
 
+  get sessionId(): string { return this.opts.sessionId; }
+
   build(): void { this.tree.build(); }
 
   /** Idempotent, order-independent (REQ-016). Returns touched leaves for delta/pulse. */
