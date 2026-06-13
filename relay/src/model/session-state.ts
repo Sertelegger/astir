@@ -88,10 +88,9 @@ export class SessionState {
     a.nowSource = "template";
     const sum = this.opts.summarizer;
     if (sum && !NOW_TERMINAL.has(a.state)) {
-      const allEvents = this.recent.get(agentId) ?? [];
-      const events = allEvents.filter((e) => e.op !== null || e.tool !== null);
+      const events = (this.recent.get(agentId) ?? []).filter((e) => e.op !== null || e.tool !== null);
       if (events.length === 0) return;
-      void sum.summarize(agentId, allEvents).then((phrase) => {
+      void sum.summarize(agentId, events).then((phrase) => {
         if (!phrase) return;
         const cur = this.agents.get(agentId);
         if (cur && !NOW_TERMINAL.has(cur.state)) { cur.now = phrase; cur.nowSource = "model"; this.opts.onNowUpdate?.(agentId); }
