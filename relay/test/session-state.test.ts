@@ -74,4 +74,20 @@ describe("SessionState", () => {
     expect(called).toBe(0);
     expect(s.agents.get("s1")!.nowSource).toBe("reasoning");
   });
+
+  it("emits a spec change (created) when a spec-glob path is written (REQ-070)", () => {
+    const specs: Array<{ path: string; changeKind: string }> = [];
+    const s = new SessionState({ sessionId: "s1", provider: "claude", cwd: process.cwd(), clock: systemClock, specGlobs: ["docs/**/*.md"], onSpec: (path, changeKind) => specs.push({ path, changeKind }) });
+    s.apply(ev({ eventId: "1", ts: 1, kind: "post_tool", agentId: "s1", tool: "Write", paths: ["docs/new.md"], op: "write", ok: true }));
+    expect(specs).toEqual([{ path: "docs/new.md", changeKind: "created" }]);
+    s.apply(ev({ eventId: "2", ts: 2, kind: "post_tool", agentId: "s1", tool: "Edit", paths: ["docs/new.md"], op: "edit", ok: true }));
+    expect(specs.at(-1)).toEqual({ path: "docs/new.md", changeKind: "updated" });
+    expect(s.snapshot().specs).toContain("docs/new.md"); // included in snapshot for late connect
+  });
+  it("does not emit specs for non-matching paths", () => {
+    const specs: unknown[] = [];
+    const s = new SessionState({ sessionId: "s1", provider: "claude", cwd: process.cwd(), clock: systemClock, specGlobs: ["docs/**/*.md"], onSpec: () => specs.push(1) });
+    s.apply(ev({ eventId: "1", ts: 1, kind: "post_tool", agentId: "s1", tool: "Edit", paths: ["src/a.ts"], op: "edit", ok: true }));
+    expect(specs).toHaveLength(0);
+  });
 });

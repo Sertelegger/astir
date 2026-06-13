@@ -81,6 +81,13 @@ export class RelayServer {
   /** Schedule an SSE flush (e.g., after an async summarizer Now update). */
   poke(): void { this.scheduleFlush(); }
 
+  /** Broadcast a spec-surfaced frame to SSE clients (REQ-070). */
+  emitSpec(path: string, changeKind: string): void {
+    const frame = makeFrame("spec", this.opts.state.sessionId, Date.now() / 1000, { path, changeKind });
+    const data = `data: ${JSON.stringify(frame)}\n\n`;
+    for (const c of this.clients) c.write(data);
+  }
+
   /** Coalesce to ≤1 delta frame per flushMs (REQ-015). */
   private scheduleFlush(): void {
     this.pending = true;

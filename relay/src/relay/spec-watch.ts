@@ -18,7 +18,7 @@ export class SpecTracker {
   private readonly debounceMs: number;
   private readonly now: () => number;
   constructor(opts: SpecTrackerOpts = {}) {
-    this.debounceMs = opts.debounceMs ?? 300;
+    this.debounceMs = opts.debounceMs ?? 0;
     this.now = opts.now ?? (() => Date.now());
   }
   seed(paths: string[]): void { for (const p of paths) this.known.add(p); }

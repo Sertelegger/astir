@@ -35,6 +35,11 @@ describe("RelayServer", () => {
     const snap = await (await fetch(`http://127.0.0.1:${port}/state`, auth)).json();
     expect(snap.agents.find((a: any) => a.id === "s1")).toBeTruthy();
   });
+  it("emitSpec is callable (broadcasts a spec frame to SSE clients)", async () => {
+    const { port } = await start();
+    server!.emitSpec("docs/x.md", "created"); // no SSE client connected → no throw
+    expect(port).toBeGreaterThan(0);
+  });
   it("/reasoning requires the token and updates the Now line", async () => {
     const { port } = await start();
     await fetch(`http://127.0.0.1:${port}/events`, { method: "POST", ...auth, body: JSON.stringify({ v: 1, eventId: "1", provider: "claude", sessionId: "s1", ts: 1, kind: "session_start", agentId: "s1", paths: [], op: null }) });

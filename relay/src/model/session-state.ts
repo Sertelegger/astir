@@ -5,17 +5,19 @@ import { RepoTree, type LeafNode } from "./tree.js";
 import { AgentModel } from "./agents.js";
 import { ReasoningStore, condense, templatePhrase, passesNowGate } from "./reasoning.js";
 import type { Summarizer, SummarizerEvent } from "../relay/summarizer.js";
+import { matchesSpec, SpecTracker, type SpecChange } from "../relay/spec-watch.js";
 
 export interface SessionStateOpts {
   sessionId: string; provider: Provider; cwd: string; clock: Clock;
   halfLifeSeconds?: number; maxNodes?: number;
   summarizer?: Summarizer; onNowUpdate?: (agentId: string) => void;
+  specGlobs?: string[]; onSpec?: (path: string, changeKind: SpecChange) => void;
 }
 
 const NOW_TERMINAL = new Set(["done", "error"]);
 export interface DirDTO { path: string; type: "dir"; heat: number; children: Array<DirDTO | LeafDTO>; }
 export interface LeafDTO { path: string; type: "file"; loc: number; binary: boolean; heat: number; reads: number; edits: number; agents: string[]; synthetic?: boolean; count?: number; pulse?: boolean; }
-export interface SnapshotDTO { provider: Provider; sessionId: string; state: DiscoveryState; tree: DirDTO; agents: ReturnType<AgentModel["all"]>; }
+export interface SnapshotDTO { provider: Provider; sessionId: string; state: DiscoveryState; tree: DirDTO; agents: ReturnType<AgentModel["all"]>; specs: string[]; }
 
 export class SessionState {
   readonly tree: RepoTree;
@@ -26,16 +28,23 @@ export class SessionState {
   private lastOp = new Map<string, { op: ClideEvent["op"]; path?: string }>();
   private maxNodes: number;
   private recent = new Map<string, SummarizerEvent[]>();
+  private specTracker = new SpecTracker();
+  private surfaced: string[] = [];
+  private specGlobs: string[];
 
   constructor(private opts: SessionStateOpts) {
     this.tree = new RepoTree(opts.cwd, opts.clock, opts.halfLifeSeconds);
     this.agents = new AgentModel(opts.sessionId, opts.provider);
     this.maxNodes = opts.maxNodes ?? 2000;
+    this.specGlobs = opts.specGlobs ?? [];
   }
 
   get sessionId(): string { return this.opts.sessionId; }
 
-  build(): void { this.tree.build(); }
+  build(): void {
+    this.tree.build();
+    this.specTracker.seed(this.tree.allLeaves().map((l) => l.path).filter((p) => matchesSpec(p, this.specGlobs)));
+  }
 
   /** Idempotent, order-independent (REQ-016). Returns touched leaves for delta/pulse. */
   apply(raw: unknown): LeafNode[] {
@@ -57,6 +66,15 @@ export class SessionState {
         this.agents.onPostTool(e.agentId, e.paths, e.ts);
         if (e.op) { for (const p of e.paths) { const leaf = this.tree.touchFile(p, e.op, e.ts); if (leaf) touched.push(leaf); }
           this.lastOp.set(e.agentId, { op: e.op, path: e.paths[0] }); }
+        if (this.specGlobs.length > 0 && this.opts.onSpec && (e.op === "write" || e.op === "edit")) {
+          for (const p of e.paths) {
+            if (!matchesSpec(p, this.specGlobs)) continue;
+            const kind = this.specTracker.onWrite(p);
+            if (!this.specTracker.shouldEmit(p)) continue;
+            this.surfaced = [p, ...this.surfaced.filter((x) => x !== p)].slice(0, 20);
+            this.opts.onSpec(p, kind);
+          }
+        }
         break;
       }
       case "stop": this.agents.onStop(e.agentId, e.ts); break;
@@ -105,7 +123,7 @@ export class SessionState {
   }
 
   snapshot(pulsePaths?: Set<string>): SnapshotDTO {
-    return { provider: this.opts.provider, sessionId: this.opts.sessionId, state: this.state, tree: this.buildTreeDTO(pulsePaths), agents: this.agents.all() };
+    return { provider: this.opts.provider, sessionId: this.opts.sessionId, state: this.state, tree: this.buildTreeDTO(pulsePaths), agents: this.agents.all(), specs: [...this.surfaced] };
   }
 
   /** Build nested dirs with rolled-up heat (REQ-025); aggregate smallest leaves when over maxNodes (REQ-048). */
