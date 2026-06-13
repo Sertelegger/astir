@@ -42,4 +42,9 @@ describe("Store", () => {
     s.apply(frame("session-state", { state: "ended" }));
     expect(s.state.sessionState).toBe("ended");
   });
+  it("seeds the spec list from snapshot.specs (late-connect) (REQ-071)", () => {
+    const s = new Store("s1");
+    s.apply(frame("snapshot", snap({ specs: ["docs/a.md", "docs/b.md"] } as any)));
+    expect(s.state.specs).toEqual(["docs/a.md", "docs/b.md"]);
+  });
 });

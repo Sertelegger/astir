@@ -18,7 +18,7 @@ export interface AgentRecordDTO {
 }
 export interface SnapshotDTO {
   provider: Provider; sessionId: string; state: DiscoveryState;
-  tree: DirDTO; agents: AgentRecordDTO[];
+  tree: DirDTO; agents: AgentRecordDTO[]; specs?: string[];
 }
 export interface SpecPayload { path: string; changeKind: "created" | "updated" | "deleted"; }
 export interface SessionStatePayload { state: DiscoveryState; }

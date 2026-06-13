@@ -37,6 +37,7 @@ export class Store {
         this.state.agents = snap.agents;
         this.state.sessionState = snap.state;
         this.state.maxLeafHeat = maxLeaf(snap.tree);
+        if (Array.isArray(snap.specs)) this.state.specs = snap.specs.slice(0, this.specMax);
         break;
       }
       case "spec": {
