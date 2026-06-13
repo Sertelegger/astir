@@ -61,6 +61,12 @@ describe("AgentModel", () => {
     m.tick(14);                              // 14 - 3 = 11 >= 10 → agA should be idle (timer NOT reset to 50)
     expect(m.get("agA")!.state).toBe("idle");
   });
+  it("a stale pre_tool arriving after its post_tool does not regress state (REQ-016)", () => {
+    const m = model(); m.onSessionStart(1);
+    m.onPostTool("s1", ["src/a.ts"], 3);   // → thinking, lastEventTs=3
+    m.onPreTool("s1", "Edit", 2);          // stale (ts=2 < 3): must NOT regress to tool-running
+    expect(m.get("s1")!.state).toBe("thinking");
+  });
   it("assigns stable distinct colors to subagents", () => {
     const m = model(); m.onSessionStart(1);
     m.onSubagentStart("a", "X", "s1", false, 2);

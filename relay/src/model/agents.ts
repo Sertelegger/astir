@@ -62,7 +62,8 @@ export class AgentModel {
   /** Guard: ignore an event that would move a terminal agent back to a live state. */
   private live(a: AgentRecord, ts: number): boolean {
     if (TERMINAL.has(a.state)) return false;
-    a.lastEventTs = Math.max(a.lastEventTs, ts);
+    if (ts < a.lastEventTs) return false; // stale / out-of-order — do not regress agent state (REQ-016)
+    a.lastEventTs = ts;
     return true;
   }
 
