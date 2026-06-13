@@ -12,12 +12,14 @@ export function resolveWorkspaceRelay(workspaceCwd: string, sessionsDir = join(h
   for (const f of files) {
     try {
       const r = JSON.parse(readFileSync(join(sessionsDir, f), "utf8")) as Record<string, unknown>;
-      if (r.cwd === workspaceCwd && r.state === "live" && typeof r.port === "number" && typeof r.token === "string" && typeof r.sessionId === "string") {
-        matches.push({ sessionId: r.sessionId, provider: String(r.provider ?? "claude"), port: r.port, token: r.token, cwd: workspaceCwd, startedAt: typeof r.startedAt === "number" ? r.startedAt : 0 });
+      if (r.cwd === workspaceCwd && r.state === "live" && typeof r.port === "number" && typeof r.token === "string" && typeof r.sessionId === "string" && typeof r.startedAt === "number") {
+        matches.push({ sessionId: r.sessionId, provider: String(r.provider ?? "claude"), port: r.port, token: r.token, cwd: workspaceCwd, startedAt: r.startedAt });
       }
     } catch { /* skip unreadable */ }
   }
   if (matches.length === 0) return null;
   matches.sort((a, b) => b.startedAt - a.startedAt);
-  return matches[0]!;
+  const best = matches[0];
+  if (!best) return null;
+  return best;
 }

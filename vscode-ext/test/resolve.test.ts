@@ -23,6 +23,7 @@ describe("resolveWorkspaceRelay", () => {
     expect(r.sessionId).toBe("new");
     expect(r.provider).toBe("codex");
     expect(r.port).toBe(2);
+    expect(r.startedAt).toBe(200);
   });
   it("ignores non-live and non-matching; returns null when none match", () => {
     const d = sessions([
