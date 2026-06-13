@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { AgentModel } from "../src/model/agents.js";
+import { AgentModel, type AgentModelOpts } from "../src/model/agents.js";
 
-function model() { return new AgentModel("s1", "claude"); }
+function model(opts?: AgentModelOpts) { return new AgentModel("s1", "claude", opts); }
 
 describe("AgentModel", () => {
   it("creates the main agent with id == sessionId, parentId null, thinking", () => {
@@ -51,6 +51,15 @@ describe("AgentModel", () => {
     m.tick(100);
     expect(m.get("agA")).toBeUndefined();
     expect(m.get("s1")).toBeDefined();
+  });
+  it("Stop on a non-main agent is ignored (no waiting, no idle-timer reset)", () => {
+    const m = model({ idleSeconds: 10 }); m.onSessionStart(1);
+    m.onSubagentStart("agA", "Explore", "s1", false, 2);
+    m.onPreTool("agA", "Read", 3);          // agA is tool-running, lastEventTs=3
+    m.onStop("agA", 50);                     // must be ignored for a subagent
+    expect(m.get("agA")!.state).toBe("tool-running");
+    m.tick(14);                              // 14 - 3 = 11 >= 10 → agA should be idle (timer NOT reset to 50)
+    expect(m.get("agA")!.state).toBe("idle");
   });
   it("assigns stable distinct colors to subagents", () => {
     const m = model(); m.onSessionStart(1);

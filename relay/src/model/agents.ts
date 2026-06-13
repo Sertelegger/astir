@@ -84,8 +84,9 @@ export class AgentModel {
   }
 
   onStop(agentId: string, ts: number): void {
-    const a = this.ensure(agentId, this.sessionId, null);
-    if (this.live(a, ts) && agentId === this.sessionId) a.state = "waiting";
+    if (agentId !== this.sessionId) return; // spec: Stop affects the main agent only
+    const a = this.ensure(agentId, null, null);
+    if (this.live(a, ts)) a.state = "waiting";
   }
 
   onSubagentStart(agentId: string, agentType: string, parentId: string, parentInferred: boolean, ts: number): void {
