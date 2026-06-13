@@ -12,6 +12,7 @@ export class RelayServer {
   private pending = false;
   private flushTimer: NodeJS.Timeout | null = null;
   private flushMs: number;
+  private pendingPulses = new Set<string>();
 
   constructor(private opts: RelayServerOpts) {
     this.flushMs = opts.flushMs ?? 100; // ≤10 Hz coalescing (REQ-015)
@@ -48,6 +49,7 @@ export class RelayServer {
 
     if (url === "/events" && req.method === "POST") {
       const touched = this.opts.state.apply(await this.body(req));
+      for (const l of touched) this.pendingPulses.add(l.path);
       this.opts.counters.inc("eventsIngested");
       this.scheduleFlush();
       return this.json(res, 200, { ok: true, touched: touched.length });
@@ -83,7 +85,8 @@ export class RelayServer {
     this.flushTimer = setInterval(() => {
       if (!this.pending) return;
       this.pending = false;
-      const frame = makeFrame("delta", this.opts.state.sessionId, Date.now() / 1000, this.opts.state.snapshot());
+      const frame = makeFrame("delta", this.opts.state.sessionId, Date.now() / 1000, this.opts.state.snapshot(this.pendingPulses));
+      this.pendingPulses.clear();
       const data = `data: ${JSON.stringify(frame)}\n\n`;
       for (const c of this.clients) c.write(data);
     }, this.flushMs);

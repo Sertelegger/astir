@@ -41,4 +41,14 @@ describe("SessionState", () => {
     const srcDir = snap.tree.children.find((c) => c.path === "src")!;
     expect(srcDir.heat).toBeGreaterThan(0);
   });
+
+  it("snapshot stamps pulse only on the given touched paths (REQ-024)", () => {
+    const s = ss();
+    s.apply(ev({ eventId: "1", ts: 1, kind: "post_tool", agentId: "s1", tool: "Edit", paths: ["src/a.ts"], op: "edit", ok: true }));
+    const find = (n: any, path: string): any => n.type === "file" ? (n.path === path ? n : undefined) : (n.children ?? []).map((c: any) => find(c, path)).find(Boolean);
+    const withPulse = s.snapshot(new Set(["src/a.ts"]));
+    expect(find(withPulse.tree, "src/a.ts").pulse).toBe(true);
+    const noPulse = s.snapshot();
+    expect(find(noPulse.tree, "src/a.ts").pulse).toBeUndefined();
+  });
 });

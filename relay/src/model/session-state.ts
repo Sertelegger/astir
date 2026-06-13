@@ -10,7 +10,7 @@ export interface SessionStateOpts {
   halfLifeSeconds?: number; maxNodes?: number;
 }
 export interface DirDTO { path: string; type: "dir"; heat: number; children: Array<DirDTO | LeafDTO>; }
-export interface LeafDTO { path: string; type: "file"; loc: number; binary: boolean; heat: number; reads: number; edits: number; agents: string[]; synthetic?: boolean; count?: number; }
+export interface LeafDTO { path: string; type: "file"; loc: number; binary: boolean; heat: number; reads: number; edits: number; agents: string[]; synthetic?: boolean; count?: number; pulse?: boolean; }
 export interface SnapshotDTO { provider: Provider; sessionId: string; state: DiscoveryState; tree: DirDTO; agents: ReturnType<AgentModel["all"]>; }
 
 export class SessionState {
@@ -85,12 +85,12 @@ export class SessionState {
     return this.agents.all().filter((a) => a.currentFiles.includes(path)).map((a) => a.id);
   }
 
-  snapshot(): SnapshotDTO {
-    return { provider: this.opts.provider, sessionId: this.opts.sessionId, state: this.state, tree: this.buildTreeDTO(), agents: this.agents.all() };
+  snapshot(pulsePaths?: Set<string>): SnapshotDTO {
+    return { provider: this.opts.provider, sessionId: this.opts.sessionId, state: this.state, tree: this.buildTreeDTO(pulsePaths), agents: this.agents.all() };
   }
 
   /** Build nested dirs with rolled-up heat (REQ-025); aggregate smallest leaves when over maxNodes (REQ-048). */
-  private buildTreeDTO(): DirDTO {
+  private buildTreeDTO(pulsePaths?: Set<string>): DirDTO {
     let leaves = this.tree.allLeaves();
     if (leaves.length > this.maxNodes) leaves = this.aggregate(leaves);
     const root: DirDTO = { path: "", type: "dir", heat: 0, children: [] };
@@ -109,7 +109,7 @@ export class SessionState {
       const slash = l.path.lastIndexOf("/");
       const dir = ensureDir(slash === -1 ? "" : l.path.slice(0, slash));
       const heat = l.heat.value();
-      dir.children.push({ path: l.path, type: "file", loc: l.loc, binary: l.binary, heat, reads: l.heat.reads, edits: l.heat.edits, agents: this.leafAgents(l.path) });
+      dir.children.push({ path: l.path, type: "file", loc: l.loc, binary: l.binary, heat, reads: l.heat.reads, edits: l.heat.edits, agents: this.leafAgents(l.path), ...(pulsePaths?.has(l.path) ? { pulse: true } : {}) });
       let p: string | undefined = dir.path; // roll heat up to all ancestors
       for (let cur: DirDTO | undefined = dir; cur; cur = p === undefined ? undefined : dirIndex.get(p)) {
         cur.heat += heat;
