@@ -21,7 +21,7 @@ async function run(): Promise<void> {
   const token = generateToken();
 
   /* c8 ignore start — entry-point glue; verified manually */
-  const summarizer = makeSummarizer({ mode: (process.env.CLIDE_SUMMARIZER as "auto" | "off") ?? "auto", provider });
+  const summarizer = makeSummarizer({ mode: (process.env.CLIDE_SUMMARIZER as "auto" | "off") ?? "auto", provider, transport: (process.env.CLIDE_SUMMARIZER_TRANSPORT as "cli" | "api") ?? "cli" });
   let serverRef: RelayServer;
   const state = new SessionState({
     sessionId, provider, cwd, clock: systemClock, summarizer, onNowUpdate: () => serverRef.poke(),

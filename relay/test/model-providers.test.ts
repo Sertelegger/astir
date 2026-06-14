@@ -10,4 +10,11 @@ describe("makeSummarizer", () => {
   it("returns an AutoSummarizer when mode is auto", () => {
     expect(makeSummarizer({ mode: "auto", provider: "claude" })).toBeInstanceOf(AutoSummarizer);
   });
+  it("defaults to CLI transport (subscription) when mode is auto", () => {
+    const s = makeSummarizer({ mode: "auto", provider: "claude" });
+    expect(s).toBeInstanceOf(AutoSummarizer); // cli transport, no API key needed
+  });
+  it("api transport still yields an AutoSummarizer", () => {
+    expect(makeSummarizer({ mode: "auto", provider: "codex", transport: "api" })).toBeInstanceOf(AutoSummarizer);
+  });
 });

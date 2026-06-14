@@ -1,8 +1,9 @@
 import type { ModelFn } from "./auto-summarizer.js";
 import { AutoSummarizer } from "./auto-summarizer.js";
 import { OffSummarizer, type Summarizer } from "./summarizer.js";
+import { cliModelFn } from "./cli-model.js";
 
-export interface SummarizerConfig { mode: "auto" | "off"; provider: "claude" | "codex"; model?: string; }
+export interface SummarizerConfig { mode: "auto" | "off"; provider: "claude" | "codex"; model?: string; transport?: "cli" | "api"; }
 
 /** Fixed per-provider egress endpoints (REQ-092) — clide.summarizer.model MUST NOT redirect to an arbitrary host. */
 const ENDPOINTS = { claude: "https://api.anthropic.com/v1/messages", codex: "https://api.openai.com/v1/chat/completions" } as const;
@@ -36,6 +37,10 @@ const codexModelFn: ModelFn = async (fields) => {
 
 export function makeSummarizer(config: SummarizerConfig): Summarizer {
   if (config.mode === "off") return new OffSummarizer();
-  const fn = config.provider === "codex" ? codexModelFn : claudeModelFn;
-  return new AutoSummarizer(fn);
+  if (config.transport === "api") {
+    const fn: ModelFn = config.provider === "codex" ? codexModelFn : claudeModelFn;
+    return new AutoSummarizer(fn);
+  }
+  // Default: "cli" transport — reuses subscription login, no API key needed
+  return new AutoSummarizer(cliModelFn(config.provider, { model: config.model }));
 }
