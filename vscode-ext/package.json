@@ -8,6 +8,6 @@
   "main": "./dist/extension.js",
   "activationEvents": ["onCommand:clide.openActivityPanel"],
   "contributes": { "commands": [{ "command": "clide.openActivityPanel", "title": "Clide: Open Activity Panel" }] },
-  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "scripts": { "build": "tsc -p tsconfig.build.json", "test": "vitest run", "typecheck": "tsc -p tsconfig.json --noEmit" },
   "devDependencies": { "@types/node": "^20.11.0", "@types/vscode": "^1.90.0", "typescript": "^5.4.0", "vitest": "^1.4.0" }
 }

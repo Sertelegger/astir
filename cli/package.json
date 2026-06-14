@@ -6,6 +6,7 @@
   "engines": { "node": ">=20" },
   "bin": { "clide": "./dist/main.js" },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"

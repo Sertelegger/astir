@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=20" },
-  "scripts": { "test": "vitest run", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "scripts": { "build": "tsc -p tsconfig.build.json", "test": "vitest run", "typecheck": "tsc -p tsconfig.json --noEmit" },
   "devDependencies": { "@types/node": "^20.11.0", "typescript": "^5.4.0", "vitest": "^1.4.0" }
 }

@@ -1,0 +1,8 @@
+{
+  "name": "clide-monorepo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run build --prefix relay && npm run build --prefix web && npm run build --prefix adapters/claude && npm run build --prefix adapters/codex && npm run build --prefix vscode-ext && npm run build --prefix tui && npm run build --prefix aggregate && npm run build --prefix cli"
+  }
+}
