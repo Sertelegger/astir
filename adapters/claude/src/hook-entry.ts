@@ -1,5 +1,6 @@
 import { normalizeClaudeHook } from "./normalize.js";
 import { resolveRelay, postEvent as realPostEvent, type RelayRef } from "./relay-io.js";
+import { spawnRelayAndTailer } from "./spawn-relay.js";
 import type { ClideEvent } from "./contract.js";
 
 export interface HookDeps {
@@ -34,7 +35,7 @@ export async function main(): Promise<void> {
     now: () => Date.now() / 1000,
     resolve: (sid) => resolveRelay(sid),
     postEvent: (relay, event) => realPostEvent(relay, event),
-    ensureRelay: async () => { /* spawn relay+tailer — see README; uses node + the relay/tailer entry paths */ },
+    ensureRelay: async (sessionId, cwd) => { spawnRelayAndTailer(sessionId, cwd); },
   });
   process.exit(code);
 }
