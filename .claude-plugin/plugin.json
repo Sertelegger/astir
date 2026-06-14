@@ -1,0 +1,9 @@
+{
+  "name": "clide",
+  "displayName": "Clide",
+  "version": "0.1.0",
+  "description": "Live activity heat-map for Claude Code & Codex — a real-time spatial repo heat-map + agent rail, rendered in a browser, a VSCode webview, or the terminal.",
+  "author": { "name": "Sascha Sertel", "email": "sascha@needforgeek.com" },
+  "license": "MIT",
+  "keywords": ["observability", "heat-map", "agent", "codex", "visualization", "hooks"]
+}

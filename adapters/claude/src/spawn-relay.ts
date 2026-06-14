@@ -9,7 +9,7 @@ const PROVIDER = "claude";
 function relayEntry(): string {
   if (process.env.CLIDE_RELAY_ENTRY) return process.env.CLIDE_RELAY_ENTRY;
   const root = process.env.CLAUDE_PLUGIN_ROOT ?? join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "..");
-  return join(root, "relay", "dist", "main.js");
+  return join(root, "relay", "dist", "relay", "main.js");
 }
 function tailerEntry(): string {
   const here = fileURLToPath(new URL(".", import.meta.url));

@@ -1,0 +1,12 @@
+{
+  "name": "clide-marketplace",
+  "owner": { "name": "Sascha Sertel", "email": "sascha@needforgeek.com" },
+  "plugins": [
+    {
+      "name": "clide",
+      "source": "./",
+      "description": "Live activity heat-map for Claude Code & Codex (relay + heat-map + agent rail).",
+      "version": "0.1.0"
+    }
+  ]
+}

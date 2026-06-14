@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart":  [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
+    "PreToolUse":    [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
+    "PostToolUse":   [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
+    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
+    "SubagentStop":  [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
+    "Stop":          [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
+    "SessionEnd":    [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }]
+  }
+}
