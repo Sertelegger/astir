@@ -43,6 +43,11 @@ export class AgentModel {
   get(id: string): AgentRecord | undefined { return this.agents.get(id); }
   all(): AgentRecord[] { return [...this.agents.values()]; }
 
+  /** Wall ts of the agent's most recent touch of `path`, or undefined if it never touched it. */
+  lastTouchOf(agentId: string, path: string): number | undefined {
+    return this.fileTouchTs.get(agentId)?.get(path);
+  }
+
   private ensure(id: string, parentId: string | null, agentType: string | null, parentInferred = false): AgentRecord {
     let a = this.agents.get(id);
     if (!a) {

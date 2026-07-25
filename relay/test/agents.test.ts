@@ -18,6 +18,16 @@ describe("AgentModel", () => {
     m.onPostTool("s1", ["src/a.ts"], 3); expect(m.get("s1")!.state).toBe("thinking");
     expect(m.get("s1")!.currentFiles).toContain("src/a.ts");
   });
+  it("lastTouchOf reports the newest touch ts per agent+path, undefined when untouched", () => {
+    const m = model(); m.onSessionStart(1);
+    expect(m.lastTouchOf("s1", "src/a.ts")).toBeUndefined();
+    m.onPostTool("s1", ["src/a.ts"], 2);
+    expect(m.lastTouchOf("s1", "src/a.ts")).toBe(2);
+    m.onPostTool("s1", ["src/a.ts"], 5);
+    expect(m.lastTouchOf("s1", "src/a.ts")).toBe(5); // updated, not appended
+    expect(m.lastTouchOf("s1", "src/b.ts")).toBeUndefined();
+    expect(m.lastTouchOf("ghost", "src/a.ts")).toBeUndefined();
+  });
   it("Stop on main → waiting", () => {
     const m = model(); m.onSessionStart(1);
     m.onStop("s1", 4); expect(m.get("s1")!.state).toBe("waiting");

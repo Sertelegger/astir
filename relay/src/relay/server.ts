@@ -1,10 +1,15 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
 import { constantTimeEqual } from "../security/token.js";
 import type { SessionState } from "../model/session-state.js";
 import type { Counters } from "../log/logger.js";
 import { makeFrame } from "../contract/frames.js";
+import { contentTypeFor, resolveStaticPath } from "./static-files.js";
 
-export interface RelayServerOpts { state: SessionState; token: string; counters: Counters; flushMs?: number; }
+export interface RelayServerOpts { state: SessionState; token: string; counters: Counters; flushMs?: number; staticDir?: string; }
+
+/** Token-gated data routes — never served from the (unauthenticated) static tree. */
+const API_ROUTES = new Set(["/events", "/reasoning", "/state", "/stream", "/healthz"]);
 
 export class RelayServer {
   private server: Server;
@@ -23,7 +28,7 @@ export class RelayServer {
     return new Promise((resolve) => this.server.listen(port, "127.0.0.1", () => resolve((this.server.address() as { port: number }).port)));
   }
   close(): Promise<void> {
-    if (this.flushTimer) clearInterval(this.flushTimer);
+    if (this.flushTimer) { clearInterval(this.flushTimer); this.flushTimer = null; }
     for (const c of this.clients) c.end();
     return new Promise((resolve) => this.server.close(() => resolve()));
   }
@@ -45,6 +50,13 @@ export class RelayServer {
     if (url === "/healthz") { // open, no auth (REQ-012)
       return this.json(res, 200, { sessionId: this.opts.state.sessionId, state: this.opts.state.state, counters: this.opts.counters.snapshot() });
     }
+    // Static web app — open, no auth: a browser page load cannot set an Authorization
+    // header. Safe only because these files carry no session data and no token; every
+    // data route below stays token-gated.
+    const staticDir = this.opts.staticDir;
+    if (staticDir !== undefined && req.method === "GET" && !API_ROUTES.has(url.split("?")[0] ?? "/")) {
+      return this.serveStatic(staticDir, url, res);
+    }
     if (!this.authorized(req)) return this.json(res, 401, { error: "unauthorized" });
 
     if (url === "/events" && req.method === "POST") {
@@ -64,9 +76,26 @@ export class RelayServer {
       }
       return this.json(res, 400, { error: "bad reasoning" });
     }
-    if (url === "/state") return this.json(res, 200, this.opts.state.snapshot());
-    if (url === "/stream") return this.openSse(res);
+    if (url === "/state" && req.method === "GET") return this.json(res, 200, this.opts.state.snapshot());
+    if (url === "/stream" && req.method === "GET") return this.openSse(res);
     return this.json(res, 404, { error: "not found" });
+  }
+
+  /** Serve a file from the static root. Never throws; anything unresolvable is a 404. */
+  private serveStatic(rootDir: string, url: string, res: ServerResponse): void {
+    const file = resolveStaticPath(rootDir, url);
+    if (file === null) return this.json(res, 404, { error: "not found" }); // traversal
+    let body: Buffer;
+    try { body = readFileSync(file); } catch { return this.json(res, 404, { error: "not found" }); } // ENOENT/EISDIR/…
+    res.writeHead(200, { "Content-Type": contentTypeFor(file), "Content-Length": body.length });
+    res.end(body);
+  }
+
+  /** Write to an SSE client, tolerating a socket that ended/vanished mid-flush. */
+  private writeTo(c: ServerResponse, data: string): void {
+    if (!c.writableEnded && !c.destroyed) {
+      try { c.write(data); } catch { /* client vanished */ }
+    }
   }
 
   private openSse(res: ServerResponse): void {
@@ -74,7 +103,7 @@ export class RelayServer {
     this.clients.add(res);
     this.opts.counters.set("sseClients", this.clients.size);
     const snap = makeFrame("snapshot", this.opts.state.sessionId, Date.now() / 1000, this.opts.state.snapshot());
-    res.write(`data: ${JSON.stringify(snap)}\n\n`);
+    this.writeTo(res, `data: ${JSON.stringify(snap)}\n\n`);
     res.on("close", () => { this.clients.delete(res); this.opts.counters.set("sseClients", this.clients.size); });
   }
 
@@ -85,7 +114,7 @@ export class RelayServer {
   emitSpec(path: string, changeKind: string): void {
     const frame = makeFrame("spec", this.opts.state.sessionId, Date.now() / 1000, { path, changeKind });
     const data = `data: ${JSON.stringify(frame)}\n\n`;
-    for (const c of this.clients) c.write(data);
+    for (const c of this.clients) this.writeTo(c, data);
   }
 
   /** Coalesce to ≤1 delta frame per flushMs (REQ-015). */
@@ -98,7 +127,7 @@ export class RelayServer {
       const frame = makeFrame("delta", this.opts.state.sessionId, Date.now() / 1000, this.opts.state.snapshot(this.pendingPulses));
       this.pendingPulses.clear();
       const data = `data: ${JSON.stringify(frame)}\n\n`;
-      for (const c of this.clients) c.write(data);
+      for (const c of this.clients) this.writeTo(c, data);
     }, this.flushMs);
   }
 

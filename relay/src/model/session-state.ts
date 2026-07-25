@@ -1,4 +1,4 @@
-import type { Provider, DiscoveryState } from "../contract/types.js";
+import type { Provider, DiscoveryState, Kind } from "../contract/types.js";
 import type { Clock } from "./clock.js";
 import { validateEvent, type ClideEvent } from "../contract/event.js";
 import { RepoTree, type LeafNode } from "./tree.js";
@@ -12,6 +12,8 @@ export interface SessionStateOpts {
   halfLifeSeconds?: number; maxNodes?: number;
   summarizer?: Summarizer; onNowUpdate?: (agentId: string) => void;
   specGlobs?: string[]; onSpec?: (path: string, changeKind: SpecChange) => void;
+  /** Fired once per accepted (non-duplicate) event — lets the relay drive Lifecycle. */
+  onIngest?: (kind: Kind) => void;
 }
 
 const NOW_TERMINAL = new Set(["done", "error"]);
@@ -57,7 +59,13 @@ export class SessionState {
     r.push({ kind: e.kind, tool: e.tool ?? null, op: e.op, paths: e.paths });
     if (r.length > 8) r.shift();
     this.recent.set(e.agentId, r);
-    if (this.state === "ended") return []; // drop ingest in ENDED (REQ-096)
+    // REQ-096: drop ingest while ENDED — except a session_start, which REVIVES the
+    // session. Without this, a resumed session reusing this id would discover a
+    // live-but-deaf relay (it holds the discovery file yet ignores every event).
+    if (this.state === "ended") {
+      if (e.kind !== "session_start") return [];
+      this.state = "live";
+    }
     const touched: LeafNode[] = [];
     switch (e.kind) {
       case "session_start": this.agents.onSessionStart(e.ts); break;
@@ -83,6 +91,7 @@ export class SessionState {
       case "session_end": this.agents.onSessionEnd(e.ts); this.state = "ended"; break;
     }
     this.refreshNow(e.agentId);
+    try { this.opts.onIngest?.(e.kind); } catch { /* a throwing observer must never corrupt the reducer */ }
     return touched;
   }
 
@@ -118,8 +127,12 @@ export class SessionState {
 
   tick(now: number): void { this.agents.tick(now); }
 
+  /** Most-recently-touching agent first, so the web can colour the ring by recency (REQ-032). */
   private leafAgents(path: string): string[] {
-    return this.agents.all().filter((a) => a.currentFiles.includes(path)).map((a) => a.id);
+    return this.agents.all()
+      .filter((a) => a.currentFiles.includes(path))
+      .sort((a, b) => (this.agents.lastTouchOf(b.id, path) ?? -Infinity) - (this.agents.lastTouchOf(a.id, path) ?? -Infinity))
+      .map((a) => a.id);
   }
 
   snapshot(pulsePaths?: Set<string>): SnapshotDTO {
