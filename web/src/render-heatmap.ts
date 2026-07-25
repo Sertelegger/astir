@@ -7,8 +7,16 @@ const SVGNS = "http://www.w3.org/2000/svg";
 export interface HeatmapCallbacks { onFile: (path: string) => void; onZoom: (path: string) => void; }
 export interface HeatmapCtx { maxLeafHeat: number; agents: AgentRecordDTO[]; shape: Shape; size: Size; }
 
-function ringColor(path: string, agents: AgentRecordDTO[]): string | null {
-  for (let i = agents.length - 1; i >= 0; i--) if (agents[i]!.currentFiles.includes(path)) return agents[i]!.color;
+/**
+ * REQ-032: the leaf's own `agents` array is the authority — the relay emits it
+ * most-recently-touching FIRST, so the first id that maps to a known agent
+ * record still holding this file wins.
+ */
+function ringColor(node: Positioned, agents: AgentRecordDTO[]): string | null {
+  for (const id of node.agents ?? []) {
+    const rec = agents.find((a) => a.id === id);
+    if (rec && rec.currentFiles.includes(node.path)) return rec.color;
+  }
   return null;
 }
 
@@ -36,7 +44,7 @@ export function renderHeatmap(svg: SVGSVGElement, nodes: Positioned[], ctx: Heat
       el.setAttribute("d", arcPath(n.x0, n.x1, n.y0, n.y1, cx, cy));
     }
     el.setAttribute("fill", isFile ? heatColor(normalizeHeat(n.heat, ctx.maxLeafHeat)) : "rgba(255,255,255,0.03)");
-    const ring = isFile ? ringColor(n.path, ctx.agents) : null;
+    const ring = isFile ? ringColor(n, ctx.agents) : null;
     if (ring) { el.setAttribute("stroke", ring); el.setAttribute("stroke-width", "2"); }
     if (isFile && n.pulse) el.setAttribute("data-pulse", "true");
     el.addEventListener("click", () => (isFile ? cb.onFile?.(n.path) : cb.onZoom?.(n.path)));

@@ -4,7 +4,8 @@ import { isLeaf } from "./protocol.js";
 import type { Shape } from "./view-state.js";
 
 type Node = DirDTO | LeafDTO;
-export interface Positioned { path: string; type: "dir" | "file"; heat: number; depth: number; pulse?: boolean; x0: number; x1: number; y0: number; y1: number; }
+/** `agents` is the leaf's own agent-id list, ordered most-recently-touching FIRST (REQ-032). */
+export interface Positioned { path: string; type: "dir" | "file"; heat: number; depth: number; pulse?: boolean; agents?: string[]; x0: number; x1: number; y0: number; y1: number; }
 export interface Size { width: number; height: number; }
 
 export function findSubtree(tree: DirDTO, path: string): Node | null {
@@ -34,6 +35,7 @@ export function computeLayout(tree: DirDTO, focus: string, shape: Shape, size: S
   return (root.descendants() as Array<HierarchyRectangularNode<Node>>).map((n) => ({
     path: n.data.path, type: n.data.type, heat: n.data.heat, depth: n.depth,
     pulse: isLeaf(n.data) ? n.data.pulse : undefined,
+    agents: isLeaf(n.data) ? n.data.agents : undefined,
     x0: n.x0, x1: n.x1, y0: n.y0, y1: n.y1,
   }));
 }

@@ -28,6 +28,34 @@ describe("renderHeatmap (treemap)", () => {
     expect(hot.getAttribute("stroke")).toBe("#e879f9");
     expect(hot.getAttribute("data-pulse")).toBe("true");
   });
+  it("ring uses the leaf's most-recently-touching agent (agents[0]) — REQ-032", () => {
+    const twoAgents: AgentRecordDTO[] = [
+      { id: "subA", provider: "claude", name: "A", agentType: null, parentId: "s1", parentInferred: false, state: "tool-running", now: "x", nowSource: "template", color: "#aaaaaa", currentFiles: ["src/shared.ts"] },
+      { id: "subB", provider: "claude", name: "B", agentType: null, parentId: "s1", parentInferred: false, state: "tool-running", now: "x", nowSource: "template", color: "#bbbbbb", currentFiles: ["src/shared.ts"] },
+    ];
+    const treeFor = (order: string[]): DirDTO => ({ path: "", type: "dir", heat: 3, children: [
+      { path: "src", type: "dir", heat: 3, children: [
+        { path: "src/shared.ts", type: "file", loc: 20, binary: false, heat: 3, reads: 0, edits: 2, agents: order },
+      ] },
+    ] });
+    const strokeFor = (order: string[]): string | null => {
+      const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      const t = treeFor(order);
+      renderHeatmap(s, computeLayout(t, "", "treemap", ctx.size), { ...ctx, agents: twoAgents }, {} as HeatmapCallbacks);
+      return (s.querySelector('[data-path="src/shared.ts"]') as SVGElement).getAttribute("stroke");
+    };
+    expect(strokeFor(["subB", "subA"])).toBe("#bbbbbb");
+    expect(strokeFor(["subA", "subB"])).toBe("#aaaaaa");
+  });
+  it("no ring when the leaf's agents are unknown to the agent records", () => {
+    const orphan: DirDTO = { path: "", type: "dir", heat: 3, children: [
+      { path: "src", type: "dir", heat: 3, children: [
+        { path: "src/hot.ts", type: "file", loc: 20, binary: false, heat: 3, reads: 0, edits: 2, agents: ["ghost"] },
+      ] },
+    ] };
+    renderHeatmap(svg, computeLayout(orphan, "", "treemap", ctx.size), ctx, {} as HeatmapCallbacks);
+    expect((svg.querySelector('[data-path="src/hot.ts"]') as SVGElement).getAttribute("stroke")).toBeNull();
+  });
   it("click leaf → onFile, click dir → onZoom", () => {
     let opened = ""; let zoomed = "";
     renderHeatmap(svg, computeLayout(tree, "", "treemap", ctx.size), ctx, { onFile: (p) => (opened = p), onZoom: (p) => (zoomed = p) });

@@ -31,6 +31,14 @@ describe("layout", () => {
     expect((a.x1 - a.x0)).toBeGreaterThan(b.x1 - b.x0);
     expect(a.y1).toBeGreaterThan(a.y0);
   });
+  it("carries the leaf's agents array through to Positioned (order preserved)", () => {
+    const withAgents: DirDTO = { path: "", type: "dir", heat: 1, children: [
+      { path: "src/a.ts", type: "file", loc: 10, binary: false, heat: 1, reads: 0, edits: 1, agents: ["subB", "subA"] },
+    ] };
+    const nodes = computeLayout(withAgents, "", "treemap", { width: 100, height: 100 });
+    expect(nodes.find((n) => n.path === "src/a.ts")?.agents).toEqual(["subB", "subA"]);
+    expect(nodes.find((n) => n.path === "")?.agents).toBeUndefined();
+  });
   it("focus scopes the layout to the subtree", () => {
     const nodes = computeLayout(tree, "src", "treemap", { width: 100, height: 100 });
     expect(nodes.some((n) => n.path === "src/a.ts")).toBe(true);

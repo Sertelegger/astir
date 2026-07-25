@@ -29,6 +29,14 @@ describe("App", () => {
     // whole-repo default is sunburst (path), not treemap (rect)
     expect(root.querySelector("path")).toBeTruthy();
   });
+  it("resize() re-lays-out at the new size (viewBox follows)", () => {
+    const app = new App(root, "s1", { openFile: () => {} }, { width: 200, height: 200 });
+    app.onFrame(frame);
+    const svg = root.querySelector("svg") as SVGSVGElement;
+    expect(svg.getAttribute("viewBox")).toBe("0 0 200 200");
+    app.resize({ width: 400, height: 300 });
+    expect(svg.getAttribute("viewBox")).toBe("0 0 400 300");
+  });
   it("toggleShape flips the rendered shape (rect → path)", () => {
     const app = new App(root, "s1", { openFile: () => {} }, { width: 200, height: 200 });
     app.onFrame(frame);

@@ -26,6 +26,8 @@ export class App {
   }
 
   setStatus(s: "connected" | "reconnecting" | "unreachable"): void { this.status = s; this.render(); }
+  /** Re-lay-out at a new viewport size (window / VSCode panel resize). */
+  resize(size: Size): void { this.size = size; this.render(); }
   onFrame(f: Frame): void { this.store.apply(f); this.render(); }
   toggleShape(): void { this.view.toggle(); this.render(); }
 
