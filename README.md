@@ -95,19 +95,22 @@ Each session writes a discovery file at `~/.clide/sessions/<session_id>.json` co
   node aggregate/dist/main.js
   ```
 - **VSCode:** build/package `vscode-ext/` (e.g. `npx vsce package`), install the VSIX, open your project, and run **“Clide: Open Activity Panel.”** Over Remote-SSH, VSCode auto-forwards the relay port.
-- **Browser:** serve the built `web/dist` with any static server and open it with the relay's connection params from the discovery file:
+- **Browser — one URL, no static server needed.** The relay serves the built `web/dist` itself. Take `port` and `token` from the session's discovery file and open:
   ```
-  http://localhost:<static-port>/?port=<relay-port>&token=<relay-token>&session=<session_id>
+  http://127.0.0.1:<relay-port>/?token=<relay-token>&session=<session_id>
   ```
-  (The web client must send the bearer token, so it reads the SSE stream via `fetch` — `EventSource` can't set headers.)
+  The page is served from the relay, so the port is implicit — you only pass the token and session. (The token can't travel in a page-load header, so the app files are served unauthenticated; they contain no session data. Every **data** endpoint — `/events`, `/reasoning`, `/state`, `/stream` — still requires the bearer token, which the app reads from the URL. That's also why it streams via `fetch` rather than `EventSource`, which can't set headers.)
 
 ### Try it without a real session
 
 You can run the relay directly and drive it with the synthetic event driver used in the tests:
 
 ```bash
+npm run build
 CLIDE_SESSION_ID=demo CLIDE_PROVIDER=claude CLIDE_CWD="$PWD" node relay/dist/relay/main.js &
-# read ~/.clide/sessions/demo.json for the port + token, then point the TUI/web/aggregate at it
+# then read the port + token and open the heat-map straight from the relay:
+cat ~/.clide/sessions/demo.json
+# → http://127.0.0.1:<port>/?token=<token>&session=demo
 ```
 
 ---
@@ -144,9 +147,12 @@ clide doctor --clean      # remove stale discovery files + logs for relays that 
 - Per-phase implementation plans: `docs/superpowers/plans/`
 - Each package: `npm test` (vitest) and `npm run build`. Strict TypeScript throughout.
 
+### Continuous integration
+
+`.github/workflows/build-dist.yml` runs every package's tests + typecheck on push to `main`, builds all packages, verifies each entrypoint exists and parses, then commits the refreshed `dist/` artifacts back. That keeps a git-based `/plugin install` working, since Claude Code never builds on install.
+
 ### Known limitations / manual-verification items
 - **Live end-to-end** (real `claude`/`codex` session → relay → renderer), the **VSCode extension** running inside VSCode, and **Remote-SSH** forwarding are verified manually — the spawn/tailer/extension glue is integration code with unit-tested cores.
 - **Codex specifics (verify on your version):** hook availability, the exact `apply_patch`/rollout item shapes, and `[agents]` subagent maturity vary by Codex build; the adapter uses documented fallbacks.
-- The relay does not yet serve `web/` at `/` (serve `web/dist` separately, as above).
 - Spec **delete** detection needs Claude Code's `FileChanged` hook (created/updated are live today).
 - Several **plan documents** contain reference code that the review process later corrected — **the committed package code is the source of truth**, not the plan docs.
