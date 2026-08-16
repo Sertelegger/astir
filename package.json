@@ -1,8 +1,27 @@
 {
-  "name": "clide-monorepo",
+  "name": "clide",
+  "version": "2.0.0-alpha.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "clide": "./dist/cli/main.js"
+  },
   "scripts": {
-    "build": "npm run build --prefix relay && npm run build --prefix web && npm run build --prefix adapters/claude && npm run build --prefix adapters/codex && npm run build --prefix vscode-ext && npm run build --prefix tui && npm run build --prefix aggregate && npm run build --prefix cli"
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "verify": "npm run typecheck && npm run lint && npm run build && npm run test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.8",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
   }
 }

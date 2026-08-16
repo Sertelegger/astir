@@ -1,0 +1,15 @@
+{
+  "_capture": {
+    "note": "Recorded verbatim from a live Claude Code session via a temporary SubagentStart hook. Do not hand-edit; re-capture instead.",
+    "provider": "claude",
+    "cliVersion": "2.1.233",
+    "capturedAt": "2026-08-16"
+  },
+  "session_id": "0be4c63a-b9d9-4119-a67a-1b7f90318043",
+  "transcript_path": "/Users/sascha/.claude/projects/-Users-sascha-Projects-clide/0be4c63a-b9d9-4119-a67a-1b7f90318043.jsonl",
+  "cwd": "/Users/sascha/Projects/clide",
+  "prompt_id": "ae37a359-be4b-47bf-a10a-287911cb0c04",
+  "agent_id": "a5cf41e52d9b8f355",
+  "agent_type": "general-purpose",
+  "hook_event_name": "SubagentStart"
+}
