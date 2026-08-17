@@ -139,6 +139,17 @@ describe("built daemon artifact", () => {
     expect(agent?.agentType).toBe("general-purpose");
   });
 
+  it("counts state reads, so a watching surface is observable (OBS-01)", async () => {
+    const before = (await json<{ counters: { statePolls: number } }>(await fetch(`${base}/healthz`))).counters
+      .statePolls;
+    await fetch(`${base}/state`, { headers: auth });
+    const after = (await json<{ counters: { statePolls: number } }>(await fetch(`${base}/healthz`))).counters
+      .statePolls;
+    // OBS-01: a counter that cannot move must not exist. This one is how you
+    // tell "the menu bar is polling" from "the menu bar is not running".
+    expect(after).toBe(before + 1);
+  });
+
   it("rejects a malformed payload with non-2xx and stays alive (DMN-03/04)", async () => {
     const bad = await fetch(`${base}/hook/claude`, {
       method: "POST",

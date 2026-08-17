@@ -68,6 +68,8 @@ export class Daemon {
     droppedPaths: 0,
     /** CAP-08 — distinct from "no events": a hook fired but could not authenticate. */
     unauthorizedIngest: 0,
+    /** Reads of /state. Non-zero means a surface (status, menu bar) is watching. */
+    statePolls: 0,
   };
   private warnedAboutToken = false;
 
@@ -154,6 +156,7 @@ export class Daemon {
     }
 
     if (path === "/state" && req.method === "GET") {
+      this.counters.statePolls++;
       return this.json(res, 200, this.snapshot());
     }
 
