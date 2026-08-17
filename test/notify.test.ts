@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { Dispatcher, localTarget, remoteTarget } from "../src/notify/dispatch.js";
-import { buildEnvelope, ENVELOPE_VERSION, validateEnvelope } from "../src/notify/envelope.js";
+import {
+  buildEnvelope,
+  ENVELOPE_VERSION,
+  notificationText,
+  reasonText,
+  validateEnvelope,
+} from "../src/notify/envelope.js";
 import type { Notification } from "../src/notify/notify.js";
 import { NotifyPolicy } from "../src/notify/policy.js";
 import { RemoteView } from "../src/notify/remote.js";
@@ -199,7 +205,7 @@ describe("PSH-06 — cross-boundary delivery", () => {
 
     expect(outcomes[0]?.ok).toBe(true);
     expect(seen).toHaveLength(1);
-    expect(seen[0]?.title).toContain("needs your input");
+    expect(seen[0]?.title).toBe("An agent needs you");
   });
 
   it("rejects an unauthenticated attempt", async () => {
@@ -301,5 +307,53 @@ describe("PSH-12 — the notifier's view of other machines", () => {
     v.apply(env({ host: "devbox" }), 0);
     v.apply(env({ host: "buildbox" }), 0);
     expect(v.list()).toHaveLength(2);
+  });
+});
+
+describe("notifications read as English, not as identifiers", () => {
+  const built = (reason: string, over: Record<string, unknown> = {}) =>
+    buildEnvelope({
+      kind: "blocked",
+      reason,
+      sessionId: "abc12345",
+      agentId: "a1",
+      cwd: "/Users/sascha/Projects/clide",
+      ...over,
+    });
+
+  it("translates the provider's internal reason", () => {
+    // "permission_prompt" is Claude Code's vocabulary, not the reader's. Showing
+    // it asks the user to do the translation this tool exists to do for them.
+    // Pin the origin host so this asserts wording, not whatever machine it runs on.
+    expect(notificationText(built("permission_prompt", { host: "mac" }), "mac").body).toBe(
+      "clide needs permission to run something",
+    );
+    expect(notificationText(built("agent_needs_input", { host: "mac" }), "mac").body).toBe(
+      "clide is waiting for your input",
+    );
+  });
+
+  it("keeps the raw reason on the wire even though the display is friendly", () => {
+    // The identifier must survive round-tripping and version skew unmangled;
+    // only the rendering is humanised.
+    expect(built("permission_prompt").reason).toBe("permission_prompt");
+  });
+
+  it("degrades an unknown reason to a phrase rather than a symbol", () => {
+    expect(reasonText("some_future_state")).toBe("some future state");
+    expect(reasonText("")).toBe("needs your attention");
+  });
+
+  it("titles are sentences too", () => {
+    expect(built("permission_prompt").title).toBe("An agent needs you");
+  });
+
+  it("names the machine only when it is a different one", () => {
+    const local = notificationText(built("permission_prompt", { host: "mac" }), "mac.localdomain");
+    expect(local.body).not.toContain("mac");
+
+    const remote = notificationText(built("permission_prompt", { host: "devbox.corp" }), "mac");
+    expect(remote.body).toContain("devbox");
+    expect(remote.body, "and never the internal domain").not.toContain("corp");
   });
 });

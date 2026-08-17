@@ -10,6 +10,7 @@
  * free of any I/O, and the host is a three-line wrapper.
  */
 
+import { reasonText } from "../notify/envelope.js";
 import type { StatusAgent, StatusBody, StatusResult, StatusSession } from "./types.js";
 
 /** States that mean work is actively happening. */
@@ -137,7 +138,31 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     lines.push("---");
   }
 
-  if (body.sessions.length === 0 && remote.length === 0) {
+  // DMN-07 — say which kind of quiet this is. "No live sessions" is only true if
+  // the provider also reports none; if it reports several and we have heard from
+  // none of them, the honest statement is that clide is deaf, plus why.
+  const silent = body.silent ?? [];
+  if (silent.length > 0) {
+    const n = silent.length;
+    lines.push(
+      `${n} session${n === 1 ? "" : "s"} running that clide cannot hear | color=#ff9500 sfimage=ear.trianglebadge.exclamationmark`,
+    );
+    if (body.unauthorizedIngest !== undefined && body.unauthorizedIngest > 0) {
+      // Hooks are firing but failing auth — a different problem with a different fix.
+      lines.push("-- Hooks are firing but the token is rejected | color=#888888");
+      lines.push("-- Export CLIDE_TOKEN, then restart Claude Code | color=#888888");
+    } else {
+      lines.push("-- Hooks bind when a session starts, so a session older | color=#888888");
+      lines.push("-- than the clide plugin never sends anything | color=#888888");
+      lines.push("-- Restart those sessions to connect them | color=#888888");
+    }
+    for (const s of silent) {
+      lines.push(`-- ${safe(s.name ?? s.cwd)} | color=#888888 font=Menlo`);
+    }
+    lines.push("---");
+  }
+
+  if (body.sessions.length === 0 && remote.length === 0 && silent.length === 0) {
     lines.push("No live sessions | color=#888888");
   }
 
@@ -183,7 +208,7 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
       lines.push(`${safe(entry.host)} · ${safe(entry.repo)}${marker} | color=${colour}`);
       const suffix = entry.acknowledged ? "  (dismissed)" : "";
       lines.push(
-        `-- ${safe(entry.reason)}  ·  waiting ${humanDuration(Math.max(0, now - entry.since))}${suffix}` +
+        `-- ${safe(reasonText(entry.reason))}  ·  waiting ${humanDuration(Math.max(0, now - entry.since))}${suffix}` +
           " | color=#cccccc font=Menlo",
       );
       // No focus action: there is no window on this machine to raise.

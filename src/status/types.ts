@@ -32,9 +32,27 @@ export interface StatusSession {
   agents: StatusAgent[];
 }
 
+/** A session the provider reports running that has never sent clide an event. */
+export interface SilentSession {
+  sessionId: string;
+  name: string | null;
+  cwd: string;
+}
+
 export interface StatusBody {
   blockedCount: number;
   sessions: StatusSession[];
+  /**
+   * DMN-07 — the difference between "nothing is running" and "I cannot hear
+   * anything". Rendering those identically is the same class of lie as showing a
+   * dead daemon as idle, and it is the more common one: hooks bind at session
+   * start, so any session older than the plugin install is invisible forever.
+   */
+  silent?: SilentSession[];
+  /** False when no event has ever arrived — i.e. the hooks are not wired at all. */
+  everIngested?: boolean;
+  /** CAP-08 — non-zero means hooks are firing but the token does not match. */
+  unauthorizedIngest?: number;
 }
 
 /**

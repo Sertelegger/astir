@@ -27,6 +27,14 @@ import type { NotifyKind } from "./policy.js";
  */
 export type EnvelopeKind = NotifyKind | "resolved";
 
+/** Notification titles, in the user's language rather than the state machine's. */
+const TITLE_BY_KIND: Record<string, string> = {
+  blocked: "An agent needs you",
+  completed: "An agent finished",
+  failed: "An agent failed",
+  resolved: "Resolved",
+};
+
 export const ENVELOPE_VERSION = { major: 1, minor: 0 } as const;
 
 export interface NotifyEnvelope {
@@ -89,12 +97,41 @@ export function buildEnvelope(input: BuildEnvelopeInput): NotifyEnvelope {
     reason: input.reason,
     origin: { host, user: input.user ?? safeUser() },
     session: { sessionId: input.sessionId, agentId: input.agentId, repo },
-    title: input.kind === "blocked" ? "clide — needs your input" : `clide — ${input.kind}`,
+    title: TITLE_BY_KIND[input.kind] ?? "Clide",
     // Retained for receivers that render the envelope directly. Anything that
     // knows where it is should prefer `notificationText` below, which drops the
     // host when the alert did not come from somewhere else.
     body: `${host} · ${repo} · ${shortSession} · ${input.reason}`,
   };
+}
+
+/**
+ * Plain English for a provider's internal notification type.
+ *
+ * `reason` is carried verbatim across the wire on purpose — it is the provider's
+ * own vocabulary and must survive round-tripping, version skew and logging
+ * unmangled. But it is an identifier, not a sentence, and a notification banner
+ * reading "permission_prompt" asks the reader to do the translation that this
+ * tool exists to do for them.
+ */
+const REASON_TEXT: Record<string, string> = {
+  permission_prompt: "needs permission to run something",
+  worker_permission_prompt: "needs permission for a subagent",
+  agent_needs_input: "is waiting for your input",
+  idle_prompt: "has been idle for a while",
+  agent_completed: "finished",
+  blocked: "is waiting on you",
+  resolved: "no longer needs you",
+  doctor_test: "— this is a test notification",
+};
+
+/** Human-readable form of a reason, falling back to de-snake-casing the raw id. */
+export function reasonText(reason: string): string {
+  const known = REASON_TEXT[reason];
+  if (known !== undefined) return known;
+  // An unknown reason from a newer provider should still read as a phrase rather
+  // than as a symbol — degrading to "needs_your_attention" helps nobody.
+  return reason.replace(/[_-]+/g, " ").trim() || "needs your attention";
 }
 
 /**
@@ -112,7 +149,7 @@ export function notificationText(
   const from = shortHost(envelope.origin.host);
   const here = shortHost(localHost);
   const where = from === here ? envelope.session.repo : `${from} · ${envelope.session.repo}`;
-  return { title: envelope.title, body: `${where} · ${envelope.reason}` };
+  return { title: envelope.title, body: `${where} ${reasonText(envelope.reason)}` };
 }
 
 function safeUser(): string {

@@ -102,20 +102,80 @@ function tmuxPanes(deps: FocusDeps): Pane[] {
   return panes;
 }
 
+export interface OwningApp {
+  /** The outermost `.app` bundle path. */
+  bundle: string;
+  /** Pid of the top-most process belonging to that bundle — the app itself. */
+  pid: number;
+}
+
 /**
- * The `.app` bundle owning a process, found by walking up. The executable of a
- * bundled app lives at `<Bundle>.app/Contents/MacOS/<name>`, so the bundle path
- * is recoverable from the executable path alone.
+ * The application owning a process, found by walking up the ancestry.
+ *
+ * Two details matter, and getting either wrong sends the user to the wrong place
+ * with no error:
+ *
+ * 1. **The outermost bundle, not the innermost.** Electron apps run their work in
+ *    a nested helper, so the executable path contains *two* `.app` bundles:
+ *    `…/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/…`.
+ *    Matching `.app/Contents/MacOS/` finds the helper, and activating a helper
+ *    bundle does not raise the editor — it silently lands you on whatever desktop
+ *    you were already on.
+ * 2. **The top-most matching ancestor.** The helper's parent is the real app
+ *    process, and its pid is what lets AppleScript address the app exactly,
+ *    rather than guessing a process name from a bundle filename.
  */
-function bundleFor(chain: number[], deps: FocusDeps): string | null {
+function owningApp(chain: number[], deps: FocusDeps): OwningApp | null {
+  let found: OwningApp | null = null;
   for (const pid of chain) {
     const out = deps.run("ps", ["-o", "comm=", "-p", String(pid)]);
     if (out === null) continue;
     const path = out.trim();
-    const marker = path.indexOf(".app/Contents/MacOS/");
-    if (marker !== -1) return path.slice(0, marker + 4);
+    const marker = path.indexOf(".app/");
+    if (marker === -1) continue;
+    // Keep going: later entries are further up the tree, and the last match is
+    // the app itself rather than one of its helpers.
+    found = { bundle: path.slice(0, marker + 4), pid };
   }
-  return null;
+  return found;
+}
+
+/**
+ * Raise a specific window of an application, switching Spaces if it is fullscreen.
+ *
+ * `open -a` activates an application but does not reliably follow a fullscreen
+ * window onto its own Space, which is exactly the case that matters here — a
+ * fullscreen editor on another desktop is the session you are least able to find.
+ * `AXRaise` does follow it.
+ *
+ * The window is chosen by title match, because one editor may have several
+ * projects open and only one of them is the session that needs attention.
+ * Addressing the process by `unix id` avoids guessing its name: the System Events
+ * process name is the executable ("Code - Insiders"), which is not the bundle
+ * name ("Visual Studio Code - Insiders").
+ */
+function raiseWindow(app: OwningApp, titleHint: string, deps: FocusDeps): boolean {
+  const script = `
+    tell application "System Events"
+      set procs to (every process whose unix id is ${app.pid})
+      if procs is {} then return "no-process"
+      set p to item 1 of procs
+      set frontmost of p to true
+      try
+        repeat with w in windows of p
+          if name of w contains ${JSON.stringify(titleHint)} then
+            perform action "AXRaise" of w
+            return "raised"
+          end if
+        end repeat
+        if (count of windows of p) > 0 then
+          perform action "AXRaise" of (item 1 of windows of p)
+          return "raised-first"
+        end if
+      end try
+      return "activated"
+    end tell`;
+  return deps.run("osascript", ["-e", script]) !== null;
 }
 
 export function focusSession(
@@ -152,13 +212,24 @@ export function focusSession(
 
   // 2 — the window the terminal actually lives in.
   if (deps.platform === "darwin") {
-    const bundle = bundleFor(chain, deps);
-    if (bundle !== null) {
-      const opened = deps.run("open", ["-a", bundle]);
-      if (opened !== null) {
-        notes.push(bundle.split("/").pop() ?? bundle);
+    const app = owningApp(chain, deps);
+    if (app !== null) {
+      const name = app.bundle.split("/").pop() ?? app.bundle;
+      // Activate first so the app is frontmost even without Accessibility
+      // permission, then try to raise the *right* window, which is what follows
+      // a fullscreen window onto its own Space.
+      const opened = deps.run("open", ["-a", app.bundle]);
+      const hint = session.cwd.split("/").filter(Boolean).pop() ?? "";
+      const raised = hint === "" ? false : raiseWindow(app, hint, deps);
+
+      if (raised) {
+        notes.push(`${name} (${hint})`);
+      } else if (opened !== null) {
+        // Landing on the app but not the specific window is a partial success
+        // worth reporting honestly, since the user may end up on another desktop.
+        notes.push(`${name} — could not raise its window; grant Accessibility to SwiftBar`);
       } else {
-        notes.push(`could not activate ${bundle}`);
+        notes.push(`could not activate ${name}`);
       }
     } else if (notes.length === 0) {
       return {

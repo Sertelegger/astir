@@ -123,6 +123,8 @@ export class Registry {
    * live sessions on any machine without `claude` on PATH.
    */
   private discoveryEverWorked = false;
+  /** Discovered sessions we have never received an event from — see `silent()`. */
+  private silentSessions: DiscoveredSession[] = [];
 
   constructor(opts: RegistryOpts) {
     this.nowMs = opts.nowMs;
@@ -359,10 +361,19 @@ export class Registry {
 
     const live = new Set<string>();
     let enriched = 0;
+    const silent: DiscoveredSession[] = [];
     for (const d of discovered) {
       live.add(d.sessionId);
       const s = this.sessions.get(d.sessionId);
-      if (!s) continue; // known to the provider but has sent us nothing yet
+      if (!s) {
+        // Known to the provider, but it has sent us nothing. Either it has only
+        // just started, or — far more likely once it persists — its hooks are not
+        // wired up at all. Recorded rather than skipped, because "I am receiving
+        // nothing" and "nothing is running" are completely different situations
+        // and a surface that renders them identically is lying to the user.
+        silent.push(d);
+        continue;
+      }
       s.everDiscovered = true;
       s.status = d.status;
       s.name = d.name;
@@ -380,7 +391,20 @@ export class Registry {
         pruned++;
       }
     }
+    this.silentSessions = silent;
     return { enriched, pruned };
+  }
+
+  /**
+   * Sessions the provider reports as running that have never sent us an event.
+   *
+   * This is the "clide is deaf" signal. A session appears here when its hooks are
+   * not registered — most commonly because it was started before the plugin was
+   * installed, since hooks bind at session start and are never picked up
+   * mid-session.
+   */
+  silent(): DiscoveredSession[] {
+    return [...this.silentSessions];
   }
 
   private ensureAgent(session: SessionRecord, event: ClideEvent): AgentRecord {

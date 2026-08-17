@@ -253,6 +253,16 @@ export class Daemon {
     return {
       v: { major: 2, minor: 1 },
       blockedCount: this.opts.registry.blockedCount(),
+      // DMN-07 — sessions the provider says are running that have sent us
+      // nothing, plus whether we have ever received anything at all. Together
+      // these turn a silent menu bar from "all quiet" into a diagnosis.
+      silent: this.opts.registry.silent().map((d) => ({
+        sessionId: d.sessionId,
+        name: d.name,
+        cwd: d.cwd,
+      })),
+      everIngested: this.counters.ingested > 0,
+      unauthorizedIngest: this.counters.unauthorizedIngest,
       sessions: this.opts.registry.list().map((s) => ({
         sessionId: s.sessionId,
         provider: s.provider,

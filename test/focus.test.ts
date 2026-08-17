@@ -13,6 +13,7 @@ function deps(over: {
   alive?: boolean;
   platform?: string;
   failOpen?: boolean;
+  failRaise?: boolean;
 }): FocusDeps & { calls: string[][] } {
   const calls: string[][] = [];
   return {
@@ -33,6 +34,7 @@ function deps(over: {
       if (file === "tmux" && args[0] === "list-panes") return over.panes ?? null;
       if (file === "tmux") return "";
       if (file === "open") return over.failOpen === true ? null : "";
+      if (file === "osascript") return over.failRaise === true ? null : "raised";
       return null;
     },
   };
@@ -88,6 +90,60 @@ describe("PSH-11 — focus a session", () => {
     expect(r.ok).toBe(true);
     expect(d.calls).toContainEqual(["open", "-a", "/Applications/Visual Studio Code.app"]);
     expect(r.detail).toContain("Visual Studio Code.app");
+  });
+
+  it("picks the OUTERMOST bundle, not the Electron helper inside it", () => {
+    // Regression, and a silent one: activating a helper bundle does not raise the
+    // editor, it just leaves you on whichever desktop you were already on.
+    const d = deps({
+      tree: { 500: 450, 450: 400, 400: 1 },
+      comm: {
+        500: "/bin/zsh",
+        450:
+          "/Applications/Visual Studio Code - Insiders.app/Contents/Frameworks/" +
+          "Code - Insiders Helper.app/Contents/MacOS/Code - Insiders Helper",
+        400: "/Applications/Visual Studio Code - Insiders.app/Contents/MacOS/Code - Insiders",
+      },
+    });
+
+    focusSession(session(500), d);
+
+    expect(d.calls).toContainEqual(["open", "-a", "/Applications/Visual Studio Code - Insiders.app"]);
+    expect(d.calls.some((c) => c[0] === "open" && (c[2] ?? "").includes("Helper"))).toBe(false);
+  });
+
+  it("addresses the app process by unix id and raises the matching window", () => {
+    const d = deps({
+      tree: { 500: 450, 450: 400, 400: 1 },
+      comm: {
+        500: "/bin/zsh",
+        450: "/Applications/Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Helper",
+        400: "/Applications/Code.app/Contents/MacOS/Code",
+      },
+    });
+
+    focusSession(session(500), d);
+
+    const script = d.calls.find((c) => c[0] === "osascript")?.[2] ?? "";
+    // 400 is the app itself; 450 is its helper. Addressing the helper would raise
+    // nothing, and a fullscreen window would never come forward.
+    expect(script).toContain("unix id is 400");
+    expect(script).toContain("AXRaise");
+    // The repo name disambiguates which project window to raise.
+    expect(script).toContain('"repo"');
+  });
+
+  it("says so when the window cannot be raised, instead of claiming success", () => {
+    // Without Accessibility permission the app comes forward but the specific
+    // window does not — which on a fullscreen Space means the wrong desktop.
+    const d = deps({
+      tree: { 500: 400, 400: 1 },
+      comm: { 500: "/bin/zsh", 400: "/Applications/Code.app/Contents/MacOS/Code" },
+      failRaise: true,
+    });
+
+    const r = focusSession(session(500), d);
+    expect(r.detail).toContain("Accessibility");
   });
 
   it("says plainly that a remote session cannot be focused", () => {
