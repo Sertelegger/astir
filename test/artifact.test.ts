@@ -14,6 +14,7 @@
 
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -125,6 +126,29 @@ describe("built daemon artifact", () => {
     // silently does nothing.
     const mode = statSync(join(REPO, "dist", "cli", "main.js")).mode;
     expect(mode & 0o111, "dist/cli/main.js must carry the execute bit").toBeGreaterThan(0);
+  });
+
+  // SwiftBar runs plugins from launchd, not from a shell, so the wrapper cannot
+  // rely on the PATH a terminal shows. Scrubbing the environment here is the
+  // whole point: with an inherited PATH this passes even when it is broken for
+  // every real user, which is the class of untested-process-boundary bug that
+  // made the previous version of this project ship something that never ran.
+  it.skipIf(process.platform === "win32")("the SwiftBar wrapper finds clide with no shell PATH", () => {
+    const wrapper = join(REPO, "contrib", "swiftbar", "clide.3s.sh");
+    const out = execFileSync("/bin/bash", [wrapper], {
+      encoding: "utf8",
+      // node itself is a genuine dependency and lives wherever the platform put
+      // it (a CI tool cache, a version manager). Everything the *shell* would
+      // add — version-manager shims, the npm global bin — is scrubbed, which is
+      // what the wrapper has to survive.
+      env: { HOME: homedir(), PATH: `/usr/bin:/bin:/usr/sbin:/sbin:${dirname(process.execPath)}` },
+      timeout: 30_000,
+    });
+    expect(out, "the wrapper must locate clide without help from the shell").not.toContain(
+      "clide not found on PATH",
+    );
+    // Whatever the daemon's state, a well-formed plugin always offers a refresh.
+    expect(out).toContain("refresh=true");
   });
 
   it("dismiss and forget are reachable on the built artifact (PSH-10)", async () => {
