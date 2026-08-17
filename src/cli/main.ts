@@ -4,8 +4,9 @@
 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_PORT, readOrCreateToken, tokenPath } from "../config/paths.js";
+import { DEFAULT_PORT, readOrCreateToken, readTokenIfPresent, tokenPath } from "../config/paths.js";
 import { Daemon } from "../daemon/server.js";
+import { createClaudeLister } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
 import { createNotifier } from "../notify/notify.js";
 
@@ -37,7 +38,7 @@ function usage(): void {
     "clide <command>\n\n" +
       "  daemon [--port N] [--token T]   run the activity daemon\n" +
       "  install                         print setup instructions and ensure the token exists\n" +
-      "  status                          print live sessions as JSON\n",
+      "  status [--json]                 show live sessions and who is waiting on you\n",
   );
 }
 
@@ -108,8 +109,21 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   const tick = setInterval(() => registry.tick(), 1000);
   tick.unref();
 
+  // DMN-05 — fold provider discovery in periodically. Enrichment and pruning only;
+  // never a gate on ingest.
+  const lister = createClaudeLister();
+  const reconcile = (): void => {
+    void lister()
+      .then((list) => registry.reconcile(list))
+      .catch(() => undefined);
+  };
+  reconcile();
+  const discoveryTick = setInterval(reconcile, 5_000);
+  discoveryTick.unref();
+
   const shutdown = (): void => {
     clearInterval(tick);
+    clearInterval(discoveryTick);
     void daemon.close().then(() => process.exit(0));
   };
   process.once("SIGINT", shutdown);
@@ -124,11 +138,88 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   });
 }
 
+interface StatusAgent {
+  id: string;
+  state: string;
+  agentType: string | null;
+  activeMs: number;
+  blockedMs: number;
+}
+interface StatusSession {
+  sessionId: string;
+  cwd: string;
+  name: string | null;
+  status: string | null;
+  agents: StatusAgent[];
+}
+interface StatusBody {
+  blockedCount: number;
+  sessions: StatusSession[];
+}
+
+/**
+ * #5 — a machine-readable view, and the data source the menu-bar item consumes.
+ * Kept as a plain command deliberately: if the tray approach changes, the same
+ * output still feeds a shell prompt, a statusline, or a different implementation.
+ */
+async function runStatus(flags: Args["flags"]): Promise<void> {
+  const port = Number(flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
+  const token = process.env.CLIDE_TOKEN ?? readTokenIfPresent();
+  if (token === null) {
+    process.stderr.write("clide: no token found — run `clide install` first.\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  let body: StatusBody;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/state`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      process.stderr.write(`clide: daemon returned ${res.status} — is the token current?\n`);
+      process.exitCode = 1;
+      return;
+    }
+    body = (await res.json()) as StatusBody;
+  } catch {
+    process.stderr.write(`clide: no daemon on 127.0.0.1:${port} — start it with \`clide daemon\`.\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (flags.get("json") === true) {
+    process.stdout.write(`${JSON.stringify(body, null, 2)}\n`);
+    return;
+  }
+
+  if (body.sessions.length === 0) {
+    process.stdout.write("no live sessions\n");
+    return;
+  }
+  const secs = (ms: number): string => `${Math.round(ms / 1000)}s`;
+  for (const s of body.sessions) {
+    const label = s.name ?? s.sessionId.slice(0, 8);
+    process.stdout.write(`${label}  ${s.cwd}${s.status ? `  [${s.status}]` : ""}\n`);
+    for (const a of s.agents) {
+      const who = a.agentType ?? "main";
+      process.stdout.write(
+        `    ${a.state.padEnd(12)} ${who.padEnd(18)} active ${secs(a.activeMs)} · blocked ${secs(a.blockedMs)}\n`,
+      );
+    }
+  }
+  if (body.blockedCount > 0) {
+    process.stdout.write(`\n${body.blockedCount} agent(s) waiting on you\n`);
+  }
+}
+
 async function main(): Promise<void> {
   const { command, flags } = parseArgs(process.argv.slice(2));
   switch (command) {
     case "daemon":
       return runDaemon(flags);
+    case "status":
+      return runStatus(flags);
     case "install":
       runInstall();
       return;

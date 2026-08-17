@@ -229,6 +229,8 @@ export class Daemon {
         sessionId: s.sessionId,
         provider: s.provider,
         cwd: s.cwd,
+        name: s.name,
+        status: s.status,
         agents: [...s.agents.values()].map((a) => ({
           id: a.id,
           agentType: a.agentType,
