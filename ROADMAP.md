@@ -19,7 +19,7 @@ The rebuild is driven by a rewritten spec (kept locally) and this order:
 
 ## Milestone 2 — you find out without looking
 
-- [ ] macOS menu-bar item: working / thinking / **blocked** / idle, badged with the blocked count
+- [x] macOS menu-bar item: working / thinking / **blocked** / idle, badged with the blocked count (via SwiftBar — see #21 for the native replacement)
 - [ ] Cross-boundary delivery — a session behind SSH, tmux, WSL or a container reaches the workstation
 - [ ] Per-state notification lifetimes (transient states decay; "needs input" persists)
 - [ ] Multi-session awareness: which session needs you, not just that one does
@@ -40,6 +40,10 @@ The rebuild is driven by a rewritten spec (kept locally) and this order:
 
 ## Later, deliberately deferred
 
+- A native macOS menu-bar app to replace the SwiftBar plugin (#21). The current
+  surface works and is proven, but requires installing a third-party host app.
+  Switching is cheap because all formatting lives in `clide menubar` as a pure
+  function rather than in the plugin script.
 - Native Windows support — not rejected, just not first. No design decision may foreclose it.
 - A desktop overlay — revisit once real use shows which visualization earns permanent screen space.
 
