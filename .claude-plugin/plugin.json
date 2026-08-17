@@ -1,7 +1,7 @@
 {
   "name": "clide",
   "displayName": "Clide",
-  "version": "2.0.0-alpha.1",
+  "version": "0.1.0",
   "description": "Live activity view for AI coding sessions \u2014 know when an agent is blocked on you, and where in the repo work is happening.",
   "author": {
     "name": "Sascha Sertel",

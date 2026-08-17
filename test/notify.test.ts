@@ -3,8 +3,10 @@ import { Dispatcher, localTarget, remoteTarget } from "../src/notify/dispatch.js
 import { buildEnvelope, ENVELOPE_VERSION, validateEnvelope } from "../src/notify/envelope.js";
 import type { Notification } from "../src/notify/notify.js";
 import { NotifyPolicy } from "../src/notify/policy.js";
+import { RemoteView } from "../src/notify/remote.js";
 import { NotifierServer } from "../src/notify/server.js";
 
+const SEC = 1_000;
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 
@@ -14,20 +16,54 @@ describe("PSH-02 — per-state notification lifetimes", () => {
     expect(p.shouldNotify("s:a", "blocked", 0)).toBe(true);
   });
 
-  it("re-reminds on a widening backoff — a missed alert must not be lost forever", () => {
+  it("nags every minute for the first 10 minutes", () => {
     const p = new NotifyPolicy();
     expect(p.shouldNotify("s:a", "blocked", 0)).toBe(true); // initial
 
-    expect(p.shouldNotify("s:a", "blocked", 30_000)).toBe(false); // too soon
-    expect(p.shouldNotify("s:a", "blocked", 2 * MIN)).toBe(true);
-    expect(p.shouldNotify("s:a", "blocked", 3 * MIN)).toBe(false);
-    expect(p.shouldNotify("s:a", "blocked", 5 * MIN)).toBe(true);
-    expect(p.shouldNotify("s:a", "blocked", 15 * MIN)).toBe(true);
-    expect(p.shouldNotify("s:a", "blocked", 30 * MIN)).toBe(true);
+    expect(p.shouldNotify("s:a", "blocked", 30 * SEC)).toBe(false); // too soon
+    for (let m = 1; m <= 9; m++) {
+      expect(p.shouldNotify("s:a", "blocked", m * MIN), `minute ${m}`).toBe(true);
+    }
+  });
 
-    // Then a steady hourly nudge rather than escalating noise.
-    expect(p.shouldNotify("s:a", "blocked", 60 * MIN)).toBe(false);
-    expect(p.shouldNotify("s:a", "blocked", 90 * MIN)).toBe(true);
+  it("relaxes to 2-minute, then 5-minute, then quarter-hourly cadence", () => {
+    // Drive it the way the daemon does — a steady poll — and assert the gaps
+    // between the reminders that actually fire. Sampling the schedule at
+    // hand-picked instants would let a stale `lastAt` fake a passing result.
+    const p = new NotifyPolicy();
+    const firedAt: number[] = [];
+    for (let t = 0; t <= 3 * HOUR; t += SEC) {
+      if (p.shouldNotify("s:a", "blocked", t)) firedAt.push(t);
+    }
+
+    const gapAfter = (mins: number): number => {
+      const i = firedAt.findIndex((t) => t >= mins * MIN);
+      return (firedAt[i + 1] ?? 0) - (firedAt[i] ?? 0);
+    };
+
+    expect(gapAfter(2)).toBe(1 * MIN);
+    expect(gapAfter(15)).toBe(2 * MIN);
+    expect(gapAfter(45)).toBe(5 * MIN);
+    expect(gapAfter(120)).toBe(15 * MIN);
+  });
+
+  it("delivers ~32 reminders in the first 90 minutes — insistent, not a single alert", () => {
+    const p = new NotifyPolicy();
+    let count = 0;
+    // Poll once a second, exactly as the daemon heartbeat does.
+    for (let t = 0; t <= 90 * MIN; t += SEC) {
+      if (p.shouldNotify("s:a", "blocked", t)) count++;
+    }
+    // 1 initial + 9 (min 1-9) + 10 (10-30 @2min) + 12 (30-90 @5min).
+    expect(count).toBe(32);
+  });
+
+  it("a late poll fires once, not a burst of catch-up reminders", () => {
+    const p = new NotifyPolicy();
+    p.shouldNotify("s:a", "blocked", 0);
+    // The machine slept for 8 minutes; cadence is 1/min but only one fires.
+    expect(p.shouldNotify("s:a", "blocked", 8 * MIN)).toBe(true);
+    expect(p.shouldNotify("s:a", "blocked", 8 * MIN + SEC)).toBe(false);
   });
 
   it("stops after 24h — blocked persists, but not forever", () => {
@@ -47,12 +83,12 @@ describe("PSH-02 — per-state notification lifetimes", () => {
   it("resolving gives a fresh schedule rather than resuming a stale backoff", () => {
     const p = new NotifyPolicy();
     p.shouldNotify("s:a", "blocked", 0);
-    p.shouldNotify("s:a", "blocked", 30 * MIN); // deep into the backoff
+    p.shouldNotify("s:a", "blocked", 30 * MIN); // deep into the schedule
 
     p.resolve("s:a"); // the human answered
 
     // Blocked again later: this is a new situation and deserves an immediate alert,
-    // not the next slot of the old hourly cadence.
+    // not the next slot of the old relaxed cadence.
     expect(p.shouldNotify("s:a", "blocked", 31 * MIN)).toBe(true);
   });
 
@@ -211,5 +247,59 @@ describe("PSH-06 — cross-boundary delivery", () => {
     expect(dispatcher.status()[0]?.reason).toBe("not yet attempted");
     await dispatcher.send(envelope);
     expect(dispatcher.status()[0]?.ok).toBe(true);
+  });
+});
+
+describe("PSH-12 — the notifier's view of other machines", () => {
+  const env = (over: Partial<Parameters<typeof buildEnvelope>[0]> = {}) =>
+    buildEnvelope({
+      kind: "blocked",
+      reason: "permission_prompt",
+      sessionId: "remote-1",
+      agentId: "a1",
+      cwd: "/srv/payments-api",
+      host: "devbox",
+      ...over,
+    });
+
+  it("tracks a remote blocked agent and clears it on resolve", () => {
+    const v = new RemoteView();
+    expect(v.apply(env(), 0).notify).toBe(true);
+    expect(v.blockedCount()).toBe(1);
+    expect(v.list()[0]?.host).toBe("devbox");
+
+    // Without this the entry is immortal: a doorbell is edge-triggered, so the
+    // receiver never learns the agent stopped waiting.
+    expect(v.apply(env({ kind: "resolved" }), 1_000).notify, "resolve is silent").toBe(false);
+    expect(v.blockedCount()).toBe(0);
+    expect(v.list()).toHaveLength(0);
+  });
+
+  it("expires an entry whose machine went quiet", () => {
+    // The tunnel dropped between `blocked` and `resolved`. A menu bar confidently
+    // reporting a host it can no longer hear from is worse than one that forgets.
+    const v = new RemoteView({ ttlMs: 60_000 });
+    v.apply(env(), 0);
+    v.prune(30_000);
+    expect(v.list()).toHaveLength(1);
+    v.prune(61_000);
+    expect(v.list()).toHaveLength(0);
+  });
+
+  it("a reminder for a dismissed remote agent stays silent", () => {
+    const v = new RemoteView();
+    v.apply(env(), 0);
+    expect(v.acknowledge()).toBe(1);
+    expect(v.blockedCount()).toBe(0);
+    // The sender keeps reminding — it has no idea we dismissed it here.
+    expect(v.apply(env(), 60_000).notify).toBe(false);
+    expect(v.list(), "but it is still listed, still honest").toHaveLength(1);
+  });
+
+  it("keeps agents from different hosts distinct even with the same session id", () => {
+    const v = new RemoteView();
+    v.apply(env({ host: "devbox" }), 0);
+    v.apply(env({ host: "buildbox" }), 0);
+    expect(v.list()).toHaveLength(2);
   });
 });

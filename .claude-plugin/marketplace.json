@@ -9,7 +9,7 @@
       "name": "clide",
       "source": "./",
       "description": "Live activity view for AI coding sessions (Claude Code + Codex).",
-      "version": "2.0.0-alpha.1"
+      "version": "0.1.0"
     }
   ]
 }

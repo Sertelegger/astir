@@ -22,10 +22,28 @@ export interface AgentRecord {
   /** MOD-05 — cumulative, in ms. */
   activeMs: number;
   blockedMs: number;
-  /** Wall ms at which the current state was entered, for the accounting above. */
+  /**
+   * Wall ms at which the current state was *entered*. Only a real state change
+   * moves it, so "blocked since" is the true start of the wait rather than the
+   * time of the last event that happened to reconfirm the state.
+   */
   stateSince: number;
+  /**
+   * Wall ms of the last applied event, on the daemon's own clock. Distinct from
+   * `stateSince` because idle decay measures silence, not time-in-state — an
+   * agent thinking hard for a minute is emitting events and is not idle.
+   */
+  lastActivityMs: number;
   /** Why this agent is blocked, e.g. `permission_prompt`. Null when not blocked. */
   blockedReason: string | null;
+  /**
+   * PSH-10 — wall ms at which the human said "I have seen this", or null.
+   *
+   * Acknowledgement silences reminders and clears the badge without pretending
+   * the agent is unblocked: it stays visible, marked, in the dropdown. Cleared on
+   * any state change, so an agent that blocks again is a fresh interruption.
+   */
+  acknowledgedAt: number | null;
 }
 
 /** A currently-blocked agent, with the context a notification envelope needs. */
@@ -59,6 +77,10 @@ export interface SessionRecord {
    * which is precisely how v1 lost every `session_start`.
    */
   everDiscovered: boolean;
+  /** Wall ms of the most recent event, for the undiscovered-session sweep below. */
+  lastEventTs: number;
+  /** OS pid, enriched from discovery — what `clide focus` needs to find a window. */
+  pid: number | null;
 }
 
 export interface RegistryOpts {
@@ -67,6 +89,13 @@ export interface RegistryOpts {
   idleAfterMs?: number;
   /** How long an ended session stays visible before being dropped. */
   endedGraceMs?: number;
+  /**
+   * How long a session that discovery has NEVER vouched for may sit silent
+   * before being dropped. Closes the one gap both other prune paths miss: a
+   * session that never sends `session_end` and never appears in discovery is
+   * unreachable by either, and lingers in the badge forever.
+   */
+  undiscoveredTtlMs?: number;
   /** DMN-06 — the dedupe set is bounded; this is the replay window it covers. */
   maxSeenEvents?: number;
 }
@@ -85,12 +114,21 @@ export class Registry {
   private readonly nowMs: () => number;
   private readonly idleAfterMs: number;
   private readonly endedGraceMs: number;
+  private readonly undiscoveredTtlMs: number;
   private readonly maxSeen: number;
+  /**
+   * Whether discovery has ever produced a usable answer. The undiscovered sweep
+   * is gated on it: with no working discovery, "never discovered" is evidence
+   * about our own setup, not about the session, and pruning on it would delete
+   * live sessions on any machine without `claude` on PATH.
+   */
+  private discoveryEverWorked = false;
 
   constructor(opts: RegistryOpts) {
     this.nowMs = opts.nowMs;
     this.idleAfterMs = opts.idleAfterMs ?? 10_000;
     this.endedGraceMs = opts.endedGraceMs ?? 60_000;
+    this.undiscoveredTtlMs = opts.undiscoveredTtlMs ?? 10 * 60_000;
     this.maxSeen = opts.maxSeenEvents ?? 10_000;
   }
 
@@ -111,7 +149,9 @@ export class Registry {
     const out: BlockedAgent[] = [];
     for (const s of this.sessions.values()) {
       for (const a of s.agents.values()) {
-        if (HUMAN_BLOCKING.has(a.state)) {
+        // Acknowledged agents are still blocked, but the human has already been
+        // told and chose to defer. Re-notifying would be nagging, not alerting.
+        if (HUMAN_BLOCKING.has(a.state) && a.acknowledgedAt === null) {
           out.push({
             sessionId: s.sessionId,
             agentId: a.id,
@@ -124,13 +164,46 @@ export class Registry {
     return out;
   }
 
-  /** Count of agents currently blocked on a human, across all sessions (PSH-08). */
+  /** Count of agents blocked on a human and not yet acknowledged (PSH-08). */
   blockedCount(): number {
     let n = 0;
     for (const s of this.sessions.values()) {
-      for (const a of s.agents.values()) if (HUMAN_BLOCKING.has(a.state)) n++;
+      for (const a of s.agents.values()) {
+        if (HUMAN_BLOCKING.has(a.state) && a.acknowledgedAt === null) n++;
+      }
     }
     return n;
+  }
+
+  /**
+   * PSH-10 — "I have seen this." Silences the badge and reminders for every
+   * currently-blocked agent, in one session or everywhere.
+   *
+   * Returns the number of agents affected so the caller can tell the user
+   * whether anything actually happened.
+   */
+  acknowledge(sessionId?: string): number {
+    const now = this.nowMs();
+    let n = 0;
+    for (const s of this.sessions.values()) {
+      if (sessionId !== undefined && s.sessionId !== sessionId) continue;
+      for (const a of s.agents.values()) {
+        if (HUMAN_BLOCKING.has(a.state) && a.acknowledgedAt === null) {
+          a.acknowledgedAt = now;
+          n++;
+        }
+      }
+    }
+    return n;
+  }
+
+  /**
+   * Drop a session outright. The escape hatch for a record that should not be
+   * there at all — a synthetic test session, or one whose process died in a way
+   * that left no end-of-life signal.
+   */
+  forget(sessionId: string): boolean {
+    return this.sessions.delete(sessionId);
   }
 
   apply(event: ClideEvent, cwd: string): IngestResult {
@@ -148,6 +221,8 @@ export class Registry {
     // MOD-06 — timestamp-monotonic. A stale event never rewrites state.
     if (event.ts < agent.lastEventTs) return { applied: false, reason: "stale" };
     agent.lastEventTs = event.ts;
+    agent.lastActivityMs = this.nowMs();
+    session.lastEventTs = agent.lastActivityMs;
 
     if (TERMINAL.has(agent.state) && event.kind !== "session_start") {
       return { applied: false, reason: "terminal" };
@@ -181,9 +256,22 @@ export class Registry {
         this.sessions.delete(id);
         continue;
       }
+
+      // The third prune path, and the only one that catches a session which
+      // neither ends cleanly nor is ever vouched for by discovery — an injected
+      // or orphaned record. Without it such a session is immortal: `endedAt`
+      // stays null so the branch above never fires, and `everDiscovered` stays
+      // false so `reconcile` refuses to touch it. Gated on discovery having
+      // worked at least once, so a machine with no `claude` on PATH does not
+      // silently delete every live session it knows about.
+      if (this.discoveryEverWorked && !s.everDiscovered && now - s.lastEventTs >= this.undiscoveredTtlMs) {
+        this.sessions.delete(id);
+        continue;
+      }
+
       for (const a of s.agents.values()) {
         if (IDLE_EXEMPT.has(a.state)) continue;
-        if (now - a.stateSince >= this.idleAfterMs) this.transition(a, "idle");
+        if (now - a.lastActivityMs >= this.idleAfterMs) this.transition(a, "idle");
       }
     }
   }
@@ -221,12 +309,16 @@ export class Registry {
   /** MOD-05 — bank the time spent in the state we are leaving. */
   private transition(agent: AgentRecord, next: AgentState): void {
     const now = this.nowMs();
+    if (agent.state === next) return; // not a transition; banking would double-count
+
     const elapsed = Math.max(0, now - agent.stateSince);
     if (HUMAN_BLOCKING.has(agent.state)) agent.blockedMs += elapsed;
     else if (!TERMINAL.has(agent.state) && agent.state !== "idle") agent.activeMs += elapsed;
 
     agent.state = next;
     agent.stateSince = now;
+    // A new state is a new situation: whatever the human dismissed is over.
+    agent.acknowledgedAt = null;
   }
 
   private ensureSession(sessionId: string, provider: Provider, cwd: string): SessionRecord {
@@ -241,6 +333,8 @@ export class Registry {
         name: null,
         endedAt: null,
         everDiscovered: false,
+        lastEventTs: this.nowMs(),
+        pid: null,
       };
       this.sessions.set(sessionId, s);
     }
@@ -261,6 +355,7 @@ export class Registry {
    */
   reconcile(discovered: DiscoveredSession[] | null): { enriched: number; pruned: number } {
     if (discovered === null) return { enriched: 0, pruned: 0 };
+    this.discoveryEverWorked = true;
 
     const live = new Set<string>();
     let enriched = 0;
@@ -271,6 +366,7 @@ export class Registry {
       s.everDiscovered = true;
       s.status = d.status;
       s.name = d.name;
+      s.pid = d.pid;
       if (d.cwd) s.cwd = d.cwd;
       enriched++;
     }
@@ -301,6 +397,8 @@ export class Registry {
         activeMs: 0,
         blockedMs: 0,
         stateSince: this.nowMs(),
+        lastActivityMs: this.nowMs(),
+        acknowledgedAt: null,
         blockedReason: null,
       };
       session.agents.set(event.agentId, a);

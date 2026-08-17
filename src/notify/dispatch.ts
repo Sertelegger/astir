@@ -8,7 +8,7 @@
  * of a notification.
  */
 
-import type { NotifyEnvelope } from "./envelope.js";
+import { type NotifyEnvelope, notificationText } from "./envelope.js";
 import type { Notifier } from "./notify.js";
 
 export interface DeliveryOutcome {
@@ -29,7 +29,9 @@ export function localTarget(notify: Notifier): DeliveryTarget {
     name: "local",
     deliver: (envelope) => {
       try {
-        notify({ title: envelope.title, body: envelope.body });
+        // Rendered for *here*, so a local alert does not lead with this machine's
+        // own name. The envelope keeps the host either way for routing.
+        notify(notificationText(envelope));
         return Promise.resolve({ ok: true });
       } catch (err) {
         return Promise.resolve({ ok: false, reason: String(err) });

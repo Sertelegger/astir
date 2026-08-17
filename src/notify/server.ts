@@ -9,8 +9,9 @@
 
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { validateEnvelope } from "./envelope.js";
+import { notificationText, validateEnvelope } from "./envelope.js";
 import type { Notifier } from "./notify.js";
+import { RemoteView } from "./remote.js";
 
 /** A doorbell is small; anything larger is a mistake or an attack. */
 const MAX_BODY_BYTES = 64 * 1024;
@@ -21,6 +22,9 @@ export interface NotifierServerOpts {
   token: string;
   notify: Notifier;
   onEvent?: (line: string) => void;
+  /** Injectable per §9 so expiry is testable without waiting half an hour. */
+  view?: RemoteView;
+  now?: () => number;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -33,9 +37,20 @@ function constantTimeEqual(a: string, b: string): boolean {
 export class NotifierServer {
   private server: Server;
   private seen = new Set<string>();
-  private counters = { received: 0, delivered: 0, duplicates: 0, rejected: 0, unauthorized: 0 };
+  private counters = {
+    received: 0,
+    delivered: 0,
+    duplicates: 0,
+    rejected: 0,
+    unauthorized: 0,
+    resolved: 0,
+  };
+  private readonly view: RemoteView;
+  private readonly now: () => number;
 
   constructor(private opts: NotifierServerOpts) {
+    this.view = opts.view ?? new RemoteView();
+    this.now = opts.now ?? (() => Date.now());
     this.server = createServer((req, res) => {
       this.route(req, res).catch(() => {
         this.counters.rejected++;
@@ -69,14 +84,38 @@ export class NotifierServer {
       return this.json(res, 200, { ok: true, role: "notifier", counters: this.counters });
     }
 
-    if (path !== "/notify" || req.method !== "POST") {
-      return this.json(res, 404, { error: "not found" });
-    }
-
     const auth = /^Bearer (.+)$/.exec(req.headers.authorization ?? "");
     if (auth?.[1] === undefined || !constantTimeEqual(auth[1], this.opts.token)) {
       this.counters.unauthorized++;
       return this.json(res, 401, { error: "unauthorized" });
+    }
+
+    // PSH-12 — the local menu bar merges this with the local daemon's own state,
+    // so sessions on other machines are visible, not merely audible.
+    if (path === "/state" && req.method === "GET") {
+      const now = this.now();
+      this.view.prune(now);
+      return this.json(res, 200, {
+        role: "notifier",
+        blockedCount: this.view.blockedCount(),
+        agents: this.view.list(),
+      });
+    }
+
+    if (path === "/dismiss" && req.method === "POST") {
+      const sessionId = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("session");
+      const n = this.view.acknowledge(sessionId ?? undefined);
+      return this.json(res, 200, { ok: true, acknowledged: n });
+    }
+
+    if (path === "/forget" && req.method === "POST") {
+      const sessionId = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("session");
+      if (sessionId === null) return this.json(res, 400, { error: "session required" });
+      return this.json(res, 200, { ok: this.view.forget(sessionId) });
+    }
+
+    if (path !== "/notify" || req.method !== "POST") {
+      return this.json(res, 404, { error: "not found" });
     }
 
     const body = await this.readBody(req);
@@ -106,13 +145,20 @@ export class NotifierServer {
       this.seen.delete(oldest);
     }
 
-    try {
-      this.opts.notify({ title: envelope.title, body: envelope.body });
-      this.counters.delivered++;
-      this.opts.onEvent?.(`${envelope.kind} ← ${envelope.body}`);
-    } catch {
-      // A failing notifier must never take down the receiver.
-      this.counters.rejected++;
+    const now = this.now();
+    const { notify } = this.view.apply(envelope, now);
+    this.view.prune(now);
+    if (envelope.kind === "resolved") this.counters.resolved++;
+
+    if (notify) {
+      try {
+        this.opts.notify(notificationText(envelope));
+        this.counters.delivered++;
+        this.opts.onEvent?.(`${envelope.kind} ← ${envelope.body}`);
+      } catch {
+        // A failing notifier must never take down the receiver.
+        this.counters.rejected++;
+      }
     }
 
     return this.json(res, 200, { ok: true });

@@ -29,6 +29,8 @@ export interface NotifyLoopOpts {
 
 export class NotifyLoop {
   private readonly now: () => number;
+  /** Keys we have sent a `blocked` envelope for, and therefore owe a `resolved`. */
+  private announced = new Set<string>();
 
   constructor(private opts: NotifyLoopOpts) {
     this.now = opts.now ?? (() => Date.now());
@@ -56,21 +58,44 @@ export class NotifyLoop {
         cwd: b.cwd,
         now,
       });
+      this.announced.add(key);
       const outcomes = await this.opts.dispatcher.send(envelope);
       const ok = outcomes.filter((o) => o.ok).map((o) => o.target);
       this.opts.onDelivered?.(`${envelope.body} → ${ok.length > 0 ? ok.join(", ") : "NO PATH DELIVERED"}`);
     }
 
-    this.forgetResolved(live);
+    await this.forgetResolved(live, now);
     this.opts.policy.prune(now);
   }
 
-  /** An agent that is no longer blocked gets a clean slate next time. */
-  private forgetResolved(live: Set<string>): void {
+  /**
+   * An agent that is no longer blocked gets a clean slate next time — and, if we
+   * told anyone about it, they are told it is over.
+   *
+   * That second part is what keeps a remote view honest. A receiver on another
+   * machine only ever sees edges, so without an explicit `resolved` it has no way
+   * to distinguish "still waiting" from "answered an hour ago", and its menu bar
+   * accumulates entries nothing can clear.
+   */
+  private async forgetResolved(live: Set<string>, now: number): Promise<void> {
     for (const session of this.opts.registry.list()) {
       for (const agent of session.agents.values()) {
         const key = keyOf(session.sessionId, agent.id);
-        if (!live.has(key)) this.opts.policy.resolve(key);
+        if (live.has(key)) continue;
+
+        // Only announce a resolution for something we actually announced.
+        if (this.announced.delete(key)) {
+          const envelope = buildEnvelope({
+            kind: "resolved",
+            reason: agent.blockedReason ?? "resolved",
+            sessionId: session.sessionId,
+            agentId: agent.id,
+            cwd: session.cwd,
+            now,
+          });
+          await this.opts.dispatcher.send(envelope);
+        }
+        this.opts.policy.resolve(key);
       }
     }
   }

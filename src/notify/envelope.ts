@@ -16,6 +16,17 @@ import { hostname, userInfo } from "node:os";
 import { basename } from "node:path";
 import type { NotifyKind } from "./policy.js";
 
+/**
+ * What an envelope can announce. `resolved` is not a notification — nothing is
+ * displayed for it — it is the "you can stop showing this" signal.
+ *
+ * Without it a doorbell is write-only: a receiver on another machine learns that
+ * an agent became blocked and never learns that it stopped, so any view it builds
+ * from envelopes accumulates entries that can only be cleared by hand. That is
+ * the same immortal-entry bug as an unprunable session, arriving over the network.
+ */
+export type EnvelopeKind = NotifyKind | "resolved";
+
 export const ENVELOPE_VERSION = { major: 1, minor: 0 } as const;
 
 export interface NotifyEnvelope {
@@ -23,7 +34,7 @@ export interface NotifyEnvelope {
   /** Stable id so a receiver can dedupe across retries or overlapping transports. */
   id: string;
   ts: number;
-  kind: NotifyKind;
+  kind: EnvelopeKind;
   /** The provider's own notification type, verbatim, e.g. `permission_prompt`. */
   reason: string;
   origin: {
@@ -44,7 +55,7 @@ export interface NotifyEnvelope {
 }
 
 export interface BuildEnvelopeInput {
-  kind: NotifyKind;
+  kind: EnvelopeKind;
   reason: string;
   sessionId: string;
   agentId: string;
@@ -55,9 +66,19 @@ export interface BuildEnvelopeInput {
   user?: string;
 }
 
+/**
+ * The machine name a person recognises. `os.hostname()` returns the FQDN, which
+ * on a typical Mac is something like `Saschas-Air.localdomain` — the suffix is
+ * pure noise in a notification and, on a corporate network, can leak an internal
+ * domain to wherever the doorbell travels.
+ */
+export function shortHost(name: string): string {
+  return name.split(".")[0] || name;
+}
+
 export function buildEnvelope(input: BuildEnvelopeInput): NotifyEnvelope {
   const repo = basename(input.cwd) || "unknown";
-  const host = input.host ?? hostname();
+  const host = shortHost(input.host ?? hostname());
   const shortSession = input.sessionId.slice(0, 8);
 
   return {
@@ -69,9 +90,29 @@ export function buildEnvelope(input: BuildEnvelopeInput): NotifyEnvelope {
     origin: { host, user: input.user ?? safeUser() },
     session: { sessionId: input.sessionId, agentId: input.agentId, repo },
     title: input.kind === "blocked" ? "clide — needs your input" : `clide — ${input.kind}`,
-    // The human-readable line that matters when several machines are pinging you.
+    // Retained for receivers that render the envelope directly. Anything that
+    // knows where it is should prefer `notificationText` below, which drops the
+    // host when the alert did not come from somewhere else.
     body: `${host} · ${repo} · ${shortSession} · ${input.reason}`,
   };
+}
+
+/**
+ * Render an envelope for a human, given the machine they are looking at.
+ *
+ * The host prefix is routing information, and it is only information when the
+ * answer is "somewhere else". Prefixing every local alert with the name of the
+ * machine already in front of you is noise that pushes the part you actually
+ * need — which repo, and why — past the width of a notification banner.
+ */
+export function notificationText(
+  envelope: NotifyEnvelope,
+  localHost: string = hostname(),
+): { title: string; body: string } {
+  const from = shortHost(envelope.origin.host);
+  const here = shortHost(localHost);
+  const where = from === here ? envelope.session.repo : `${from} · ${envelope.session.repo}`;
+  return { title: envelope.title, body: `${where} · ${envelope.reason}` };
 }
 
 function safeUser(): string {

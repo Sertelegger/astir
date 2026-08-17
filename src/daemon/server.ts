@@ -70,6 +70,8 @@ export class Daemon {
     unauthorizedIngest: 0,
     /** Reads of /state. Non-zero means a surface (status, menu bar) is watching. */
     statePolls: 0,
+    /** PSH-10 — agents the human explicitly dismissed. */
+    dismissed: 0,
   };
   private warnedAboutToken = false;
 
@@ -169,6 +171,26 @@ export class Daemon {
       return this.ingestClaude(body.value, res);
     }
 
+    // PSH-10 — "I have seen it." Clears the badge without claiming the agent is
+    // unblocked; a later state change makes it notifiable again.
+    if (path === "/dismiss" && req.method === "POST") {
+      const sessionId = url.searchParams.get("session") ?? undefined;
+      const n = this.opts.registry.acknowledge(sessionId);
+      this.counters.dismissed += n;
+      // No callback needed: the notify loop resolves any key that is no longer in
+      // `blockedAgents()`, so acknowledging clears the reminder schedule by itself.
+      return this.json(res, 200, { ok: true, acknowledged: n });
+    }
+
+    // The harder escape hatch: drop the record entirely, for a session that
+    // should never have been there.
+    if (path === "/forget" && req.method === "POST") {
+      const sessionId = url.searchParams.get("session");
+      if (sessionId === null) return this.json(res, 400, { error: "session required" });
+      const existed = this.opts.registry.forget(sessionId);
+      return this.json(res, existed ? 200 : 404, { ok: existed });
+    }
+
     return this.json(res, 404, { error: "not found" });
   }
 
@@ -225,8 +247,11 @@ export class Daemon {
   }
 
   private snapshot(): unknown {
+    // One `now` for the whole snapshot, so every duration in a single response is
+    // measured against the same instant.
+    const now = Date.now();
     return {
-      v: { major: 2, minor: 0 },
+      v: { major: 2, minor: 1 },
       blockedCount: this.opts.registry.blockedCount(),
       sessions: this.opts.registry.list().map((s) => ({
         sessionId: s.sessionId,
@@ -234,6 +259,7 @@ export class Daemon {
         cwd: s.cwd,
         name: s.name,
         status: s.status,
+        pid: s.pid,
         agents: [...s.agents.values()].map((a) => ({
           id: a.id,
           agentType: a.agentType,
@@ -242,6 +268,10 @@ export class Daemon {
           state: a.state,
           activeMs: a.activeMs,
           blockedMs: a.blockedMs,
+          // Computed here rather than in the renderer: the daemon owns the clock,
+          // and a surface reading a cached response should not silently age it.
+          inStateMs: Math.max(0, now - a.stateSince),
+          acknowledged: a.acknowledgedAt !== null,
         })),
       })),
     };

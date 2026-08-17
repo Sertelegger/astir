@@ -13,7 +13,7 @@
  */
 
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -52,6 +52,13 @@ beforeAll(async () => {
   // surfaced by the non-blocking windows CI job.
   const tsc = join(REPO, "node_modules", "typescript", "bin", "tsc");
   execFileSync(process.execPath, [tsc, "-p", "tsconfig.build.json"], {
+    cwd: REPO,
+    stdio: "pipe",
+  });
+  // The same postbuild step `npm run build` runs. Invoked explicitly because
+  // this test deliberately bypasses npm, and skipping it would leave the entry
+  // non-executable — which is itself one of the things asserted below.
+  execFileSync(process.execPath, [join(REPO, "scripts", "postbuild.mjs")], {
     cwd: REPO,
     stdio: "pipe",
   });
@@ -96,6 +103,7 @@ interface StateAgent {
   agentType: string | null;
   parentSource: string | null;
   state: string;
+  inStateMs: number;
 }
 interface StateSession {
   sessionId: string;
@@ -107,6 +115,75 @@ interface StateBody {
 }
 
 describe("built daemon artifact", () => {
+  it("is executable, so `bin` and menu-bar clicks both work", () => {
+    // `tsc` emits 0644. npm chmods bin links on install, so this is invisible
+    // until someone runs a checkout in place and every SwiftBar menu action
+    // silently does nothing.
+    const mode = statSync(join(REPO, "dist", "cli", "main.js")).mode;
+    expect(mode & 0o111, "dist/cli/main.js must carry the execute bit").toBeGreaterThan(0);
+  });
+
+  it("dismiss and forget are reachable on the built artifact (PSH-10)", async () => {
+    const sessionId = "artifact-dismiss-check";
+    await fetch(`${base}/hook/claude`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        hook_event_name: "Notification",
+        session_id: sessionId,
+        cwd: REPO,
+        notification_type: "permission_prompt",
+      }),
+    });
+
+    const blockedNow = async (): Promise<number> =>
+      (await json<StateBody>(await fetch(`${base}/state`, { headers: auth }))).blockedCount;
+    expect(await blockedNow(), "the injected agent should be counted").toBeGreaterThan(0);
+
+    const dismissed = await fetch(`${base}/dismiss?session=${sessionId}`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(dismissed.status).toBe(200);
+    expect(await blockedNow(), "dismissing clears the badge").toBe(0);
+
+    const forgotten = await fetch(`${base}/forget?session=${sessionId}`, {
+      method: "POST",
+      headers: auth,
+    });
+    expect(forgotten.status).toBe(200);
+    const after = await json<StateBody>(await fetch(`${base}/state`, { headers: auth }));
+    expect(after.sessions.find((s) => s.sessionId === sessionId)).toBeUndefined();
+  });
+
+  it("reports a live wait duration that actually advances", async () => {
+    // The defect this guards: `blockedMs` only accrues on leaving the state, so
+    // a still-blocked agent rendered "waiting 0s" forever.
+    const sessionId = "artifact-duration-check";
+    await fetch(`${base}/hook/claude`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({
+        hook_event_name: "Notification",
+        session_id: sessionId,
+        cwd: REPO,
+        notification_type: "permission_prompt",
+      }),
+    });
+
+    const inState = async (): Promise<number> => {
+      const state = await json<StateBody>(await fetch(`${base}/state`, { headers: auth }));
+      return state.sessions.find((s) => s.sessionId === sessionId)?.agents[0]?.inStateMs ?? -1;
+    };
+
+    const first = await inState();
+    await new Promise((r) => setTimeout(r, 1_100));
+    const second = await inState();
+
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(second, "the wait must grow while the agent is still waiting").toBeGreaterThan(first);
+  });
+
   it("starts from dist/ and answers /healthz unauthenticated", async () => {
     const res = await fetch(`${base}/healthz`);
     expect(res.status).toBe(200);

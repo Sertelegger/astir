@@ -77,6 +77,111 @@ describe("session lifecycle", () => {
     r.tick();
     expect(r.list(), "revived session must not be swept by the old end time").toHaveLength(1);
   });
+
+  it("eventually drops a session that never ends and is never discovered", () => {
+    // Regression: this session is unreachable by both other prune paths. It has
+    // no `session_end`, so the grace sweep never fires, and discovery has never
+    // listed it, so `reconcile` refuses to touch it. It used to live forever,
+    // holding a permanent entry in the menu bar that nothing could clear.
+    const c = clock();
+    const r = new Registry({ nowMs: c.now, undiscoveredTtlMs: 10 * 60_000 });
+
+    r.apply(ev("session_start", { sessionId: "ghost", agentId: "ghost" }), "/repo");
+    r.reconcile([]); // discovery works, and does not know this session
+
+    c.advance(5 * 60_000);
+    r.tick();
+    expect(r.list(), "not yet — a new session may precede its first discovery").toHaveLength(1);
+
+    c.advance(6 * 60_000);
+    r.tick();
+    expect(r.list(), "gone once it has been silent past the TTL").toHaveLength(0);
+  });
+
+  it("never sweeps undiscovered sessions when discovery itself is broken", () => {
+    // With no working discovery, "never discovered" says something about this
+    // machine, not about the session. Sweeping on it would delete every live
+    // session on any host without `claude` on PATH.
+    const c = clock();
+    const r = new Registry({ nowMs: c.now, undiscoveredTtlMs: 1_000 });
+
+    r.apply(ev("session_start"), "/repo");
+    r.reconcile(null); // discovery could not run
+
+    c.advance(60 * 60_000);
+    r.tick();
+    expect(r.list()).toHaveLength(1);
+  });
+
+  it("keeps a discovered session alive however long it stays silent", () => {
+    // A blocked agent emits nothing while it waits. If silence alone were enough
+    // to sweep it, the tool would forget the exact thing it exists to report.
+    const c = clock();
+    const r = new Registry({ nowMs: c.now, undiscoveredTtlMs: 1_000 });
+
+    r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
+    r.reconcile([{ sessionId: "s1", cwd: "/repo", pid: 42, status: "waiting", name: "x" }]);
+
+    c.advance(6 * 60 * 60_000);
+    r.tick();
+    expect(r.list()).toHaveLength(1);
+    expect(r.blockedCount(), "and it is still reported as waiting").toBe(1);
+  });
+});
+
+describe("PSH-10 — dismissal", () => {
+  it("clears the badge without pretending the agent is unblocked", () => {
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
+    expect(r.blockedCount()).toBe(1);
+
+    expect(r.acknowledge()).toBe(1);
+    expect(r.blockedCount(), "no longer demanding attention").toBe(0);
+    expect(r.blockedAgents(), "and no longer re-notified").toHaveLength(0);
+
+    const agent = r.get("s1")?.agents.get("s1");
+    expect(agent?.state, "but the truth is unchanged").toBe("blocked");
+  });
+
+  it("a fresh block after a dismissal alerts again", () => {
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
+    r.acknowledge();
+
+    // The human answered, work resumed, and it blocked on something new.
+    c.advance(1_000);
+    r.apply(ev("post_tool"), "/repo");
+    c.advance(1_000);
+    r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
+
+    expect(r.blockedCount(), "a new question is a new interruption").toBe(1);
+  });
+
+  it("dismisses one session without silencing the others", () => {
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/a");
+    r.apply(
+      ev("notification", { sessionId: "s2", agentId: "s2", notificationKind: "agent_needs_input" }),
+      "/b",
+    );
+    expect(r.blockedCount()).toBe(2);
+
+    expect(r.acknowledge("s1")).toBe(1);
+    expect(r.blockedCount()).toBe(1);
+    expect(r.blockedAgents()[0]?.sessionId).toBe("s2");
+  });
+
+  it("forget removes the record outright", () => {
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("session_start"), "/repo");
+    expect(r.forget("s1")).toBe(true);
+    expect(r.list()).toHaveLength(0);
+    expect(r.forget("s1"), "and says so when there was nothing to remove").toBe(false);
+  });
 });
 
 describe("blocked accounting", () => {

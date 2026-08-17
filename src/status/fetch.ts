@@ -24,3 +24,40 @@ export async function fetchStatus(port: number, timeoutMs = 3_000): Promise<Stat
     return { ok: false, reason: `no daemon on 127.0.0.1:${port}` };
   }
 }
+
+/** One blocked agent on another machine, as the local notifier reports it. */
+export interface RemoteAgentView {
+  host: string;
+  repo: string;
+  sessionId: string;
+  agentId: string;
+  reason: string;
+  since: number;
+  acknowledged: boolean;
+}
+
+/**
+ * PSH-12 — ask the local notifier what other machines are waiting on.
+ *
+ * Returns `null` when no notifier is running, which is the common case and not
+ * an error: without one, there are simply no remote sessions to show.
+ */
+export async function fetchRemote(
+  port: number,
+  timeoutMs = 3_000,
+): Promise<{ agents: RemoteAgentView[] } | null> {
+  const token = process.env.CLIDE_NOTIFY_TOKEN ?? process.env.CLIDE_TOKEN ?? readTokenIfPresent();
+  if (token === null) return null;
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/state`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { agents?: RemoteAgentView[] };
+    return { agents: body.agents ?? [] };
+  } catch {
+    return null;
+  }
+}

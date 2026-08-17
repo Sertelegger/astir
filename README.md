@@ -2,7 +2,7 @@
 
 Know when an AI coding agent is blocked on you — and where in your repo it's working.
 
-> **Status: early rebuild.** The daemon receives live events from real Claude Code sessions and raises a notification when an agent needs your input. The visual surfaces (menu bar, map, web view) are not built yet. See [ROADMAP.md](ROADMAP.md).
+> **Status: early.** The daemon receives live events from real Claude Code sessions, raises notifications, and drives a macOS menu bar — including sessions on other machines. The repo *map* and web view aren't built yet. See [ROADMAP.md](ROADMAP.md).
 >
 > An earlier version of this project existed and had never actually run — its hook entrypoint exported a `main()` that nothing called, so no event ever reached it, and 214 passing tests never noticed. That version's design also normalized heat colour against the *current maximum*, which is invariant under decay, so its map could never cool. Both defects were in the design, not just the code. This is the rebuild.
 
@@ -17,20 +17,34 @@ Clide's first job is to make that not happen. Everything else is secondary.
 - A single daemon on a fixed port, receiving hook events from live sessions
 - Deterministic subagent parentage — no guessing (see below)
 - Per-agent state including `blocked`, and time accounting that separates **working** from **waiting on a human**
-- An OS notification when an agent becomes blocked
+- An OS notification when an agent becomes blocked, re-reminding every minute for
+  ten minutes, then every two, then every five, then quarter-hourly — a missed
+  alert is never lost, and `clide dismiss` is how you stop it
+- A macOS menu-bar badge, including sessions on other machines
 - `clide status` across all live sessions
 
-## Try it
+## Install
 
 Requires Node.js ≥ 20 and Claude Code.
 
 ```bash
-npm install
-npm run build
-node dist/cli/main.js install     # prints setup; creates ~/.clide/token (0600)
+npm install && npm run build
+npm link                # puts `clide` on your PATH (until it's published to npm)
+clide install           # registers the hooks, creates ~/.clide/token (0600)
 ```
 
-Follow the printed steps — export `CLIDE_TOKEN`, install the plugin — then:
+`clide install` runs `claude plugin marketplace add` and `claude plugin install`
+for you, so the hooks are registered without typing slash commands or editing
+any config by hand. Pass `--no-plugin` to skip that and do it yourself.
+
+One step is left to you on purpose: exporting `CLIDE_TOKEN` in your shell
+profile. Hooks read it via `$CLIDE_TOKEN`, and clide does not edit your dotfiles.
+`clide install` prints the exact line.
+
+**There is deliberately no npm `postinstall` that registers hooks.** Reaching
+into another tool's configuration as a side effect of `npm install` would also
+fire under `npm ci`, inside Docker builds, and for transitive installs where
+nobody asked for it. Installing is an explicit command.
 
 ```bash
 clide daemon        # one terminal
@@ -56,7 +70,22 @@ brew install --cask swiftbar          # if you don't have it
 ln -s "$PWD/contrib/swiftbar/clide.3s.sh" ~/path/to/your/swiftbar/plugins/
 ```
 
-The badge shows a count when agents are blocked, a quiet dot while work is happening, and a warning when the daemon isn't reachable — deliberately distinct from "idle", because rendering a dead daemon as calm would be a lie. The dropdown names *which* session needs you.
+The badge shows a count when agents are blocked, a quiet dot while work is happening, and a warning when the daemon isn't reachable — deliberately distinct from "idle", because rendering a dead daemon as calm would be a lie.
+
+The dropdown names *which* session needs you, how long it has actually been
+waiting, and gives you somewhere to go:
+
+- **Click a session** to jump to it. `clide focus` finds the tmux pane it lives
+  in and selects it, then raises the owning application — Terminal, iTerm2,
+  Ghostty, WezTerm and VS Code all work, because in every case the terminal's
+  process ancestry ends at the bundle that owns the window.
+- **Dismiss** stops the reminders without pretending the agent is unblocked; it
+  stays listed, greyed, marked `(dismissed)`. A *new* block alerts again.
+- **Forget** drops a session record outright.
+
+The session name comes from Claude Code's own session slug (`clide-ac`), which
+reads like a branch name but isn't one; without it, the repo directory name is
+used.
 
 All formatting lives in `clide menubar`, not in the plugin script, so it stays unit-tested and works unchanged under xbar, Hammerspoon, or a plain shell prompt if SwiftBar ever stops being the right host.
 
@@ -75,15 +104,27 @@ ssh -R 47001:127.0.0.1:47001 devbox
 clide daemon --notify-url http://127.0.0.1:47001/notify --notify-token <shared>
 ```
 
+Remote sessions then appear **in your menu bar** under "Other machines", counted
+in the same badge — because an agent you can't see is exactly the one that sits
+blocked unnoticed. They clear themselves when answered: the sending daemon emits
+an explicit `resolved` doorbell, without which a receiver only ever learns that
+an agent *became* blocked and its list could never shrink. Entries also expire if
+the tunnel dies, since a menu bar confidently reporting a host it can no longer
+hear from is worse than one that admits it doesn't know.
+
 No broker, no third-party service. A local desktop notification is always the floor — a dead tunnel never suppresses it.
 
 The message that crosses the boundary is a **doorbell, not a payload**: which host, which repo, which session, why.
 
 ```
-devbox · payments-api · a1b2c3d4 · permission_prompt
+devbox · payments-api · permission_prompt
 ```
 
-Never file contents, paths, tool arguments, or reasoning — note that's the repo *name*, not its path. Detail stays on the machine where it already lives.
+Never file contents, paths, tool arguments, or reasoning — note that's the repo
+*name*, not its path. Detail stays on the machine where it already lives. The
+hostname is shortened to its first label, so an internal domain never travels
+with the doorbell, and it's omitted entirely when the alert is from the machine
+you're already sitting at.
 
 `clide doctor --notify` reports which delivery paths are live and fires a test through them. It has to ask whether you saw it: the OS reports success even when it suppressed the notification.
 
