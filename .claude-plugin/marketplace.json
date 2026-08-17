@@ -1,12 +1,15 @@
 {
   "name": "clide-marketplace",
-  "owner": { "name": "Sascha Sertel", "email": "sascha@needforgeek.com" },
+  "owner": {
+    "name": "Sascha Sertel",
+    "email": "sascha@needforgeek.com"
+  },
   "plugins": [
     {
       "name": "clide",
       "source": "./",
       "description": "Live activity view for AI coding sessions (Claude Code + Codex).",
-      "version": "2.0.0-alpha.0"
+      "version": "2.0.0-alpha.1"
     }
   ]
 }

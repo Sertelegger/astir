@@ -1,11 +1,21 @@
 {
   "name": "clide",
   "displayName": "Clide",
-  "version": "2.0.0-alpha.0",
-  "description": "Live activity view for AI coding sessions — know when an agent is blocked on you, and where in the repo work is happening.",
-  "author": { "name": "Sascha Sertel", "email": "sascha@needforgeek.com" },
+  "version": "2.0.0-alpha.1",
+  "description": "Live activity view for AI coding sessions \u2014 know when an agent is blocked on you, and where in the repo work is happening.",
+  "author": {
+    "name": "Sascha Sertel",
+    "email": "sascha@needforgeek.com"
+  },
   "license": "MIT",
   "homepage": "https://github.com/Sertelegger/clide",
   "repository": "https://github.com/Sertelegger/clide",
-  "keywords": ["observability", "agent", "monitoring", "notifications", "visualization", "hooks"]
+  "keywords": [
+    "observability",
+    "agent",
+    "monitoring",
+    "notifications",
+    "visualization",
+    "hooks"
+  ]
 }
