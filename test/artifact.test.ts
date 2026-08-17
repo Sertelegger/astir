@@ -43,7 +43,11 @@ async function waitForReady(url: string, timeoutMs = 15_000): Promise<void> {
 
 beforeAll(async () => {
   // Build from source so this test can never pass against a stale dist.
-  execFileSync("npm", ["run", "build"], { cwd: REPO, stdio: "pipe" });
+  // On Windows the executable is `npm.cmd`; `execFileSync` does not consult
+  // PATHEXT, so the bare name fails with ENOENT. Caught by the non-blocking
+  // windows CI job on its first run.
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  execFileSync(npm, ["run", "build"], { cwd: REPO, stdio: "pipe" });
 
   proc = spawn(process.execPath, [ENTRY, "daemon", "--port", "0", "--token", TOKEN], {
     cwd: REPO,
