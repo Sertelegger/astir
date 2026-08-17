@@ -1,11 +1,134 @@
 {
+  "_comment": [
+    "Clide capture hooks. These POST the hook payload straight to the local daemon.",
+    "",
+    "type=http, not command: there is no process to spawn, so no Node startup cost per",
+    "tool call. Note that `async` is a command-hook-only field and is deliberately absent",
+    "here — an http hook is synchronous, which is safe because the receiver is a local",
+    "in-memory server: an absent daemon refuses the connection immediately, and a hung one",
+    "is bounded by the explicit timeout below (the platform default is 600s, not a budget).",
+    "",
+    "The token comes from $CLIDE_TOKEN. If that variable is unset the header interpolates",
+    "to an empty string and every event is rejected, so the daemon counts and reports",
+    "unauthorized ingest separately from silence. Run `clide install` for the export line."
+  ],
   "hooks": {
-    "SessionStart":  [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
-    "PreToolUse":    [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
-    "PostToolUse":   [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
-    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
-    "SubagentStop":  [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
-    "Stop":          [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }],
-    "SessionEnd":    [{ "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/adapters/claude/dist/hook-entry.js"] }] }]
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47000/hook/claude",
+            "timeout": 5,
+            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
+            "allowedEnvVars": ["CLIDE_TOKEN"]
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47000/hook/claude",
+            "timeout": 5,
+            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
+            "allowedEnvVars": ["CLIDE_TOKEN"]
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47000/hook/claude",
+            "timeout": 5,
+            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
+            "allowedEnvVars": ["CLIDE_TOKEN"]
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47000/hook/claude",
+            "timeout": 5,
+            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
+            "allowedEnvVars": ["CLIDE_TOKEN"]
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47000/hook/claude",
+            "timeout": 5,
+            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
+            "allowedEnvVars": ["CLIDE_TOKEN"]
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47000/hook/claude",
+            "timeout": 5,
+            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
+            "allowedEnvVars": ["CLIDE_TOKEN"]
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47000/hook/claude",
+            "timeout": 5,
+            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
+            "allowedEnvVars": ["CLIDE_TOKEN"]
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47000/hook/claude",
+            "timeout": 5,
+            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
+            "allowedEnvVars": ["CLIDE_TOKEN"]
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47000/hook/claude",
+            "timeout": 5,
+            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
+            "allowedEnvVars": ["CLIDE_TOKEN"]
+          }
+        ]
+      }
+    ]
   }
 }

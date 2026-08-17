@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+
 /** The `clide` entrypoint. Kept thin: everything here is covered by an artifact test. */
 
-import { randomBytes } from "node:crypto";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { DEFAULT_PORT, readOrCreateToken, tokenPath } from "../config/paths.js";
 import { Daemon } from "../daemon/server.js";
 import { Registry } from "../model/registry.js";
 import { createNotifier } from "../notify/notify.js";
@@ -31,15 +34,57 @@ export function parseArgs(argv: string[]): Args {
 
 function usage(): void {
   process.stdout.write(
-    "clide <command>\n" +
+    "clide <command>\n\n" +
       "  daemon [--port N] [--token T]   run the activity daemon\n" +
+      "  install                         print setup instructions and ensure the token exists\n" +
       "  status                          print live sessions as JSON\n",
   );
 }
 
+/** Repo root, from either dist/cli/main.js or src/cli/main.ts. */
+function repoRoot(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
+function runInstall(): void {
+  const token = readOrCreateToken();
+  const root = repoRoot();
+
+  process.stdout.write(
+    [
+      "clide setup",
+      "",
+      "1. Export the daemon token where Claude Code can see it.",
+      "   Hooks read it via $CLIDE_TOKEN. If it is unset the header interpolates to an",
+      "   empty string and every event is rejected — the daemon will say so rather than",
+      "   failing silently, but it is easier to just set it.",
+      "",
+      `   Add to your shell profile:   export CLIDE_TOKEN=${token}`,
+      `   (stored at ${tokenPath()}, mode 0600)`,
+      "",
+      "2. Install the plugin so the hooks are registered.",
+      "",
+      "   In Claude Code:",
+      `     /plugin marketplace add ${root}`,
+      "     /plugin install clide@clide-marketplace",
+      "",
+      "3. Start the daemon, then restart Claude Code so it picks up the hooks.",
+      "",
+      "     clide daemon",
+      "",
+      "Verify with `curl -s localhost:47000/healthz` — once a session is running,",
+      "`ingested` should climb. If `unauthorizedIngest` climbs instead, step 1 is missing.",
+      "",
+    ].join("\n"),
+  );
+}
+
 async function runDaemon(flags: Args["flags"]): Promise<void> {
-  const port = Number(flags.get("port") ?? process.env.CLIDE_PORT ?? 47000);
-  const token = String(flags.get("token") ?? process.env.CLIDE_TOKEN ?? randomBytes(16).toString("hex"));
+  const port = Number(flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
+  const explicit = flags.get("token") ?? process.env.CLIDE_TOKEN;
+  // A stable on-disk token means a hook configuration written once keeps working
+  // across daemon restarts.
+  const token = explicit !== undefined ? String(explicit) : readOrCreateToken();
 
   const registry = new Registry({ nowMs: () => Date.now() });
   const notify = createNotifier();
@@ -59,9 +104,6 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   const bound = await daemon.listen(port);
   // The artifact test parses this line; keep the format stable.
   process.stdout.write(`clide daemon listening on 127.0.0.1:${bound}\n`);
-  if (!flags.has("token") && !process.env.CLIDE_TOKEN) {
-    process.stdout.write(`token: ${token}\n`);
-  }
 
   const tick = setInterval(() => registry.tick(), 1000);
   tick.unref();
@@ -87,6 +129,9 @@ async function main(): Promise<void> {
   switch (command) {
     case "daemon":
       return runDaemon(flags);
+    case "install":
+      runInstall();
+      return;
     default:
       usage();
       return;

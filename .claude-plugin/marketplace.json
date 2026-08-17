@@ -5,8 +5,8 @@
     {
       "name": "clide",
       "source": "./",
-      "description": "Live activity heat-map for Claude Code & Codex (relay + heat-map + agent rail).",
-      "version": "0.1.0"
+      "description": "Live activity view for AI coding sessions (Claude Code + Codex).",
+      "version": "2.0.0-alpha.0"
     }
   ]
 }

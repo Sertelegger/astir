@@ -60,7 +60,16 @@ export class Daemon {
   private readonly readSidecar: (s: string, a: string) => SidecarMeta | null;
   private readonly nowSeconds: () => number;
   /** OBS-01 — every counter here is incremented by a real code path. */
-  private counters = { ingested: 0, rejected: 0, duplicates: 0, blocked: 0, droppedPaths: 0 };
+  private counters = {
+    ingested: 0,
+    rejected: 0,
+    duplicates: 0,
+    blocked: 0,
+    droppedPaths: 0,
+    /** CAP-08 — distinct from "no events": a hook fired but could not authenticate. */
+    unauthorizedIngest: 0,
+  };
+  private warnedAboutToken = false;
 
   constructor(opts: DaemonOpts) {
     this.opts = opts;
@@ -125,7 +134,24 @@ export class Daemon {
       return this.json(res, 200, { ok: true, counters: this.counters });
     }
 
-    if (!this.authorized(req)) return this.json(res, 401, { error: "unauthorized" });
+    if (!this.authorized(req)) {
+      if (path.startsWith("/hook/")) {
+        // CAP-08 — an unset $CLIDE_TOKEN interpolates to an empty string rather
+        // than failing, so this is far more likely a misconfigured hook than an
+        // attack. Say so once, loudly: silence here is the failure mode that let
+        // the previous version look healthy while receiving nothing.
+        this.counters.unauthorizedIngest++;
+        if (!this.warnedAboutToken) {
+          this.warnedAboutToken = true;
+          process.stderr.write(
+            "clide: a hook POSTed without a valid token — events are being rejected.\n" +
+              "       Is $CLIDE_TOKEN exported in the environment Claude Code runs in?\n" +
+              "       Run `clide install` for the export line.\n",
+          );
+        }
+      }
+      return this.json(res, 401, { error: "unauthorized" });
+    }
 
     if (path === "/state" && req.method === "GET") {
       return this.json(res, 200, this.snapshot());

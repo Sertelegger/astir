@@ -1,9 +1,11 @@
 {
   "name": "clide",
   "displayName": "Clide",
-  "version": "0.1.0",
-  "description": "Live activity heat-map for Claude Code & Codex — a real-time spatial repo heat-map + agent rail, rendered in a browser, a VSCode webview, or the terminal.",
+  "version": "2.0.0-alpha.0",
+  "description": "Live activity view for AI coding sessions — know when an agent is blocked on you, and where in the repo work is happening.",
   "author": { "name": "Sascha Sertel", "email": "sascha@needforgeek.com" },
   "license": "MIT",
-  "keywords": ["observability", "heat-map", "agent", "codex", "visualization", "hooks"]
+  "homepage": "https://github.com/Sertelegger/clide",
+  "repository": "https://github.com/Sertelegger/clide",
+  "keywords": ["observability", "agent", "monitoring", "notifications", "visualization", "hooks"]
 }
