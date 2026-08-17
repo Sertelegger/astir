@@ -7,7 +7,7 @@ import {
   reasonText,
   validateEnvelope,
 } from "../src/notify/envelope.js";
-import type { Notification } from "../src/notify/notify.js";
+import { backendFromNotifier, type Notification } from "../src/notify/notify.js";
 import { NotifyPolicy } from "../src/notify/policy.js";
 import { RemoteView } from "../src/notify/remote.js";
 import { NotifierServer } from "../src/notify/server.js";
@@ -237,7 +237,11 @@ describe("PSH-06 — cross-boundary delivery", () => {
   it("a dead remote never suppresses local delivery (PSH-07)", async () => {
     const local: Notification[] = [];
     const dispatcher = new Dispatcher([
-      localTarget((n) => local.push(n)),
+      localTarget(
+        backendFromNotifier((n: Notification) => {
+          local.push(n);
+        }),
+      ),
       // Nothing is listening here.
       remoteTarget("http://127.0.0.1:1/notify", "shared", 500),
     ]);
@@ -249,7 +253,7 @@ describe("PSH-06 — cross-boundary delivery", () => {
   });
 
   it("reports which path is live, so silent non-delivery is diagnosable", async () => {
-    const dispatcher = new Dispatcher([localTarget(() => undefined)]);
+    const dispatcher = new Dispatcher([localTarget(backendFromNotifier(() => undefined))]);
     expect(dispatcher.status()[0]?.reason).toBe("not yet attempted");
     await dispatcher.send(envelope);
     expect(dispatcher.status()[0]?.ok).toBe(true);
@@ -355,5 +359,79 @@ describe("notifications read as English, not as identifiers", () => {
     const remote = notificationText(built("permission_prompt", { host: "devbox.corp" }), "mac");
     expect(remote.body).toContain("devbox");
     expect(remote.body, "and never the internal domain").not.toContain("corp");
+  });
+});
+
+describe("PSH-13 — a notification you can act on", () => {
+  const blocked = buildEnvelope({
+    kind: "blocked",
+    reason: "permission_prompt",
+    sessionId: "sess-1",
+    agentId: "a1",
+    cwd: "/repo",
+  });
+
+  function capable(): {
+    backend: ReturnType<typeof backendFromNotifier>;
+    sent: Notification[];
+    removed: string[];
+  } {
+    const sent: Notification[] = [];
+    const removed: string[] = [];
+    const backend = {
+      name: "fake",
+      capabilities: { click: true, replace: true, remove: true },
+      notify: (n: Notification) => {
+        sent.push(n);
+      },
+      remove: (g: string) => {
+        removed.push(g);
+      },
+    };
+    return { backend, sent, removed };
+  }
+
+  it("attaches a click action that focuses the originating session", async () => {
+    const { backend, sent } = capable();
+    await new Dispatcher([localTarget(backend, "/usr/local/bin/clide")]).send(blocked);
+    expect(sent[0]?.onClick).toEqual({
+      command: "/usr/local/bin/clide",
+      args: ["focus", "sess-1"],
+    });
+  });
+
+  it("groups by agent so a reminder replaces rather than stacks", async () => {
+    // Reminding every minute for ten minutes would otherwise leave a column of
+    // ten identical banners that only the user can clear.
+    const { backend, sent } = capable();
+    await new Dispatcher([localTarget(backend, "/bin/clide")]).send(blocked);
+    expect(sent[0]?.group).toBe("sess-1:a1");
+  });
+
+  it("withdraws the banner when the wait is over", async () => {
+    const { backend, sent, removed } = capable();
+    const resolved = buildEnvelope({
+      kind: "resolved",
+      reason: "permission_prompt",
+      sessionId: "sess-1",
+      agentId: "a1",
+      cwd: "/repo",
+    });
+
+    await new Dispatcher([localTarget(backend, "/bin/clide")]).send(resolved);
+
+    expect(removed, "a resolution withdraws, it does not announce").toEqual(["sess-1:a1"]);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("attaches no click action to a backend that cannot honour one", async () => {
+    // Bare osascript notifications belong to Script Editor and cannot carry an
+    // action. Offering one anyway would produce a click that does nothing.
+    const sent: Notification[] = [];
+    const backend = backendFromNotifier((n: Notification) => {
+      sent.push(n);
+    });
+    await new Dispatcher([localTarget(backend, "/bin/clide")]).send(blocked);
+    expect(sent[0]?.onClick).toBeUndefined();
   });
 });

@@ -9,7 +9,7 @@
  */
 
 import { type NotifyEnvelope, notificationText } from "./envelope.js";
-import type { Notifier } from "./notify.js";
+import type { NotifierBackend } from "./notify.js";
 
 export interface DeliveryOutcome {
   target: string;
@@ -23,15 +23,38 @@ export interface DeliveryTarget {
   deliver(envelope: NotifyEnvelope): Promise<{ ok: boolean; reason?: string }>;
 }
 
-/** The local desktop. Always present; the floor beneath everything else. */
-export function localTarget(notify: Notifier): DeliveryTarget {
+/**
+ * The local desktop. Always present; the floor beneath everything else.
+ *
+ * `exe` is the path used to build the click action. Without it the notification
+ * is still raised, just not clickable — which is the right degradation, since a
+ * notification you cannot act on still beats no notification.
+ */
+export function localTarget(backend: NotifierBackend, exe?: string): DeliveryTarget {
   return {
     name: "local",
     deliver: (envelope) => {
       try {
+        const group = `${envelope.session.sessionId}:${envelope.session.agentId}`;
+
+        // A resolution is not an announcement — it withdraws the banner that is
+        // still sitting on screen. Without this, reminders about an agent that
+        // has since been answered stay up until the user clears them by hand.
+        if (envelope.kind === "resolved") {
+          backend.remove(group);
+          return Promise.resolve({ ok: true });
+        }
+
         // Rendered for *here*, so a local alert does not lead with this machine's
         // own name. The envelope keeps the host either way for routing.
-        notify(notificationText(envelope));
+        const text = notificationText(envelope);
+        backend.notify({
+          ...text,
+          group,
+          ...(exe !== undefined && backend.capabilities.click
+            ? { onClick: { command: exe, args: ["focus", envelope.session.sessionId] } }
+            : {}),
+        });
         return Promise.resolve({ ok: true });
       } catch (err) {
         return Promise.resolve({ ok: false, reason: String(err) });

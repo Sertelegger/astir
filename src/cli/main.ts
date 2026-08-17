@@ -12,7 +12,7 @@ import { Registry } from "../model/registry.js";
 import { Dispatcher, localTarget, remoteTarget } from "../notify/dispatch.js";
 import { buildEnvelope } from "../notify/envelope.js";
 import { NotifyLoop } from "../notify/loop.js";
-import { createNotifier } from "../notify/notify.js";
+import { backendFromNotifier, createNotifier, createNotifierBackend } from "../notify/notify.js";
 import { NotifyPolicy } from "../notify/policy.js";
 import { NotifierServer } from "../notify/server.js";
 import { fetchRemote, fetchStatus } from "../status/fetch.js";
@@ -196,7 +196,17 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
 
   // PSH-06 — delivery paths. Local is the floor; a remote notifier is added when
   // configured, so a session behind SSH or in a container can reach the human.
-  const targets = [localTarget(createNotifier())];
+  const backend = createNotifierBackend();
+  // The absolute path is what a notification click will invoke; a bare `clide`
+  // would not resolve in the environment the notification daemon runs in.
+  const targets = [localTarget(backend, process.argv[1])];
+  if (!backend.capabilities.click) {
+    process.stdout.write(
+      `notifications via ${backend.name}: not clickable, and cannot be replaced or dismissed.\n` +
+        "  install terminal-notifier for click-to-focus and self-clearing alerts:\n" +
+        "    brew install terminal-notifier\n",
+    );
+  }
   const notifyUrl = flags.get("notify-url");
   if (typeof notifyUrl === "string") {
     const remoteToken = String(flags.get("notify-token") ?? process.env.CLIDE_NOTIFY_TOKEN ?? token);
@@ -375,7 +385,7 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
   if (flags.get("notify") === true) {
     out("");
     out("  sending a test notification...");
-    const dispatcher = new Dispatcher([localTarget(createNotifier())]);
+    const dispatcher = new Dispatcher([localTarget(backendFromNotifier(createNotifier()))]);
     const envelope = buildEnvelope({
       kind: "blocked",
       reason: "doctor_test",
