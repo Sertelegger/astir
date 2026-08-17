@@ -60,6 +60,33 @@ The badge shows a count when agents are blocked, a quiet dot while work is happe
 
 All formatting lives in `clide menubar`, not in the plugin script, so it stays unit-tested and works unchanged under xbar, Hammerspoon, or a plain shell prompt if SwiftBar ever stops being the right host.
 
+## Sessions on another machine
+
+A session running behind SSH, inside WSL, or in a container can still reach you. Run the notifier where *you* are, and point the remote daemon at it:
+
+```bash
+# on your workstation
+clide notifier                       # listens on 127.0.0.1:47001
+
+# forward the port to the box running the agent
+ssh -R 47001:127.0.0.1:47001 devbox
+
+# on that box
+clide daemon --notify-url http://127.0.0.1:47001/notify --notify-token <shared>
+```
+
+No broker, no third-party service. A local desktop notification is always the floor — a dead tunnel never suppresses it.
+
+The message that crosses the boundary is a **doorbell, not a payload**: which host, which repo, which session, why.
+
+```
+devbox · payments-api · a1b2c3d4 · permission_prompt
+```
+
+Never file contents, paths, tool arguments, or reasoning — note that's the repo *name*, not its path. Detail stays on the machine where it already lives.
+
+`clide doctor --notify` reports which delivery paths are live and fires a test through them. It has to ask whether you saw it: the OS reports success even when it suppressed the notification.
+
 ## How it works
 
 ```

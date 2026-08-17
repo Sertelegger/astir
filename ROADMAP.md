@@ -20,9 +20,9 @@ The rebuild is driven by a rewritten spec (kept locally) and this order:
 ## Milestone 2 — you find out without looking
 
 - [x] macOS menu-bar item: working / thinking / **blocked** / idle, badged with the blocked count (via SwiftBar — see #21 for the native replacement)
-- [ ] Cross-boundary delivery — a session behind SSH, tmux, WSL or a container reaches the workstation
-- [ ] Per-state notification lifetimes (transient states decay; "needs input" persists)
-- [ ] Multi-session awareness: which session needs you, not just that one does
+- [x] Cross-boundary delivery — a session behind SSH, tmux, WSL or a container reaches the workstation
+- [x] Per-state notification lifetimes (transient states decay; "needs input" persists)
+- [x] Multi-session awareness: which session needs you, not just that one does
 
 ## Milestone 3 — the view
 

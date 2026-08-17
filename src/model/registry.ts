@@ -24,6 +24,16 @@ export interface AgentRecord {
   blockedMs: number;
   /** Wall ms at which the current state was entered, for the accounting above. */
   stateSince: number;
+  /** Why this agent is blocked, e.g. `permission_prompt`. Null when not blocked. */
+  blockedReason: string | null;
+}
+
+/** A currently-blocked agent, with the context a notification envelope needs. */
+export interface BlockedAgent {
+  sessionId: string;
+  agentId: string;
+  cwd: string;
+  reason: string;
 }
 
 export interface SessionRecord {
@@ -92,6 +102,28 @@ export class Registry {
     return this.sessions.get(sessionId);
   }
 
+  /**
+   * Every agent currently blocked on a human. Reminders (PSH-02) have no
+   * triggering event, so the notification loop polls this rather than relying
+   * only on transitions.
+   */
+  blockedAgents(): BlockedAgent[] {
+    const out: BlockedAgent[] = [];
+    for (const s of this.sessions.values()) {
+      for (const a of s.agents.values()) {
+        if (HUMAN_BLOCKING.has(a.state)) {
+          out.push({
+            sessionId: s.sessionId,
+            agentId: a.id,
+            cwd: s.cwd,
+            reason: a.blockedReason ?? "blocked",
+          });
+        }
+      }
+    }
+    return out;
+  }
+
   /** Count of agents currently blocked on a human, across all sessions (PSH-08). */
   blockedCount(): number {
     let n = 0;
@@ -129,6 +161,9 @@ export class Registry {
       next !== agent.state && HUMAN_BLOCKING.has(next)
         ? { sessionId: session.sessionId, agentId: agent.id, kind: event.notificationKind ?? "blocked" }
         : undefined;
+
+    if (HUMAN_BLOCKING.has(next)) agent.blockedReason = event.notificationKind ?? "blocked";
+    else agent.blockedReason = null;
 
     this.transition(agent, next);
 
@@ -266,6 +301,7 @@ export class Registry {
         activeMs: 0,
         blockedMs: 0,
         stateSince: this.nowMs(),
+        blockedReason: null,
       };
       session.agents.set(event.agentId, a);
       return a;

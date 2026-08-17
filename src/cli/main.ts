@@ -4,11 +4,16 @@
 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_PORT, readOrCreateToken, tokenPath } from "../config/paths.js";
+import { DEFAULT_PORT, readOrCreateToken, readTokenIfPresent, tokenPath } from "../config/paths.js";
 import { Daemon } from "../daemon/server.js";
 import { createClaudeLister } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
+import { Dispatcher, localTarget, remoteTarget } from "../notify/dispatch.js";
+import { buildEnvelope } from "../notify/envelope.js";
+import { NotifyLoop } from "../notify/loop.js";
 import { createNotifier } from "../notify/notify.js";
+import { NotifyPolicy } from "../notify/policy.js";
+import { NotifierServer } from "../notify/server.js";
 import { fetchStatus } from "../status/fetch.js";
 import { renderMenubar } from "../status/menubar.js";
 
@@ -41,7 +46,12 @@ function usage(): void {
       "  daemon [--port N] [--token T]   run the activity daemon\n" +
       "  install                         print setup instructions and ensure the token exists\n" +
       "  status [--json]                 show live sessions and who is waiting on you\n" +
-      "  menubar                         SwiftBar/xbar plugin output\n",
+      "  menubar                         SwiftBar/xbar plugin output\n" +
+      "  notifier [--port N]             receive doorbells from another host and notify here\n" +
+      "  doctor [--notify]               check the setup; --notify sends a test notification\n" +
+      "\n" +
+      "  daemon also accepts --notify-url <url> --notify-token <t> to deliver to a\n" +
+      "  remote notifier as well as locally (e.g. over `ssh -R`).\n",
   );
 }
 
@@ -91,25 +101,38 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   const token = explicit !== undefined ? String(explicit) : readOrCreateToken();
 
   const registry = new Registry({ nowMs: () => Date.now() });
-  const notify = createNotifier();
 
-  const daemon = new Daemon({
-    token,
+  // PSH-06 — delivery paths. Local is the floor; a remote notifier is added when
+  // configured, so a session behind SSH or in a container can reach the human.
+  const targets = [localTarget(createNotifier())];
+  const notifyUrl = flags.get("notify-url");
+  if (typeof notifyUrl === "string") {
+    const remoteToken = String(flags.get("notify-token") ?? process.env.CLIDE_NOTIFY_TOKEN ?? token);
+    targets.push(remoteTarget(notifyUrl, remoteToken));
+  }
+  const dispatcher = new Dispatcher(targets);
+  const policy = new NotifyPolicy();
+  const loop = new NotifyLoop({
     registry,
-    onBlocked: ({ sessionId, kind }) => {
-      // PSH-09: routing and identity only — never code, paths, or reasoning.
-      notify({
-        title: "clide — needs your input",
-        body: `session ${sessionId.slice(0, 8)} · ${kind}`,
-      });
-    },
+    policy,
+    dispatcher,
+    onDelivered: (line) => process.stdout.write(`notify: ${line}\n`),
   });
+
+  // Notification decisions live entirely in the loop rather than being split
+  // between here and an ingest callback: one decision point means a reminder and
+  // an initial alert cannot disagree, or fire twice for the same moment.
+  const daemon = new Daemon({ token, registry });
 
   const bound = await daemon.listen(port);
   // The artifact test parses this line; keep the format stable.
   process.stdout.write(`clide daemon listening on 127.0.0.1:${bound}\n`);
+  process.stdout.write(`delivery paths: ${dispatcher.names().join(", ")}\n`);
 
-  const tick = setInterval(() => registry.tick(), 1000);
+  const tick = setInterval(() => {
+    registry.tick();
+    void loop.pulse();
+  }, 1000);
   tick.unref();
 
   // DMN-05 — fold provider discovery in periodically. Enrichment and pruning only;
@@ -188,6 +211,91 @@ async function runMenubar(flags: Args["flags"]): Promise<void> {
   process.stdout.write(renderMenubar(await fetchStatus(port)));
 }
 
+/**
+ * PSH-06 — run where the human is. A daemon on another host POSTs doorbells
+ * here. Binds loopback, so `ssh -R 47001:127.0.0.1:47001 devbox` is enough to
+ * reach it with no broker and no third-party service.
+ */
+async function runNotifier(flags: Args["flags"]): Promise<void> {
+  const port = Number(flags.get("port") ?? process.env.CLIDE_NOTIFY_PORT ?? DEFAULT_PORT + 1);
+  const token = String(flags.get("token") ?? process.env.CLIDE_NOTIFY_TOKEN ?? readOrCreateToken());
+
+  const server = new NotifierServer({
+    token,
+    notify: createNotifier(),
+    onEvent: (line) => process.stdout.write(`delivered: ${line}\n`),
+  });
+
+  const bound = await server.listen(port);
+  process.stdout.write(`clide notifier listening on 127.0.0.1:${bound}\n`);
+  process.stdout.write("on the remote host, run the daemon with:\n");
+  process.stdout.write(
+    `  clide daemon --notify-url http://127.0.0.1:${bound}/notify --notify-token <token>\n`,
+  );
+  process.stdout.write(`forward it with:  ssh -R ${bound}:127.0.0.1:${bound} <host>\n`);
+
+  const shutdown = (): void => {
+    void server.close().then(() => process.exit(0));
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+}
+
+/**
+ * PSH-05/PSH-07 — say which delivery path is actually live.
+ *
+ * The platform reports success even when a notification is suppressed, so the
+ * only honest test is to fire one and ask whether it was seen.
+ */
+async function runDoctor(flags: Args["flags"]): Promise<void> {
+  const port = Number(flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
+  const out = (l: string): void => {
+    process.stdout.write(`${l}\n`);
+  };
+
+  out("clide doctor");
+  out("");
+
+  const token = process.env.CLIDE_TOKEN ?? readTokenIfPresent();
+  out(`  token file      ${token === null ? "MISSING — run `clide install`" : `ok (${tokenPath()})`}`);
+  out(
+    `  $CLIDE_TOKEN    ${process.env.CLIDE_TOKEN ? "set" : "not set — hooks will be rejected; see `clide install`"}`,
+  );
+
+  const status = await fetchStatus(port);
+  if (status.ok) {
+    const agents = status.body.sessions.reduce((n, s) => n + s.agents.length, 0);
+    out(`  daemon          ok — ${status.body.sessions.length} session(s), ${agents} agent(s)`);
+    out(`  blocked now     ${status.body.blockedCount}`);
+  } else {
+    out(`  daemon          ${status.reason}`);
+  }
+
+  if (flags.get("notify") === true) {
+    out("");
+    out("  sending a test notification...");
+    const dispatcher = new Dispatcher([localTarget(createNotifier())]);
+    const envelope = buildEnvelope({
+      kind: "blocked",
+      reason: "doctor_test",
+      sessionId: "doctor-test",
+      agentId: "doctor-test",
+      cwd: process.cwd(),
+    });
+    for (const o of await dispatcher.send(envelope)) {
+      out(`    ${o.target.padEnd(10)} ${o.ok ? "sent" : `FAILED — ${o.reason ?? "unknown"}`}`);
+    }
+    out("");
+    // A7: `osascript` exits 0 whether or not the notification was displayed, so
+    // the exit code proves nothing. Only a human can close this loop.
+    out("  Did you see it? If not, the OS suppressed it — check notification");
+    out("  permissions and Focus/Do-Not-Disturb. The send reports success either way.");
+  } else {
+    out("");
+    out("  run with --notify to send a test notification");
+  }
+}
+
 async function main(): Promise<void> {
   const { command, flags } = parseArgs(process.argv.slice(2));
   switch (command) {
@@ -197,6 +305,10 @@ async function main(): Promise<void> {
       return runStatus(flags);
     case "menubar":
       return runMenubar(flags);
+    case "notifier":
+      return runNotifier(flags);
+    case "doctor":
+      return runDoctor(flags);
     case "install":
       runInstall();
       return;
