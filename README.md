@@ -143,8 +143,8 @@ clide doctor --clean      # remove stale discovery files + logs for relays that 
 
 ## Design docs & development
 
-- Frozen spec: `docs/superpowers/specs/2026-08-16-clide-agent-activity-design.md`
-- Per-phase implementation plans: `docs/superpowers/plans/`
+- Design spec and implementation plans are maintained **locally only**, under `docs/`
+  (its own git repository, deliberately not published here).
 - Each package: `npm test` (vitest) and `npm run build`. Strict TypeScript throughout.
 
 ### Continuous integration
