@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest a capability, visualization, or integration
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Clide has a deliberately narrow scope: know when an agent needs you, and see where work is happening. It is **live-only** — no persistent history, no replay, no forensic timeline, and it never steers the AI session.
+
+        Requests outside that are still welcome; it just helps to know up front so the discussion is about the right thing.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you hitting?
+      description: Describe the situation, not the solution. What were you trying to find out, and what did you have to do instead?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like Clide to do?
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface?
+      options:
+        - Ambient (notification, menu bar, tray)
+        - The map
+        - Agent rail
+        - Multi-session view
+        - CLI
+        - New provider
+        - Other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything you're using instead today?
+      description: Including "nothing, I just keep checking manually" — that's useful signal.

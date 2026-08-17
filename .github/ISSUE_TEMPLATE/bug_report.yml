@@ -1,0 +1,78 @@
+name: Bug report
+description: Something in the daemon, notifications, hooks, or the view isn't working
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report.
+
+        Clide sits between an AI CLI and your desktop, so the boundaries in between (tmux, SSH, WSL, containers) matter a lot for reproducing. The environment fields below are the ones that usually explain it.
+
+        **Please redact** anything sensitive — repo paths and session ids can identify private work.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part?
+      options:
+        - Daemon (ingest, state, crashes)
+        - Notifications (didn't fire / fired wrongly / wrong content)
+        - Hooks (events not arriving)
+        - Agent tree (wrong parent, missing subagents)
+        - View (map, agent rail, panels)
+        - CLI
+        - Install / setup
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: daemon-output
+    attributes:
+      label: Daemon output and /healthz
+      description: |
+        Relevant daemon stderr, plus `curl -s localhost:47000/healthz`.
+        The counters there (`ingested`, `rejected`, `duplicates`, `droppedPaths`) usually narrow it down fast — `ingested: 0` means nothing is reaching the daemon at all.
+      render: shell
+  - type: dropdown
+    id: provider
+    attributes:
+      label: AI provider
+      options: [Claude Code, OpenAI Codex, Both]
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Provider CLI version (`claude --version` / `codex --version`) and the clide version
+      placeholder: "Claude Code 2.1.233, clide 2.0.0-alpha.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Where does the AI session run?
+      options: [macOS, Linux, WSL2, Container, Remote host over SSH]
+    validations:
+      required: true
+  - type: dropdown
+    id: notify-platform
+    attributes:
+      label: Where should the notification appear?
+      description: Pick the same value as above if it's all one machine.
+      options: [macOS, Linux, Windows, WSL2, Same as above]
+    validations:
+      required: true
+  - type: input
+    id: boundaries
+    attributes:
+      label: What sits in between?
+      description: tmux, SSH hops, WSL, containers, mosh — in order. This is the single most useful field for notification bugs.
+      placeholder: "Windows Terminal → WSL2 → tmux → ssh devbox → tmux"

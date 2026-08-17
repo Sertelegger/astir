@@ -3,3 +3,7 @@ dist/
 *.log
 .superpowers/
 .DS_Store
+
+# Design docs, specs and plans are kept locally only — they have their own
+# git repository under docs/ and are deliberately not published here.
+docs/
