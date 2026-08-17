@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }}, node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: [20, 22, 24]
+        include:
+          # package.json declares node >=20, so the floor is tested explicitly
+          # rather than assumed, and macOS is covered because it is the primary
+          # development platform and the one with the notification path.
+          - os: macos-latest
+            node: 24
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # Run these as separate steps rather than `npm run verify` so a failure
+      # names which gate broke.
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+      # This includes the artifact tests, which build and then spawn the real
+      # dist/ output. A green unit suite is not evidence the thing runs — that
+      # is the specific failure this project exists downstream of.
+      - run: npm test
+
+  windows-early-warning:
+    # PLT-02: native Windows is deferred for v1, not rejected, and no decision
+    # may foreclose it. Running here surfaces path- and platform-specific
+    # regressions while they are cheap to fix, without gating the branch on a
+    # platform we do not yet claim to support.
+    name: windows (early warning, non-blocking)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
