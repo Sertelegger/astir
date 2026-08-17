@@ -26,11 +26,17 @@ export interface DeliveryTarget {
 /**
  * The local desktop. Always present; the floor beneath everything else.
  *
- * `exe` is the path used to build the click action. Without it the notification
- * is still raised, just not clickable — which is the right degradation, since a
- * notification you cannot act on still beats no notification.
+ * `invocation` is the full argv prefix that runs clide — normally
+ * `[process.execPath, <script>]`, NOT the script alone. A notification's click
+ * action is executed by `/bin/sh` with a minimal PATH, so relying on the script's
+ * `#!/usr/bin/env node` shebang produces `env: node: No such file or directory`
+ * and a click that does nothing at all, silently. Passing the interpreter
+ * explicitly is what makes the action survive that environment.
+ *
+ * Omitted, the notification is still raised, just not clickable — the right
+ * degradation, since an alert you cannot act on still beats no alert.
  */
-export function localTarget(backend: NotifierBackend, exe?: string): DeliveryTarget {
+export function localTarget(backend: NotifierBackend, invocation?: string[]): DeliveryTarget {
   return {
     name: "local",
     deliver: (envelope) => {
@@ -51,8 +57,13 @@ export function localTarget(backend: NotifierBackend, exe?: string): DeliveryTar
         backend.notify({
           ...text,
           group,
-          ...(exe !== undefined && backend.capabilities.click
-            ? { onClick: { command: exe, args: ["focus", envelope.session.sessionId] } }
+          ...(invocation !== undefined && invocation.length > 0 && backend.capabilities.click
+            ? {
+                onClick: {
+                  command: invocation[0] as string,
+                  args: [...invocation.slice(1), "focus", envelope.session.sessionId],
+                },
+              }
             : {}),
         });
         return Promise.resolve({ ok: true });
@@ -90,8 +101,11 @@ export function remoteTarget(url: string, token: string, timeoutMs = 5_000): Del
 
 export class Dispatcher {
   private last = new Map<string, DeliveryOutcome>();
+  private targets: DeliveryTarget[];
 
-  constructor(private targets: DeliveryTarget[]) {}
+  constructor(targets: DeliveryTarget[]) {
+    this.targets = [...targets];
+  }
 
   /** Deliver everywhere. Failures on one path never suppress another. */
   async send(envelope: NotifyEnvelope): Promise<DeliveryOutcome[]> {
@@ -117,5 +131,17 @@ export class Dispatcher {
 
   names(): string[] {
     return this.targets.map((t) => t.name);
+  }
+
+  /** Attach a delivery path discovered after construction — e.g. an ssh tunnel. */
+  add(target: DeliveryTarget): void {
+    if (this.targets.some((t) => t.name === target.name)) return;
+    this.targets.push(target);
+  }
+
+  /** Drop a path that has gone away, so `status()` stops implying it is live. */
+  remove(name: string): void {
+    this.targets = this.targets.filter((t) => t.name !== name);
+    this.last.delete(name);
   }
 }

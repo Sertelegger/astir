@@ -59,7 +59,14 @@ d7a79b10  /Users/sascha/Projects/clide
 1 agent(s) waiting on you
 ```
 
-If nothing arrives, `curl -s localhost:47000/healthz` tells you which failure it is: `ingested` climbing means it works; `unauthorizedIngest` climbing means `$CLIDE_TOKEN` isn't visible to Claude Code.
+**Hooks bind when a session starts.** A session that was already running when you
+installed the plugin will never send anything — restart it. clide reports this
+rather than showing an empty list: if the provider says sessions are running and
+none of them have reached the daemon, the menu bar says so and names them.
+
+If nothing arrives, `curl -s localhost:47000/healthz` tells you which failure it
+is: `ingested` climbing means it works; `unauthorizedIngest` climbing means
+`$CLIDE_TOKEN` isn't visible to Claude Code.
 
 ## Menu bar (macOS)
 
@@ -81,6 +88,11 @@ waiting, and gives you somewhere to go:
   process ancestry ends at the bundle that owns the window.
 - **Dismiss** stops the reminders without pretending the agent is unblocked; it
   stays listed, greyed, marked `(dismissed)`. A *new* block alerts again.
+- **Notifications are clickable** and take you to the session, provided
+  `terminal-notifier` is installed (`brew install terminal-notifier`). Without it
+  macOS attributes notifications to *Script Editor* — so clicking one opens
+  Script Editor, and they can be neither replaced nor dismissed. clide says which
+  backend it is using rather than leaving you to discover that by clicking.
 - **Forget** drops a session record outright.
 
 The session name comes from Claude Code's own session slug (`clide-ac`), which
@@ -91,18 +103,30 @@ All formatting lives in `clide menubar`, not in the plugin script, so it stays u
 
 ## Sessions on another machine
 
-A session running behind SSH, inside WSL, or in a container can still reach you. Run the notifier where *you* are, and point the remote daemon at it:
+A session running behind SSH, inside WSL, or in a container can still reach you.
+Pair the machine once:
 
 ```bash
-# on your workstation
-clide notifier                       # listens on 127.0.0.1:47001
-
-# forward the port to the box running the agent
-ssh -R 47001:127.0.0.1:47001 devbox
-
-# on that box
-clide daemon --notify-url http://127.0.0.1:47001/notify --notify-token <shared>
+clide pair devbox
 ```
+
+That copies the shared token over your existing SSH access and offers to add a
+`RemoteForward` to `~/.ssh/config`, so the tunnel comes up automatically every
+time you connect. It asks before touching your ssh config, refuses to pair a
+machine that has no clide installed, and changes nothing at all if the host is
+unreachable. `--dry-run` prints what it would do instead.
+
+Afterwards:
+
+```bash
+clide notifier          # here, where you are
+ssh devbox              # as you normally would — the tunnel comes with it
+clide daemon            # over there. No flags: it finds this machine itself.
+```
+
+The remote daemon probes the forwarded port and attaches when it sees a notifier,
+re-checking on a timer — a tunnel comes and goes with the connection, so a
+one-shot probe at startup would be wrong for most of the daemon's life.
 
 Remote sessions then appear **in your menu bar** under "Other machines", counted
 in the same badge — because an agent you can't see is exactly the one that sits

@@ -24,6 +24,10 @@ export interface RemoteEntry {
   reason: string;
   since: number;
   acknowledged: boolean;
+  /** Contact with this machine has been lost; the agent is probably still blocked. */
+  stale?: boolean;
+  /** When we last heard anything about it — what "unreachable since" reports. */
+  lastSeen?: number;
 }
 
 export interface MenubarOpts {
@@ -97,7 +101,10 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
   const exe = opts.exe;
   const now = opts.now ?? Date.now();
   const remote = opts.remote?.agents ?? [];
-  const remoteBlocked = remote.filter((r) => !r.acknowledged).length;
+  // An unreachable entry is not a live alert — we no longer know its state — but
+  // it is not nothing either, so it stays listed and gets its own warning.
+  const remoteBlocked = remote.filter((r) => !r.acknowledged && r.stale !== true).length;
+  const remoteUnreachable = remote.filter((r) => r.stale === true).length;
 
   if (!result.ok) {
     // Deliberately distinct from "idle": the daemon being unreachable is
@@ -122,6 +129,8 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     lines.push(`${blocked} | sfimage=bell.badge.fill color=#ff9500 font=Menlo`);
   } else if (working > 0) {
     lines.push(`${working} | sfimage=circle.fill color=#34c759 font=Menlo`);
+  } else if (remoteUnreachable > 0) {
+    lines.push("| sfimage=exclamationmark.triangle color=#ff3b30");
   } else if (body.sessions.length > 0 || remote.length > 0) {
     lines.push("| sfimage=circle color=#888888");
   } else {
@@ -203,6 +212,23 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     separator();
     lines.push("Other machines | color=#888888");
     for (const entry of remote) {
+      if (entry.stale === true) {
+        // Losing the tunnel does not mean the agent stopped waiting — it means we
+        // stopped being told. Saying so is the whole point; quietly dropping the
+        // row would look identical to "everything is fine".
+        const lastHeard =
+          entry.lastSeen === undefined
+            ? ""
+            : `  ·  last heard ${humanDuration(Math.max(0, now - entry.lastSeen))} ago`;
+        lines.push(`${safe(entry.host)}  ⚠ unreachable | color=#ff3b30`);
+        lines.push(`-- ${safe(entry.repo)}${lastHeard} | color=#888888 font=Menlo`);
+        lines.push(`-- Reconnect:  ssh -R 47001:127.0.0.1:47001 ${safe(entry.host)} | color=#888888`);
+        lines.push(
+          `-- Forget | bash=${exe} param1=forget param2=${entry.sessionId} terminal=false refresh=true color=#888888`,
+        );
+        continue;
+      }
+
       const marker = entry.acknowledged ? "" : " ⏳";
       const colour = entry.acknowledged ? "#888888" : "#ff9500";
       lines.push(`${safe(entry.host)} · ${safe(entry.repo)}${marker} | color=${colour}`);

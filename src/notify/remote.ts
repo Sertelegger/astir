@@ -21,8 +21,24 @@
 
 import type { NotifyEnvelope } from "./envelope.js";
 
-/** How long a remote entry survives without being reconfirmed. */
-const DEFAULT_TTL_MS = 30 * 60_000;
+/**
+ * How long a remote entry survives without being reconfirmed.
+ *
+ * Comfortably longer than the slowest reminder cadence (quarter-hourly), so a
+ * still-blocked agent on a healthy tunnel is always re-heard well before it
+ * would expire. Anything past this really has gone quiet.
+ */
+const DEFAULT_TTL_MS = 2 * 60 * 60_000;
+
+/**
+ * How long silence must last before an entry is *shown* as unreachable.
+ *
+ * Distinct from the TTL on purpose. Vanishing is the wrong failure mode: if the
+ * tunnel dies, the agent is still blocked and you have simply stopped being
+ * told — so the surface must say it has lost contact rather than quietly drop
+ * the row and look calm.
+ */
+const DEFAULT_STALE_MS = 20 * 60_000;
 
 export interface RemoteAgent {
   host: string;
@@ -35,10 +51,13 @@ export interface RemoteAgent {
   /** When we last heard anything about it — the basis for expiry. */
   lastSeen: number;
   acknowledged: boolean;
+  /** True once we have not heard about this agent for `staleAfterMs`. */
+  stale?: boolean;
 }
 
 export interface RemoteViewOpts {
   ttlMs?: number;
+  staleAfterMs?: number;
 }
 
 function keyOf(e: NotifyEnvelope): string {
@@ -48,9 +67,11 @@ function keyOf(e: NotifyEnvelope): string {
 export class RemoteView {
   private entries = new Map<string, RemoteAgent>();
   private readonly ttlMs: number;
+  private readonly staleAfterMs: number;
 
   constructor(opts: RemoteViewOpts = {}) {
     this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
+    this.staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_MS;
   }
 
   /**
@@ -124,8 +145,16 @@ export class RemoteView {
     }
   }
 
-  list(): RemoteAgent[] {
-    return [...this.entries.values()];
+  /**
+   * Every tracked remote agent, each flagged with whether contact has been lost.
+   * `now` is required so staleness is computed at read time rather than depending
+   * on how recently `prune` happened to run.
+   */
+  list(now: number = Date.now()): RemoteAgent[] {
+    return [...this.entries.values()].map((e) => ({
+      ...e,
+      stale: now - e.lastSeen >= this.staleAfterMs,
+    }));
   }
 
   /** Remote agents still demanding attention. */

@@ -393,10 +393,14 @@ describe("PSH-13 — a notification you can act on", () => {
 
   it("attaches a click action that focuses the originating session", async () => {
     const { backend, sent } = capable();
-    await new Dispatcher([localTarget(backend, "/usr/local/bin/clide")]).send(blocked);
+    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/clide/main.js"])]).send(blocked);
+    // The interpreter is part of the command, not assumed to be on PATH: a
+    // notification click runs under `/bin/sh` with a minimal environment, where
+    // relying on the script's shebang yields `env: node: No such file or
+    // directory` and a click that silently does nothing.
     expect(sent[0]?.onClick).toEqual({
-      command: "/usr/local/bin/clide",
-      args: ["focus", "sess-1"],
+      command: "/usr/bin/node",
+      args: ["/opt/clide/main.js", "focus", "sess-1"],
     });
   });
 
@@ -404,7 +408,7 @@ describe("PSH-13 — a notification you can act on", () => {
     // Reminding every minute for ten minutes would otherwise leave a column of
     // ten identical banners that only the user can clear.
     const { backend, sent } = capable();
-    await new Dispatcher([localTarget(backend, "/bin/clide")]).send(blocked);
+    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/clide/main.js"])]).send(blocked);
     expect(sent[0]?.group).toBe("sess-1:a1");
   });
 
@@ -418,7 +422,7 @@ describe("PSH-13 — a notification you can act on", () => {
       cwd: "/repo",
     });
 
-    await new Dispatcher([localTarget(backend, "/bin/clide")]).send(resolved);
+    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/clide/main.js"])]).send(resolved);
 
     expect(removed, "a resolution withdraws, it does not announce").toEqual(["sess-1:a1"]);
     expect(sent).toHaveLength(0);
@@ -431,7 +435,7 @@ describe("PSH-13 — a notification you can act on", () => {
     const backend = backendFromNotifier((n: Notification) => {
       sent.push(n);
     });
-    await new Dispatcher([localTarget(backend, "/bin/clide")]).send(blocked);
+    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/clide/main.js"])]).send(blocked);
     expect(sent[0]?.onClick).toBeUndefined();
   });
 });

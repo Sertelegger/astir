@@ -98,7 +98,7 @@ export class NotifierServer {
       return this.json(res, 200, {
         role: "notifier",
         blockedCount: this.view.blockedCount(),
-        agents: this.view.list(),
+        agents: this.view.list(now),
       });
     }
 

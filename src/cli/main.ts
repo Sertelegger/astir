@@ -3,12 +3,14 @@
 /** The `clide` entrypoint. Kept thin: everything here is covered by an artifact test. */
 
 import { execFileSync } from "node:child_process";
+import { readSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_PORT, readOrCreateToken, readTokenIfPresent, tokenPath } from "../config/paths.js";
 import { Daemon } from "../daemon/server.js";
 import { createClaudeLister } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
+import { detectNotifier } from "../notify/detect.js";
 import { Dispatcher, localTarget, remoteTarget } from "../notify/dispatch.js";
 import { buildEnvelope } from "../notify/envelope.js";
 import { NotifyLoop } from "../notify/loop.js";
@@ -18,6 +20,7 @@ import { NotifierServer } from "../notify/server.js";
 import { fetchRemote, fetchStatus } from "../status/fetch.js";
 import { focusSession } from "../status/focus.js";
 import { renderMenubar } from "../status/menubar.js";
+import { defaultPairDeps, pair } from "./pair.js";
 
 interface Args {
   command: string;
@@ -61,6 +64,7 @@ function usage(): void {
       "  dismiss [sessionId]             stop reminders for what is waiting (all, or one session)\n" +
       "  forget <sessionId>              drop a session record entirely\n" +
       "  focus <sessionId>               raise the window/pane that session is running in\n" +
+      "  pair <host> [--yes]             let a remote machine notify this one\n" +
       "\n" +
       "  daemon also accepts --notify-url <url> --notify-token <t> to deliver to a\n" +
       "  remote notifier as well as locally (e.g. over `ssh -R`).\n",
@@ -199,7 +203,10 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   const backend = createNotifierBackend();
   // The absolute path is what a notification click will invoke; a bare `clide`
   // would not resolve in the environment the notification daemon runs in.
-  const targets = [localTarget(backend, process.argv[1])];
+  // The interpreter AND the script: a notification click runs under `/bin/sh`
+  // with a minimal PATH, where the shebang alone cannot find node.
+  const invocation = [process.execPath, process.argv[1] ?? ""];
+  const targets = [localTarget(backend, invocation)];
   if (!backend.capabilities.click) {
     process.stdout.write(
       `notifications via ${backend.name}: not clickable, and cannot be replaced or dismissed.\n` +
@@ -207,9 +214,10 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
         "    brew install terminal-notifier\n",
     );
   }
+  const notifyPort = Number(flags.get("notify-port") ?? process.env.CLIDE_NOTIFY_PORT ?? port + 1);
+  const remoteToken = String(flags.get("notify-token") ?? process.env.CLIDE_NOTIFY_TOKEN ?? token);
   const notifyUrl = flags.get("notify-url");
   if (typeof notifyUrl === "string") {
-    const remoteToken = String(flags.get("notify-token") ?? process.env.CLIDE_NOTIFY_TOKEN ?? token);
     targets.push(remoteTarget(notifyUrl, remoteToken));
   }
   const dispatcher = new Dispatcher(targets);
@@ -236,6 +244,28 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
     void loop.pulse();
   }, 1000);
   tick.unref();
+
+  // PSH-14 — find the notifier rather than being told where it is. Re-checked on
+  // a slow timer because an `ssh -R` tunnel comes and goes with the connection,
+  // so a one-shot probe at startup would be wrong for most of the daemon's life.
+  if (typeof notifyUrl !== "string") {
+    let attached = false;
+    const probe = async (): Promise<void> => {
+      const found = await detectNotifier(notifyPort);
+      if (found.found && !attached) {
+        attached = true;
+        dispatcher.add(remoteTarget(found.url, remoteToken));
+        process.stdout.write(`notifier detected on 127.0.0.1:${notifyPort} — delivering there too\n`);
+      } else if (!found.found && attached) {
+        attached = false;
+        dispatcher.remove(`remote(${found.url})`);
+        process.stdout.write(`notifier on 127.0.0.1:${notifyPort} went away (${found.reason ?? "gone"})\n`);
+      }
+    };
+    void probe();
+    const probeTimer = setInterval(() => void probe(), 15_000);
+    probeTimer.unref();
+  }
 
   // DMN-05 — fold provider discovery in periodically. Enrichment and pruning only;
   // never a gate on ingest.
@@ -505,6 +535,51 @@ async function runFocus(args: Args): Promise<void> {
   if (!result.ok) process.exitCode = 1;
 }
 
+/** PSH-15 — one command to make a remote machine able to reach this one. */
+function runPair(args: Args): void {
+  const host = args.positional[0];
+  if (host === undefined) {
+    process.stderr.write("clide pair <host>   (an ssh host, as you would type it)\n");
+    process.exitCode = 1;
+    return;
+  }
+  const port = Number(args.flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
+  const notifyPort = Number(args.flags.get("notify-port") ?? process.env.CLIDE_NOTIFY_PORT ?? port + 1);
+
+  const deps = defaultPairDeps();
+  const result = pair(
+    {
+      host,
+      notifyPort,
+      token: readOrCreateToken(),
+      dryRun: args.flags.get("dry-run") === true,
+    },
+    {
+      ...deps,
+      // Editing ~/.ssh/config governs how the user reaches every machine they
+      // own, so it is opt-in. --yes exists for scripted setup.
+      confirm: (question) => {
+        if (args.flags.get("yes") === true) return true;
+        process.stdout.write(`\n  ${question} [y/N] `);
+        const answer = readLineSync();
+        return /^y(es)?$/i.test(answer.trim());
+      },
+    },
+  );
+  if (!result.ok) process.exitCode = 1;
+}
+
+/** Read one line from stdin without pulling in a prompt library. */
+function readLineSync(): string {
+  const buf = Buffer.alloc(64);
+  try {
+    const n = readSync(0, buf, 0, buf.length, null);
+    return buf.subarray(0, n).toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const { command, flags } = args;
@@ -528,6 +603,9 @@ async function main(): Promise<void> {
       return runForget(args);
     case "focus":
       return runFocus(args);
+    case "pair":
+      runPair(args);
+      return;
     default:
       usage();
       return;

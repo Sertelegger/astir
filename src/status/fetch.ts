@@ -33,7 +33,9 @@ export interface RemoteAgentView {
   agentId: string;
   reason: string;
   since: number;
+  lastSeen: number;
   acknowledged: boolean;
+  stale?: boolean;
 }
 
 /**
