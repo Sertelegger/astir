@@ -10,13 +10,24 @@ on:
 
 jobs:
   analyze:
+    # Code scanning requires GitHub Advanced Security on private repositories,
+    # which this repo does not have ("Advanced security has not been purchased").
+    # The analysis itself runs fine — it is the SARIF upload that is refused — so
+    # leaving this ungated means a permanently red check that trains everyone to
+    # ignore CI.
+    #
+    # CodeQL is free on public repositories, so this gate makes the job switch
+    # itself on when the repo is made public, rather than relying on someone
+    # remembering to re-add it. On events where the repository payload is absent
+    # (schedule), the expression is false and the job skips, which is the safe
+    # direction.
+    if: github.event.repository.private == false
     runs-on: ubuntu-latest
     permissions:
       security-events: write
       contents: read
-      # Required for the SARIF upload to read workflow-run metadata. Without it
-      # the analysis itself succeeds and the job then fails with
-      # "Resource not accessible by integration" — needed on private repos.
+      # Required for the SARIF upload to read workflow-run metadata; without it
+      # the job fails with "Resource not accessible by integration".
       actions: read
     steps:
       - uses: actions/checkout@v7
