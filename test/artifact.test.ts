@@ -115,13 +115,20 @@ interface StateBody {
 }
 
 describe("built daemon artifact", () => {
-  it("is executable, so `bin` and menu-bar clicks both work", () => {
-    // `tsc` emits 0644. npm chmods bin links on install, so this is invisible
-    // until someone runs a checkout in place and every SwiftBar menu action
-    // silently does nothing.
-    const mode = statSync(join(REPO, "dist", "cli", "main.js")).mode;
-    expect(mode & 0o111, "dist/cli/main.js must carry the execute bit").toBeGreaterThan(0);
-  });
+  // Windows has no POSIX permission bits — `statSync().mode` reports none and
+  // execution is decided by file extension and PATHEXT instead. The property is
+  // genuinely absent there rather than failing, so assert it only where it means
+  // something.
+  it.skipIf(process.platform === "win32")(
+    "is executable, so `bin` and menu-bar clicks both work",
+    () => {
+      // `tsc` emits 0644. npm chmods bin links on install, so this is invisible
+      // until someone runs a checkout in place and every SwiftBar menu action
+      // silently does nothing.
+      const mode = statSync(join(REPO, "dist", "cli", "main.js")).mode;
+      expect(mode & 0o111, "dist/cli/main.js must carry the execute bit").toBeGreaterThan(0);
+    },
+  );
 
   it("dismiss and forget are reachable on the built artifact (PSH-10)", async () => {
     const sessionId = "artifact-dismiss-check";
