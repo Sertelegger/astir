@@ -4,11 +4,13 @@
 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_PORT, readOrCreateToken, readTokenIfPresent, tokenPath } from "../config/paths.js";
+import { DEFAULT_PORT, readOrCreateToken, tokenPath } from "../config/paths.js";
 import { Daemon } from "../daemon/server.js";
 import { createClaudeLister } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
 import { createNotifier } from "../notify/notify.js";
+import { fetchStatus } from "../status/fetch.js";
+import { renderMenubar } from "../status/menubar.js";
 
 interface Args {
   command: string;
@@ -38,7 +40,8 @@ function usage(): void {
     "clide <command>\n\n" +
       "  daemon [--port N] [--token T]   run the activity daemon\n" +
       "  install                         print setup instructions and ensure the token exists\n" +
-      "  status [--json]                 show live sessions and who is waiting on you\n",
+      "  status [--json]                 show live sessions and who is waiting on you\n" +
+      "  menubar                         SwiftBar/xbar plugin output\n",
   );
 }
 
@@ -138,25 +141,6 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   });
 }
 
-interface StatusAgent {
-  id: string;
-  state: string;
-  agentType: string | null;
-  activeMs: number;
-  blockedMs: number;
-}
-interface StatusSession {
-  sessionId: string;
-  cwd: string;
-  name: string | null;
-  status: string | null;
-  agents: StatusAgent[];
-}
-interface StatusBody {
-  blockedCount: number;
-  sessions: StatusSession[];
-}
-
 /**
  * #5 — a machine-readable view, and the data source the menu-bar item consumes.
  * Kept as a plain command deliberately: if the tray approach changes, the same
@@ -164,29 +148,14 @@ interface StatusBody {
  */
 async function runStatus(flags: Args["flags"]): Promise<void> {
   const port = Number(flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
-  const token = process.env.CLIDE_TOKEN ?? readTokenIfPresent();
-  if (token === null) {
-    process.stderr.write("clide: no token found — run `clide install` first.\n");
-    process.exitCode = 1;
-    return;
-  }
+  const result = await fetchStatus(port);
 
-  let body: StatusBody;
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/state`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      process.stderr.write(`clide: daemon returned ${res.status} — is the token current?\n`);
-      process.exitCode = 1;
-      return;
-    }
-    body = (await res.json()) as StatusBody;
-  } catch {
-    process.stderr.write(`clide: no daemon on 127.0.0.1:${port} — start it with \`clide daemon\`.\n`);
+  if (!result.ok) {
+    process.stderr.write(`clide: ${result.reason}\n`);
     process.exitCode = 1;
     return;
   }
+  const body = result.body;
 
   if (flags.get("json") === true) {
     process.stdout.write(`${JSON.stringify(body, null, 2)}\n`);
@@ -213,6 +182,12 @@ async function runStatus(flags: Args["flags"]): Promise<void> {
   }
 }
 
+/** PSH-03 — SwiftBar/xbar plugin output. Formatting lives in the pure renderer. */
+async function runMenubar(flags: Args["flags"]): Promise<void> {
+  const port = Number(flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
+  process.stdout.write(renderMenubar(await fetchStatus(port)));
+}
+
 async function main(): Promise<void> {
   const { command, flags } = parseArgs(process.argv.slice(2));
   switch (command) {
@@ -220,6 +195,8 @@ async function main(): Promise<void> {
       return runDaemon(flags);
     case "status":
       return runStatus(flags);
+    case "menubar":
+      return runMenubar(flags);
     case "install":
       runInstall();
       return;

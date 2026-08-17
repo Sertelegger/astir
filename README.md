@@ -47,6 +47,19 @@ d7a79b10  /Users/sascha/Projects/clide
 
 If nothing arrives, `curl -s localhost:47000/healthz` tells you which failure it is: `ingested` climbing means it works; `unauthorizedIngest` climbing means `$CLIDE_TOKEN` isn't visible to Claude Code.
 
+## Menu bar (macOS)
+
+An always-visible badge for the one thing that matters: is something waiting on you.
+
+```bash
+brew install --cask swiftbar          # if you don't have it
+ln -s "$PWD/contrib/swiftbar/clide.3s.sh" ~/path/to/your/swiftbar/plugins/
+```
+
+The badge shows a count when agents are blocked, a quiet dot while work is happening, and a warning when the daemon isn't reachable — deliberately distinct from "idle", because rendering a dead daemon as calm would be a lie. The dropdown names *which* session needs you.
+
+All formatting lives in `clide menubar`, not in the plugin script, so it stays unit-tested and works unchanged under xbar, Hammerspoon, or a plain shell prompt if SwiftBar ever stops being the right host.
+
 ## How it works
 
 ```
