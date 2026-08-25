@@ -4,6 +4,8 @@ dist/
 .superpowers/
 .DS_Store
 
-# Design docs, specs and plans are kept locally only — they have their own
-# git repository under docs/ and are deliberately not published here.
-docs/
+# Design docs, specs and plans are kept in a private project-docs repo and
+# symlinked in; they are deliberately not published here. No trailing slash:
+# `docs/` matches a directory, and this path is a SYMLINK, which git treats as
+# neither — so the link itself would show up as untracked and be committable.
+docs
