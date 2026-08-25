@@ -8,6 +8,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { createTtyReader, isAttended, type TtyReader } from "./attended.js";
 
 export interface DiscoveredSession {
   sessionId: string;
@@ -16,6 +17,21 @@ export interface DiscoveredSession {
   /** `status` for attached sessions, `state` for background ones. */
   status: string | null;
   name: string | null;
+  /**
+   * Epoch ms the session started, when the provider reports it.
+   *
+   * This is what makes "clide heard nothing from it" interpretable. A session
+   * older than the daemon cannot have had its `SessionStart` received, so its
+   * silence says nothing about whether its hooks work — and calling that "hooks
+   * are not wired, restart it" sends someone to restart a session that was fine.
+   */
+  startedAt: number | null;
+  /**
+   * DMN-11 — whether a human is sitting at it. `undefined` means we could not
+   * tell, which is treated as attended: hiding a session someone is working in
+   * is far worse than listing a background one.
+   */
+  attended?: boolean;
 }
 
 /**
@@ -34,6 +50,7 @@ interface RawAgent {
   status?: unknown;
   state?: unknown;
   name?: unknown;
+  startedAt?: unknown;
 }
 
 export function parseAgentsJson(stdout: string): DiscoveredSession[] | null {
@@ -55,6 +72,7 @@ export function parseAgentsJson(stdout: string): DiscoveredSession[] | null {
       status:
         typeof item.status === "string" ? item.status : typeof item.state === "string" ? item.state : null,
       name: typeof item.name === "string" ? item.name : null,
+      startedAt: typeof item.startedAt === "number" ? item.startedAt : null,
     });
   }
   return out;
@@ -65,9 +83,9 @@ export function parseAgentsJson(stdout: string): DiscoveredSession[] | null {
  * invocation, or malformed output all degrade to "I know of no sessions", which
  * the caller treats as "don't prune anything" rather than "everything is dead".
  */
-export function createClaudeLister(timeoutMs = 5_000): SessionLister {
-  return () =>
-    new Promise<DiscoveredSession[] | null>((resolve) => {
+export function createClaudeLister(timeoutMs = 5_000, ttys: TtyReader = createTtyReader()): SessionLister {
+  return async () => {
+    const listed = await new Promise<DiscoveredSession[] | null>((resolve) => {
       execFile(
         "claude",
         ["agents", "--json"],
@@ -78,4 +96,14 @@ export function createClaudeLister(timeoutMs = 5_000): SessionLister {
         },
       );
     });
+    if (listed === null) return null;
+
+    // DMN-11 — one `ps` for the whole table, not one per session. A failure
+    // here leaves every session unclassified rather than misclassified.
+    const table = await ttys().catch(() => new Map<number, string>());
+    return listed.map((d) => {
+      const attended = isAttended(d.pid, table);
+      return attended === undefined ? d : { ...d, attended };
+    });
+  };
 }

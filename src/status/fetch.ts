@@ -1,7 +1,7 @@
 /** Shared daemon query for the `status` and `menubar` surfaces. */
 
 import { readTokenIfPresent } from "../config/paths.js";
-import type { StatusBody, StatusResult } from "./types.js";
+import type { RemoteSession, StatusBody, StatusResult } from "./types.js";
 
 /**
  * Never throws. Every failure becomes a `reason` a surface can display, because
@@ -47,7 +47,7 @@ export interface RemoteAgentView {
 export async function fetchRemote(
   port: number,
   timeoutMs = 3_000,
-): Promise<{ agents: RemoteAgentView[] } | null> {
+): Promise<{ agents: RemoteAgentView[]; sessions: RemoteSession[] } | null> {
   const token = process.env.CLIDE_NOTIFY_TOKEN ?? process.env.CLIDE_TOKEN ?? readTokenIfPresent();
   if (token === null) return null;
 
@@ -57,8 +57,10 @@ export async function fetchRemote(
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return null;
-    const body = (await res.json()) as { agents?: RemoteAgentView[] };
-    return { agents: body.agents ?? [] };
+    const body = (await res.json()) as { agents?: RemoteAgentView[]; sessions?: RemoteSession[] };
+    // DMN-10 — `sessions` is absent from an older notifier, which is not an
+    // error: it simply has nothing but doorbells to report.
+    return { agents: body.agents ?? [], sessions: body.sessions ?? [] };
   } catch {
     return null;
   }

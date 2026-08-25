@@ -3,11 +3,16 @@
 /** The `clide` entrypoint. Kept thin: everything here is covered by an artifact test. */
 
 import { execFileSync } from "node:child_process";
-import { readSync } from "node:fs";
+import { readFileSync, readSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_PORT, readOrCreateToken, readTokenIfPresent, tokenPath } from "../config/paths.js";
+import { addWatchedHost, hostsPath, readWatchedHosts, removeWatchedHost } from "../config/hosts.js";
+import { clideDir, DEFAULT_PORT, readOrCreateToken, readTokenIfPresent, tokenPath } from "../config/paths.js";
+import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
+import { installService, serviceInstalled, servicePath, uninstallService } from "../config/service.js";
 import { Daemon } from "../daemon/server.js";
+import { createSshLister, RemoteDiscovery } from "../discovery/remote.js";
 import { createClaudeLister } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
 import { detectNotifier } from "../notify/detect.js";
@@ -16,11 +21,19 @@ import { buildEnvelope } from "../notify/envelope.js";
 import { NotifyLoop } from "../notify/loop.js";
 import { backendFromNotifier, createNotifier, createNotifierBackend } from "../notify/notify.js";
 import { NotifyPolicy } from "../notify/policy.js";
+import { pushRoster, rosterUrlFrom } from "../notify/roster.js";
 import { NotifierServer } from "../notify/server.js";
 import { fetchRemote, fetchStatus } from "../status/fetch.js";
-import { focusSession } from "../status/focus.js";
 import { renderMenubar } from "../status/menubar.js";
-import { defaultPairDeps, pair } from "./pair.js";
+import { defaultPairDeps, pair, pairedHosts, sshConfigPath } from "./pair.js";
+import {
+  claudeSettingsPath,
+  defaultSettingsDeps,
+  installToken,
+  parseSettings,
+  tokenIsFilteredOut,
+  tokenState,
+} from "./settings.js";
 
 interface Args {
   command: string;
@@ -56,7 +69,7 @@ function usage(): void {
   process.stdout.write(
     "clide <command>\n\n" +
       "  daemon [--port N] [--token T]   run the activity daemon\n" +
-      "  install [--no-plugin]           register the hooks and print what is left to do\n" +
+      "  install [--no-plugin]           register the hooks, install the token, report the rest\n" +
       "  status [--json]                 show live sessions and who is waiting on you\n" +
       "  menubar                         SwiftBar/xbar plugin output\n" +
       "  notifier [--port N]             receive doorbells from another host and notify here\n" +
@@ -65,6 +78,9 @@ function usage(): void {
       "  forget <sessionId>              drop a session record entirely\n" +
       "  focus <sessionId>               raise the window/pane that session is running in\n" +
       "  pair <host> [--yes]             let a remote machine notify this one\n" +
+      "  allow-sandbox <path>            let a sandboxed project reach the daemon\n" +
+      "  watch <host> [--remove]         see sessions on a machine you ssh into\n" +
+      "  autostart [--remove]            keep the daemon running across reboots\n" +
       "\n" +
       "  daemon also accepts --notify-url <url> --notify-token <t> to deliver to a\n" +
       "  remote notifier as well as locally (e.g. over `ssh -R`).\n",
@@ -134,17 +150,58 @@ function runInstall(flags: Args["flags"]): void {
     out("");
   }
 
+  // INS-04 — the token has to be in Claude Code's environment or every hook
+  // 401s. Doing it here rather than printing a line is the whole point: the
+  // printed version was skippable in silence, and did nothing at all for
+  // Claude Code started from the desktop app or an IDE.
+  out("Installing the daemon token where the hooks can read it…");
+  const installed = installToken(token);
+  out(`  ${installed.detail}`);
+  out("");
+
+  // DMN-08 — offer, never apply. A sandbox is a boundary someone chose, and
+  // widening it as a side effect of installing a status tool is precisely what
+  // SEC-02 forbids. So this states the situation and the one command that fixes
+  // it, and leaves the decision where it belongs.
+  const sandbox = inspectSandbox(process.cwd());
+  if (sandbox.blocked) {
+    out("This project is sandboxed, so its hooks cannot reach the daemon:");
+    out("  the egress proxy refuses them before they arrive, which looks");
+    out("  identical to no hooks at all. Allow it — only if you want to — with:");
+    out("");
+    out(`    clide allow-sandbox ${process.cwd()}`);
+    out("");
+  }
+
   process.stdout.write(
     [
       "clide setup",
       "",
-      "1. Export the daemon token where Claude Code can see it.",
-      "   Hooks read it via $CLIDE_TOKEN. If it is unset the header interpolates to an",
-      "   empty string and every event is rejected — the daemon will say so rather than",
-      "   failing silently, but it is easier to just set it.",
-      "",
-      `   Add to your shell profile:   export CLIDE_TOKEN=${token}`,
-      `   (stored at ${tokenPath()}, mode 0600)`,
+      ...(installed.ok
+        ? [
+            "1. The daemon token is installed. Hooks read it via $CLIDE_TOKEN, which",
+            `   Claude Code now sets from "env" in ${installed.path}.`,
+            `   (source of truth is ${tokenPath()}, mode 0600)`,
+            "",
+            "   Claude Code watches that file, so a session already running usually starts",
+            "   sending within a tool call or two. If `unauthorizedIngest` in",
+            "   `curl -s localhost:47000/healthz` keeps climbing, restart it.",
+          ]
+        : [
+            "1. Put the daemon token where Claude Code can see it — THIS IS NOT DONE YET.",
+            "   Hooks read it via $CLIDE_TOKEN. Unset, the header interpolates to an empty",
+            "   string and every event is rejected; the daemon counts those separately",
+            "   rather than failing silently, but nothing will work until this is fixed.",
+            "",
+            `   Add to ${claudeSettingsPath()}:`,
+            '     "env": {',
+            `       "CLIDE_TOKEN": "${token}"`,
+            "     }",
+            "",
+            "   A shell profile works too, but only for Claude Code started from a",
+            "   terminal — the desktop app and IDE extensions never source one:",
+            `     export CLIDE_TOKEN=${token}`,
+          ]),
       "",
       "2. The plugin registers the hooks. `clide install` does this for you; if it",
       "   could not, or you passed --no-plugin, do it by hand in Claude Code:",
@@ -217,6 +274,10 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   const notifyPort = Number(flags.get("notify-port") ?? process.env.CLIDE_NOTIFY_PORT ?? port + 1);
   const remoteToken = String(flags.get("notify-token") ?? process.env.CLIDE_NOTIFY_TOKEN ?? token);
   const notifyUrl = flags.get("notify-url");
+  // Whichever notifier we currently believe in — set explicitly or found by the
+  // probe below, and cleared when the tunnel drops. The roster follows it.
+  let notifierUrl: string | null = typeof notifyUrl === "string" ? notifyUrl : null;
+  const rosterTarget = (): string | null => (notifierUrl === null ? null : rosterUrlFrom(notifierUrl));
   if (typeof notifyUrl === "string") {
     targets.push(remoteTarget(notifyUrl, remoteToken));
   }
@@ -232,7 +293,29 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   // Notification decisions live entirely in the loop rather than being split
   // between here and an ingest callback: one decision point means a reminder and
   // an initial alert cannot disagree, or fire twice for the same moment.
-  const daemon = new Daemon({ token, registry });
+  // DMN-09 — sessions on paired hosts. The getter hands over whatever the last
+  // poll produced, so /state never waits on a network round trip.
+  const remoteDiscovery = new RemoteDiscovery({
+    hosts: () => {
+      // Pairing is a stronger opt-in and implies watching; the hosts file
+      // covers the machines where clide is not installed at all.
+      let paired: string[] = [];
+      try {
+        paired = pairedHosts(readFileSync(sshConfigPath(), "utf8"), notifyPort);
+      } catch {
+        // No ssh config is the normal single-machine case, not an error.
+      }
+      const watched = readWatchedHosts();
+      return [...new Set([...watched, ...paired])];
+    },
+    list: createSshLister(),
+  });
+
+  const daemon = new Daemon({
+    token,
+    registry,
+    remoteSessions: () => remoteDiscovery.list(),
+  });
 
   const bound = await daemon.listen(port);
   // The artifact test parses this line; keep the format stable.
@@ -254,10 +337,12 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
       const found = await detectNotifier(notifyPort);
       if (found.found && !attached) {
         attached = true;
+        notifierUrl = found.url;
         dispatcher.add(remoteTarget(found.url, remoteToken));
         process.stdout.write(`notifier detected on 127.0.0.1:${notifyPort} — delivering there too\n`);
       } else if (!found.found && attached) {
         attached = false;
+        notifierUrl = null;
         dispatcher.remove(`remote(${found.url})`);
         process.stdout.write(`notifier on 127.0.0.1:${notifyPort} went away (${found.reason ?? "gone"})\n`);
       }
@@ -279,9 +364,46 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   const discoveryTick = setInterval(reconcile, 5_000);
   discoveryTick.unref();
 
+  // DMN-09 — slower than local discovery on purpose: each tick is an SSH round
+  // trip per paired host, and a machine's session list does not change fast
+  // enough to justify paying that every five seconds.
+  const pollRemote = (): void => void remoteDiscovery.poll().catch(() => undefined);
+  pollRemote();
+  const remoteTick = setInterval(pollRemote, 30_000);
+  remoteTick.unref();
+
+  // DMN-10 — announce what THIS machine is running to whichever notifier we can
+  // reach, so the far end sees ordinary sessions and not only doorbells.
+  const rosterTick = setInterval(() => {
+    const url = rosterTarget();
+    if (url === null) return;
+    const sessions = [
+      ...registry.list().map((r) => ({
+        sessionId: r.sessionId,
+        cwd: r.cwd,
+        name: r.name,
+        status: r.status,
+        ...(r.attended === undefined ? {} : { attended: r.attended }),
+      })),
+      // Sessions we cannot hear are still running here, and the far end has no
+      // other way to learn they exist.
+      ...registry.silent().map((d) => ({
+        sessionId: d.sessionId,
+        cwd: d.cwd,
+        name: d.name,
+        status: d.status,
+        ...(d.attended === undefined ? {} : { attended: d.attended }),
+      })),
+    ];
+    void pushRoster(url, remoteToken, { host: hostname(), sessions });
+  }, 10_000);
+  rosterTick.unref();
+
   const shutdown = (): void => {
     clearInterval(tick);
     clearInterval(discoveryTick);
+    clearInterval(remoteTick);
+    clearInterval(rosterTick);
     void daemon.close().then(() => process.exit(0));
   };
   process.once("SIGINT", shutdown);
@@ -340,16 +462,26 @@ async function runStatus(flags: Args["flags"]): Promise<void> {
 /** PSH-03 — SwiftBar/xbar plugin output. Formatting lives in the pure renderer. */
 async function runMenubar(flags: Args["flags"]): Promise<void> {
   const port = Number(flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
-  // SwiftBar's `bash=` runs with a minimal PATH, so menu actions must invoke an
-  // absolute path or clicking them would silently do nothing.
-  const exe = process.argv[1] ?? "clide";
+  // The interpreter AND the script. SwiftBar's `bash=` runs from launchd with a
+  // minimal PATH, so handing it main.js alone leaves the click depending on
+  // `#!/usr/bin/env node` finding node there — which it does not when node came
+  // from a version manager. The exec fails 127 and the menu item looks inert.
+  const invocation = [process.execPath, process.argv[1] ?? ""];
   // PSH-12 — one surface for every machine. Fetched together so a slow notifier
   // cannot delay the local view.
   const [status, remote] = await Promise.all([
     fetchStatus(port),
     fetchRemote(Number(flags.get("notify-port") ?? process.env.CLIDE_NOTIFY_PORT ?? port + 1)),
   ]);
-  process.stdout.write(renderMenubar(status, { exe, remote }));
+  // DMN-08 — the daemon cannot detect this: the whole symptom is that nothing
+  // arrives from these sessions. Their own project settings can, so the surface
+  // that has the cwd does the reading.
+  if (status.ok && status.body.silent !== undefined) {
+    for (const s of status.body.silent) {
+      s.sandboxBlocked = inspectSandbox(s.cwd).blocked;
+    }
+  }
+  process.stdout.write(renderMenubar(status, { invocation, remote }));
 }
 
 /**
@@ -397,10 +529,43 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
   out("clide doctor");
   out("");
 
-  const token = process.env.CLIDE_TOKEN ?? readTokenIfPresent();
-  out(`  token file      ${token === null ? "MISSING — run `clide install`" : `ok (${tokenPath()})`}`);
+  const fileToken = readTokenIfPresent();
+  out(`  token file      ${fileToken === null ? "MISSING — run `clide install`" : `ok (${tokenPath()})`}`);
+
+  // INS-04 — where the hooks actually read the token from. Doctor's own
+  // environment is not the signal: it runs in a terminal that may well export
+  // CLIDE_TOKEN while the Claude Code being diagnosed was launched from the
+  // desktop app and never saw it. settings.json is what both of them share.
+  const settings = defaultSettingsDeps();
+  const settingsPath = settings.path();
+  const parsed = parseSettings(settings.read(settingsPath));
+  if (!parsed.ok) {
+    out(`  settings.json   UNREADABLE — ${parsed.reason}`);
+  } else if (fileToken === null) {
+    out("  settings.json   skipped — no token file to compare against");
+  } else {
+    const state = tokenState(parsed.settings, fileToken);
+    const described =
+      state.kind === "current"
+        ? `CLIDE_TOKEN set (${settingsPath})`
+        : state.kind === "stale"
+          ? "CLIDE_TOKEN is STALE — does not match the token file; run `clide install`"
+          : "CLIDE_TOKEN NOT SET — hooks will be rejected; run `clide install`";
+    out(`  settings.json   ${described}`);
+    if (tokenIsFilteredOut(parsed.settings)) {
+      out('  ⚠ httpHookAllowedEnvVars is set and omits "CLIDE_TOKEN" — the header will');
+      out("    be filtered to empty no matter how the variable is installed.");
+    }
+  }
+
+  // DMN-12 — whether it will still be here after a reboot. A daemon that must be
+  // started by hand is one hook-error storm away from being uninstalled.
   out(
-    `  $CLIDE_TOKEN    ${process.env.CLIDE_TOKEN ? "set" : "not set — hooks will be rejected; see `clide install`"}`,
+    `  autostart       ${
+      serviceInstalled()
+        ? `on (${servicePath()})`
+        : "off — hooks error while the daemon is down; `clide autostart` fixes that"
+    }`,
   );
 
   const status = await fetchStatus(port);
@@ -408,6 +573,14 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
     const agents = status.body.sessions.reduce((n, s) => n + s.agents.length, 0);
     out(`  daemon          ok — ${status.body.sessions.length} session(s), ${agents} agent(s)`);
     out(`  blocked now     ${status.body.blockedCount}`);
+
+    // DMN-08 — name the silent sessions clide can actually explain.
+    const blocked = (status.body.silent ?? []).filter((s) => inspectSandbox(s.cwd).blocked);
+    for (const s of blocked) {
+      out(`  ⚠ sandboxed     ${s.cwd}`);
+      out(`                  its hooks are refused before they reach the daemon; allow with`);
+      out(`                  clide allow-sandbox ${s.cwd}`);
+    }
   } else {
     out(`  daemon          ${status.reason}`);
   }
@@ -508,6 +681,124 @@ async function runForget(args: Args): Promise<void> {
 }
 
 /** PSH-11 — raise the window the session is running in. */
+/**
+ * DMN-08 — let a sandboxed project reach the daemon.
+ *
+ * Separate, explicit, and never run by `install`: a sandbox is a security
+ * boundary someone chose, and widening it as a side effect of setting up a
+ * status tool would be exactly the behaviour SEC-02 forbids. Reached either by
+ * typing this or by clicking the menu item that says what it will do.
+ */
+function runAllowSandbox(args: Args): void {
+  // `parseArgs` gives a flag the next non-flag token as its value, so
+  // `--dry-run <path>` puts the path on the flag and leaves no positional.
+  // Accepting it from either place beats making the argument order load-bearing.
+  const flagged = args.flags.get("dry-run");
+  const target = args.positional[0] ?? (typeof flagged === "string" ? flagged : undefined);
+  const dryRun = flagged !== undefined;
+  if (target === undefined) {
+    process.stderr.write("clide allow-sandbox <path-to-project>\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  const state = inspectSandbox(target);
+  if (!state.enabled) {
+    process.stdout.write(
+      `${target} is not sandboxed — nothing to allow.\n` +
+        "If its sessions are still silent, they were probably started before the\n" +
+        "clide plugin; hooks bind at session start, so restart them.\n",
+    );
+    return;
+  }
+
+  if (dryRun) {
+    process.stdout.write(`Would add ${LOOPBACK} to sandbox.network.allowedDomains in\n  ${state.path}\n`);
+    return;
+  }
+
+  const result = allowLoopback(target);
+  process.stdout.write(`${result.detail}\n`);
+  if (!result.ok) {
+    process.exitCode = 1;
+    return;
+  }
+  if (result.changed) {
+    process.stdout.write(
+      "Restart that session for it to take effect.\n" +
+        `Undo by removing ${LOOPBACK} from sandbox.network.allowedDomains in that file.\n`,
+    );
+  }
+}
+
+/**
+ * DMN-09 — watch a machine you only ever ssh into.
+ *
+ * Deliberately lighter than `clide pair`: that copies a token and edits
+ * ~/.ssh/config so a remote daemon can call back, and refuses if clide is not
+ * installed over there. Watching needs none of it — clide asks the far side
+ * `claude agents --json` over the ssh access you already have.
+ */
+function runWatch(args: Args): void {
+  const host = args.positional[0];
+  if (host === undefined) {
+    process.stderr.write("clide watch <host> [--remove]\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  if (args.flags.get("remove") === true) {
+    const r = removeWatchedHost(host);
+    process.stdout.write(`no longer watching ${host} (${r.path})\n`);
+    return;
+  }
+
+  const r = addWatchedHost(host);
+  process.stdout.write(r.added ? `watching ${host} (${r.path})\n` : `already watching ${host} (${r.path})\n`);
+  const watched = readWatchedHosts();
+  process.stdout.write(`  ${watched.length} host(s): ${watched.join(", ")}\n`);
+  process.stdout.write(
+    "  clide asks each one `claude agents --json` over ssh every 30s.\n" +
+      `  Remove with \`clide watch ${host} --remove\`, or edit ${hostsPath()}.\n`,
+  );
+}
+
+/**
+ * DMN-12 — keep the daemon running.
+ *
+ * Not a convenience. An http hook cannot fail quietly — its schema has no field
+ * for it, and `async` is command-hook-only — so every event fired while the
+ * daemon is down surfaces as an error in whatever session the user is working
+ * in, twice per tool call. The only way to be quiet is to be running.
+ */
+function runAutostart(args: Args): void {
+  const out = (line: string): void => {
+    process.stdout.write(`${line}\n`);
+  };
+
+  if (args.flags.get("remove") === true) {
+    const removed = uninstallService();
+    out(removed.detail);
+    if (!removed.ok) process.exitCode = 1;
+    return;
+  }
+
+  const result = installService({
+    node: process.execPath,
+    script: process.argv[1] ?? "",
+    logPath: join(clideDir(), "daemon.log"),
+  });
+  out(result.detail);
+  if (!result.ok) {
+    process.exitCode = 1;
+    return;
+  }
+  out("");
+  out("The daemon now starts at login and restarts if it dies.");
+  out(`  logs:    ${join(clideDir(), "daemon.log")}`);
+  out(`  remove:  clide autostart --remove`);
+}
+
 async function runFocus(args: Args): Promise<void> {
   const port = Number(args.flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
   const sessionId = args.positional[0];
@@ -517,22 +808,22 @@ async function runFocus(args: Args): Promise<void> {
     return;
   }
 
-  const status = await fetchStatus(port);
-  if (!status.ok) {
-    process.stderr.write(`clide: ${status.reason}\n`);
-    process.exitCode = 1;
-    return;
-  }
-  const session = status.body.sessions.find((s) => s.sessionId === sessionId);
-  if (session === undefined) {
-    process.stderr.write(`clide: no live session ${sessionId}\n`);
+  // Delegated to the daemon rather than done here on purpose — see the /focus
+  // route. Doing it in this process would charge the macOS permission to
+  // whichever app happened to invoke the CLI.
+  const result = await control(port, "/focus", sessionId);
+  if (result === null) {
+    process.stderr.write(
+      `clide: could not reach a daemon on 127.0.0.1:${port}\n` +
+        "focus is performed by the daemon so that only one application needs\n" +
+        "macOS permission to raise windows; start it with `clide daemon`.\n",
+    );
     process.exitCode = 1;
     return;
   }
 
-  const result = focusSession(session);
-  process.stdout.write(`${result.detail}\n`);
-  if (!result.ok) process.exitCode = 1;
+  process.stdout.write(`${String(result.detail ?? "done")}\n`);
+  if (result.ok !== true) process.exitCode = 1;
 }
 
 /** PSH-15 — one command to make a remote machine able to reach this one. */
@@ -605,6 +896,15 @@ async function main(): Promise<void> {
       return runFocus(args);
     case "pair":
       runPair(args);
+      return;
+    case "allow-sandbox":
+      runAllowSandbox(args);
+      return;
+    case "watch":
+      runWatch(args);
+      return;
+    case "autostart":
+      runAutostart(args);
       return;
     default:
       usage();

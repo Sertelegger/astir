@@ -37,9 +37,43 @@ clide install           # registers the hooks, creates ~/.clide/token (0600)
 for you, so the hooks are registered without typing slash commands or editing
 any config by hand. Pass `--no-plugin` to skip that and do it yourself.
 
-One step is left to you on purpose: exporting `CLIDE_TOKEN` in your shell
-profile. Hooks read it via `$CLIDE_TOKEN`, and clide does not edit your dotfiles.
-`clide install` prints the exact line.
+It also installs the daemon token. The hooks are `type: "http"` — Claude Code
+POSTs to the daemon from its own process, so nothing of clide's runs at hook time
+to read `~/.clide/token`, and an http hook header can only be filled from an
+environment variable. `clide install` writes `CLIDE_TOKEN` into the `env` block of
+`~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`), merging into whatever is
+already there and refusing to touch the file if it cannot parse it.
+
+Your dotfiles are still not edited. A shell profile would have been the wrong
+place anyway: it is only sourced by interactive shells, so Claude Code started
+from the desktop app or an IDE extension would never have seen it.
+
+Claude Code watches `settings.json`, so a session that is already running
+generally picks the token up within a tool call or two — no restart needed. If
+`unauthorizedIngest` keeps climbing (see below), restart it.
+
+### Keeping it running
+
+The daemon starts itself when a Claude Code session starts — a `SessionStart`
+command hook checks the port and launches it if nothing is listening. It runs
+`async`, so it never delays a session, and costs one process per *session*
+rather than per tool call. `CLIDE_NO_AUTOSTART=1` turns it off.
+
+That matters more than it sounds. The capture hooks are `type: "http"`, and an
+http hook **cannot fail quietly** — its schema has no field for ignoring a
+refused connection, and `async` exists only on command hooks. So a daemon that is
+down turns every tool call into two visible hook errors in whatever session you
+are working in. The only way to be quiet is to be running.
+
+If you would rather have it up regardless of Claude Code — after a reboot, or for
+remote sessions pushing rosters to your notifier:
+
+```bash
+clide autostart          # a LaunchAgent: starts at login, restarts on crash
+clide autostart --remove
+```
+
+`clide doctor` reports which of these is in place.
 
 **There is deliberately no npm `postinstall` that registers hooks.** Reaching
 into another tool's configuration as a side effect of `npm install` would also
@@ -66,7 +100,10 @@ none of them have reached the daemon, the menu bar says so and names them.
 
 If nothing arrives, `curl -s localhost:47000/healthz` tells you which failure it
 is: `ingested` climbing means it works; `unauthorizedIngest` climbing means
-`$CLIDE_TOKEN` isn't visible to Claude Code.
+`$CLIDE_TOKEN` isn't visible to Claude Code. `clide doctor` names that case
+directly — it compares `settings.json` against the token file rather than
+checking its own environment, which belongs to your terminal and not to the
+Claude Code being diagnosed.
 
 ## Menu bar (macOS)
 
@@ -103,7 +140,31 @@ All formatting lives in `clide menubar`, not in the plugin script, so it stays u
 
 ## Sessions on another machine
 
-A session running behind SSH, inside WSL, or in a container can still reach you.
+A session opened over SSH — VS Code Remote-SSH, or a terminal on another box —
+runs its process *there*, so `claude agents --json` here cannot see it at all.
+Two routes make those sessions visible, and they compose.
+
+**Watch a host** when clide is not installed on it. Nothing is needed over there
+beyond the SSH access you already have:
+
+```bash
+clide watch megabrain-dev
+```
+
+The daemon asks it `claude agents --json` every 30s through a *login* shell —
+`ssh host cmd` sources no profile, so a version-managed `claude` would not be on
+PATH — and the menu bar reads a cache, so no render ever waits on a round trip. A
+host that stops answering is shown as unreachable rather than quietly dropped.
+Remove one with `clide watch <host> --remove`, or edit `~/.clide/hosts`. Hosts
+are opted in explicitly; iterating `~/.ssh/config` would connect to production
+boxes and jump hosts on a timer.
+
+**Pair a host** when clide *is* running on it. You get everything above plus live
+status, because that daemon pushes its own roster down the same tunnel it uses
+for doorbells — and it can reach you when an agent blocks. Where both routes know
+a session it is listed once, from the push, which comes from the daemon actually
+watching it.
+
 Pair the machine once:
 
 ```bash
@@ -151,6 +212,32 @@ with the doorbell, and it's omitted entirely when the alert is from the machine
 you're already sitting at.
 
 `clide doctor --notify` reports which delivery paths are live and fires a test through them. It has to ask whether you saw it: the OS reports success even when it suppressed the notification.
+
+## Background sessions
+
+Plugins and scripts launch Claude Code too — claude-mem runs observer sessions,
+CI runs headless ones. They're real, but nothing in them will ever wait on you,
+so they're grouped at the bottom rather than competing with the repos you're
+actually working in:
+
+```
+2 background sessions
+-- Launched by a plugin or script — nothing here waits on you
+-- observer-sessions
+-- observer-sessions  ·  megabrain-dev
+```
+
+The signal is the **controlling terminal** — a session you can type at has one, a
+program-launched session doesn't. Not the cwd (that hardcodes one plugin's
+layout), and not the provider's `kind` field, which reports `interactive` for
+claude-mem's observers too. A terminal is a property of the process, so this
+keeps working for other providers.
+
+Anything clide can't classify counts as yours: `ps` doesn't exist on Windows and
+a process can exit mid-poll, and hiding a session you're working in is far worse
+than listing a chore. That also means a session found by SSH polling is never
+classified — a terminal is a local fact — so remote background sessions are only
+recognised when clide is running over there and pushing its roster.
 
 ## How it works
 

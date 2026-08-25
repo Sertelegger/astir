@@ -4,13 +4,20 @@
     "",
     "type=http, not command: there is no process to spawn, so no Node startup cost per",
     "tool call. Note that `async` is a command-hook-only field and is deliberately absent",
-    "here — an http hook is synchronous, which is safe because the receiver is a local",
+    "here \u2014 an http hook is synchronous, which is safe because the receiver is a local",
     "in-memory server: an absent daemon refuses the connection immediately, and a hung one",
     "is bounded by the explicit timeout below (the platform default is 600s, not a budget).",
     "",
     "The token comes from $CLIDE_TOKEN. If that variable is unset the header interpolates",
     "to an empty string and every event is rejected, so the daemon counts and reports",
-    "unauthorized ingest separately from silence. Run `clide install` for the export line."
+    "unauthorized ingest separately from silence. Run `clide install` for the export line.",
+    "",
+    "SessionStart also runs `hooks/ensure-daemon.sh`, which starts the daemon if it",
+    "is not already listening. This is the answer to hook noise: an http hook cannot",
+    "fail quietly \u2014 there is no field for it, and `async` is command-hook-only \u2014 so a",
+    "daemon that is down turns every tool call into two visible errors. Starting it",
+    "here costs one process per SESSION rather than per tool call, and `async: true`",
+    "means it never delays a session coming up. CLIDE_NO_AUTOSTART=1 disables it."
   ],
   "hooks": {
     "SessionStart": [
@@ -20,8 +27,18 @@
             "type": "http",
             "url": "http://127.0.0.1:47000/hook/claude",
             "timeout": 5,
-            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
-            "allowedEnvVars": ["CLIDE_TOKEN"]
+            "headers": {
+              "Authorization": "Bearer $CLIDE_TOKEN"
+            },
+            "allowedEnvVars": [
+              "CLIDE_TOKEN"
+            ]
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/ensure-daemon.sh",
+            "async": true,
+            "timeout": 10
           }
         ]
       }
@@ -33,8 +50,12 @@
             "type": "http",
             "url": "http://127.0.0.1:47000/hook/claude",
             "timeout": 5,
-            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
-            "allowedEnvVars": ["CLIDE_TOKEN"]
+            "headers": {
+              "Authorization": "Bearer $CLIDE_TOKEN"
+            },
+            "allowedEnvVars": [
+              "CLIDE_TOKEN"
+            ]
           }
         ]
       }
@@ -46,8 +67,12 @@
             "type": "http",
             "url": "http://127.0.0.1:47000/hook/claude",
             "timeout": 5,
-            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
-            "allowedEnvVars": ["CLIDE_TOKEN"]
+            "headers": {
+              "Authorization": "Bearer $CLIDE_TOKEN"
+            },
+            "allowedEnvVars": [
+              "CLIDE_TOKEN"
+            ]
           }
         ]
       }
@@ -59,8 +84,12 @@
             "type": "http",
             "url": "http://127.0.0.1:47000/hook/claude",
             "timeout": 5,
-            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
-            "allowedEnvVars": ["CLIDE_TOKEN"]
+            "headers": {
+              "Authorization": "Bearer $CLIDE_TOKEN"
+            },
+            "allowedEnvVars": [
+              "CLIDE_TOKEN"
+            ]
           }
         ]
       }
@@ -72,8 +101,12 @@
             "type": "http",
             "url": "http://127.0.0.1:47000/hook/claude",
             "timeout": 5,
-            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
-            "allowedEnvVars": ["CLIDE_TOKEN"]
+            "headers": {
+              "Authorization": "Bearer $CLIDE_TOKEN"
+            },
+            "allowedEnvVars": [
+              "CLIDE_TOKEN"
+            ]
           }
         ]
       }
@@ -85,8 +118,12 @@
             "type": "http",
             "url": "http://127.0.0.1:47000/hook/claude",
             "timeout": 5,
-            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
-            "allowedEnvVars": ["CLIDE_TOKEN"]
+            "headers": {
+              "Authorization": "Bearer $CLIDE_TOKEN"
+            },
+            "allowedEnvVars": [
+              "CLIDE_TOKEN"
+            ]
           }
         ]
       }
@@ -98,8 +135,12 @@
             "type": "http",
             "url": "http://127.0.0.1:47000/hook/claude",
             "timeout": 5,
-            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
-            "allowedEnvVars": ["CLIDE_TOKEN"]
+            "headers": {
+              "Authorization": "Bearer $CLIDE_TOKEN"
+            },
+            "allowedEnvVars": [
+              "CLIDE_TOKEN"
+            ]
           }
         ]
       }
@@ -111,8 +152,12 @@
             "type": "http",
             "url": "http://127.0.0.1:47000/hook/claude",
             "timeout": 5,
-            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
-            "allowedEnvVars": ["CLIDE_TOKEN"]
+            "headers": {
+              "Authorization": "Bearer $CLIDE_TOKEN"
+            },
+            "allowedEnvVars": [
+              "CLIDE_TOKEN"
+            ]
           }
         ]
       }
@@ -124,8 +169,12 @@
             "type": "http",
             "url": "http://127.0.0.1:47000/hook/claude",
             "timeout": 5,
-            "headers": { "Authorization": "Bearer $CLIDE_TOKEN" },
-            "allowedEnvVars": ["CLIDE_TOKEN"]
+            "headers": {
+              "Authorization": "Bearer $CLIDE_TOKEN"
+            },
+            "allowedEnvVars": [
+              "CLIDE_TOKEN"
+            ]
           }
         ]
       }

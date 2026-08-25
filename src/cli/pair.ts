@@ -75,6 +75,37 @@ export function alreadyForwards(config: string, host: string, port: number): boo
   return false;
 }
 
+/**
+ * Every host `clide pair` has set up a forward for.
+ *
+ * This is the paired-host list, derived from the file that already records it
+ * rather than from a second config of our own: a host is paired exactly when its
+ * stanza carries the RemoteForward pair wrote. Deriving it means the two can
+ * never disagree, and un-pairing is just deleting the stanza.
+ */
+export function pairedHosts(config: string, port: number): string[] {
+  const hosts: string[] = [];
+  let current: string[] = [];
+  for (const raw of config.split("\n")) {
+    const line = raw.trim();
+    if (/^host\s/i.test(line)) {
+      current = line
+        .slice(4)
+        .trim()
+        .split(/\s+/)
+        // A pattern is not a host we can ssh to.
+        .filter((h) => h.length > 0 && !h.includes("*") && !h.includes("?"));
+      continue;
+    }
+    if (current.length === 0) continue;
+    if (new RegExp(`^remoteforward\\s+(?:\\S+:)?${port}\\b`, "i").test(line)) {
+      for (const h of current) if (!hosts.includes(h)) hosts.push(h);
+      current = [];
+    }
+  }
+  return hosts;
+}
+
 export function defaultPairDeps(): PairDeps {
   return {
     ssh: (host, command, input) => {

@@ -115,6 +115,47 @@ interface StateBody {
   sessions: StateSession[];
 }
 
+describe("the SessionStart daemon starter (DMN-12)", () => {
+  const script = join(REPO, "hooks", "ensure-daemon.sh");
+
+  it("is registered on SessionStart as an async command hook", () => {
+    // async so it never delays a session coming up, and SessionStart so its cost
+    // is one process per session rather than one per tool call.
+    const cfg = JSON.parse(readFileSync(join(REPO, "hooks", "hooks.json"), "utf8")) as {
+      hooks: Record<string, Array<{ hooks: Array<Record<string, unknown>> }>>;
+    };
+    const starter = cfg.hooks.SessionStart?.[0]?.hooks.find((h) => h.type === "command");
+    expect(starter, "SessionStart must carry a command hook to start the daemon").toBeDefined();
+    expect(starter?.async, "it must not block session startup").toBe(true);
+    expect(String(starter?.command)).toContain("ensure-daemon.sh");
+    // ${CLAUDE_PLUGIN_ROOT} — the plugin is installed to a cache directory whose
+    // path nobody can hardcode.
+    expect(String(starter?.command)).toContain("CLAUDE_PLUGIN_ROOT");
+  });
+
+  it.skipIf(process.platform === "win32")("is executable, or the hook silently does nothing", () => {
+    expect(statSync(script).mode & 0o111, "hooks/ensure-daemon.sh must be executable").toBeGreaterThan(0);
+  });
+
+  it.skipIf(process.platform === "win32")("exits 0 even when it can do nothing at all", () => {
+    // A hook that reported a failure while trying to prevent hook noise would be
+    // self-defeating. Pointed at a root with no build, with the environment
+    // scrubbed, it must still succeed silently.
+    const out = execFileSync("/bin/bash", [script], {
+      encoding: "utf8",
+      env: {
+        HOME: homedir(),
+        PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+        CLAUDE_PLUGIN_ROOT: "/nonexistent/clide",
+        // Do not start a daemon from the test run.
+        CLIDE_NO_AUTOSTART: "1",
+      },
+      timeout: 15_000,
+    });
+    expect(out).toBe("");
+  });
+});
+
 describe("built daemon artifact", () => {
   // Windows has no POSIX permission bits — `statSync().mode` reports none and
   // execution is decided by file extension and PATHEXT instead. The property is

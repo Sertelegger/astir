@@ -9,9 +9,11 @@
 
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { hostname } from "node:os";
 import { notificationText, validateEnvelope } from "./envelope.js";
 import type { Notifier } from "./notify.js";
 import { RemoteView } from "./remote.js";
+import { RosterStore, validateRoster } from "./roster.js";
 
 /** A doorbell is small; anything larger is a mistake or an attack. */
 const MAX_BODY_BYTES = 64 * 1024;
@@ -24,7 +26,10 @@ export interface NotifierServerOpts {
   onEvent?: (line: string) => void;
   /** Injectable per §9 so expiry is testable without waiting half an hour. */
   view?: RemoteView;
+  roster?: RosterStore;
   now?: () => number;
+  /** This machine's name. Injectable so the self-roster guard is testable. */
+  host?: string;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -44,13 +49,20 @@ export class NotifierServer {
     rejected: 0,
     unauthorized: 0,
     resolved: 0,
+    rosters: 0,
+    /** Rosters this machine sent to itself; see the /roster route. */
+    selfRosters: 0,
   };
   private readonly view: RemoteView;
+  private readonly roster: RosterStore;
+  private readonly host: string;
   private readonly now: () => number;
 
   constructor(private opts: NotifierServerOpts) {
     this.view = opts.view ?? new RemoteView();
     this.now = opts.now ?? (() => Date.now());
+    this.roster = opts.roster ?? new RosterStore(this.now);
+    this.host = opts.host ?? hostname();
     this.server = createServer((req, res) => {
       this.route(req, res).catch(() => {
         this.counters.rejected++;
@@ -99,7 +111,40 @@ export class NotifierServer {
         role: "notifier",
         blockedCount: this.view.blockedCount(),
         agents: this.view.list(now),
+        // DMN-10 — everything those machines are running, not only what is
+        // blocked. A quiet remote machine and an unreachable one must not look
+        // the same.
+        sessions: this.roster.list(),
       });
+    }
+
+    // DMN-10 — a remote daemon announcing its roster.
+    if (path === "/roster" && req.method === "POST") {
+      const body = await this.readBody(req);
+      if (body === null) {
+        this.counters.rejected++;
+        return this.json(res, 400, { error: "bad body" });
+      }
+      const parsed = validateRoster(body);
+      if (!parsed.ok) {
+        this.counters.rejected++;
+        return this.json(res, 400, { error: parsed.error });
+      }
+      // A daemon and a notifier on the SAME machine cannot tell each other
+      // apart by address: a remote daemon reaches this notifier through
+      // `ssh -R` on 127.0.0.1, which is exactly where a local one sits too. So
+      // the roster names its origin, and a roster from this machine is dropped
+      // — otherwise every local session would be listed back to the menu bar
+      // under "Other machines", which is both wrong and the duplicate-row
+      // problem again. Not an error: the sender did nothing wrong.
+      if (parsed.roster.host === this.host) {
+        this.counters.selfRosters++;
+        return this.json(res, 200, { ok: true, ignored: "self" });
+      }
+
+      this.roster.apply(parsed.roster);
+      this.counters.rosters++;
+      return this.json(res, 200, { ok: true, sessions: parsed.roster.sessions.length });
     }
 
     if (path === "/dismiss" && req.method === "POST") {

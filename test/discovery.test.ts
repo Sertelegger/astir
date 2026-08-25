@@ -70,6 +70,7 @@ describe("Registry.reconcile", () => {
     sessionId: id,
     cwd: `/repo/${id}`,
     pid: 1,
+    startedAt: null,
     status: "busy",
     name: id,
     ...over,

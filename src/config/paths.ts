@@ -3,7 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export const DEFAULT_PORT = 47_000;
 
@@ -23,7 +23,10 @@ export function tokenPath(home: string = homedir()): string {
  * leave the token world-readable. Write to a temp file, chmod it explicitly, then
  * rename — which also makes the swap atomic for a concurrent reader.
  */
-function writeSecret(path: string, contents: string): void {
+export function writeSecret(path: string, contents: string, opts: { requireDir?: boolean } = {}): void {
+  // Callers writing outside ~/.clide (INS-04 writes Claude Code's settings.json)
+  // have no guarantee the directory exists yet.
+  if (opts.requireDir === true) mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, contents, { mode: 0o600 });
   chmodSync(tmp, 0o600);

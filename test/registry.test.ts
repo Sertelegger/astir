@@ -120,7 +120,7 @@ describe("session lifecycle", () => {
     const r = new Registry({ nowMs: c.now, undiscoveredTtlMs: 1_000 });
 
     r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
-    r.reconcile([{ sessionId: "s1", cwd: "/repo", pid: 42, status: "waiting", name: "x" }]);
+    r.reconcile([{ sessionId: "s1", cwd: "/repo", pid: 42, status: "waiting", name: "x", startedAt: null }]);
 
     c.advance(6 * 60 * 60_000);
     r.tick();
@@ -230,5 +230,225 @@ describe("blocked accounting", () => {
     // to "idle" would replace it with the least informative one.
     expect(r.get("s1")?.agents.get("s1")?.state).toBe("blocked");
     expect(r.blockedCount()).toBe(1);
+  });
+});
+
+describe("a session that starts speaking", () => {
+  const discovered = (status: string | null = "idle") => [
+    { sessionId: "s1", cwd: "/repo", pid: 1, status, name: "n", startedAt: null },
+  ];
+
+  it("leaves the silent list the moment an event arrives, not at the next poll", () => {
+    // `silentSessions` is a snapshot taken at each discovery poll. Between polls
+    // a session that had just started speaking sat in BOTH lists, so the menu
+    // bar showed the same repo twice — once live, once "not connected".
+    const r = new Registry({ nowMs: clock().now });
+    r.reconcile(discovered());
+    expect(r.silent().map((d) => d.sessionId)).toEqual(["s1"]);
+
+    r.apply(ev("session_start"), "/repo");
+
+    expect(r.silent()).toEqual([]);
+    expect(r.list().map((x) => x.sessionId)).toEqual(["s1"]);
+  });
+
+  it("does not disturb the other silent sessions", () => {
+    const r = new Registry({ nowMs: clock().now });
+    r.reconcile([
+      ...discovered(),
+      { sessionId: "s2", cwd: "/other", pid: 2, status: "idle", name: "o", startedAt: null },
+    ]);
+    r.apply(ev("session_start"), "/repo");
+    expect(r.silent().map((d) => d.sessionId)).toEqual(["s2"]);
+  });
+});
+
+describe("idling an agent that is actually working", () => {
+  const discovered = (status: string | null) => [
+    { sessionId: "s1", cwd: "/repo", pid: 1, status, name: "n", startedAt: null },
+  ];
+  const stateOf = (r: Registry) => r.get("s1")?.agents.get("s1")?.state;
+
+  it("does not call a long tool call idle while the provider says busy", () => {
+    // THE regression. `lastActivityMs` only moves when an event arrives, and
+    // between PreToolUse and PostToolUse there are none — so every build, test
+    // run and subagent longer than the timeout was reported as idle, with a
+    // default of ten seconds.
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("pre_tool"), "/repo");
+    r.reconcile(discovered("busy"));
+
+    c.advance(10 * 60_000);
+    r.tick();
+
+    expect(stateOf(r)).toBe("tool-running");
+  });
+
+  it("treats `running` as busy too", () => {
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("pre_tool"), "/repo");
+    r.reconcile(discovered("running"));
+
+    c.advance(10 * 60_000);
+    r.tick();
+
+    expect(stateOf(r)).toBe("tool-running");
+  });
+
+  it("converges to idle once the provider agrees it is not busy", () => {
+    // Both sources agree: the hooks went quiet AND discovery reports idle, which
+    // most likely means a PostToolUse was lost.
+    const c = clock();
+    const r = new Registry({ nowMs: c.now, idleAfterMs: 30_000 });
+    r.apply(ev("pre_tool"), "/repo");
+    r.reconcile(discovered("idle"));
+
+    c.advance(31_000);
+    r.tick();
+
+    expect(stateOf(r)).toBe("idle");
+  });
+
+  it("waits far longer when the provider says nothing at all", () => {
+    // No corroboration either way, so do not override what the hooks last said
+    // quickly: a machine without `claude` on PATH must not have every build
+    // declared idle.
+    const c = clock();
+    const r = new Registry({ nowMs: c.now, idleAfterMs: 30_000, stalledAfterMs: 15 * 60_000 });
+    r.apply(ev("pre_tool"), "/repo");
+    r.reconcile(discovered(null));
+
+    c.advance(60_000);
+    r.tick();
+    expect(stateOf(r)).toBe("tool-running");
+
+    c.advance(15 * 60_000);
+    r.tick();
+    expect(stateOf(r)).toBe("idle");
+  });
+
+  it("never lets a timer quietly clear a blocked agent", () => {
+    // Blocked is exempt for a different reason: it is the one state the whole
+    // project exists to surface.
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
+    r.reconcile(discovered("idle"));
+
+    c.advance(60 * 60_000);
+    r.tick();
+
+    expect(r.blockedCount()).toBe(1);
+  });
+});
+
+describe("time spent working this turn (G4)", () => {
+  const turnOf = (r: Registry) => r.get("s1")?.agents.get("s1")?.turnMs ?? 0;
+
+  it("does not count the human's thinking time as the agent's working time", () => {
+    // Regression: time was banked as active for everything that was not terminal
+    // or idle, which included `waiting` — the state an agent sits in after Stop
+    // while the human decides what to type. Minutes of that were recorded as
+    // agent working time, inflating the one number G4 exists to keep honest.
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("session_start"), "/repo");
+    c.advance(1_000);
+    r.apply(ev("stop"), "/repo");
+    c.advance(5 * 60_000); // the human is reading
+    r.apply(ev("pre_tool"), "/repo");
+
+    expect(r.get("s1")?.agents.get("s1")?.activeMs).toBe(1_000);
+  });
+
+  it("accumulates across a thinking/tool-use cycle", () => {
+    // The number the user wants: how long since they handed over, not how much
+    // work the session has done in total.
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("session_start"), "/repo");
+    c.advance(2_000);
+    r.apply(ev("pre_tool"), "/repo");
+    c.advance(5_000);
+    r.apply(ev("post_tool"), "/repo");
+    c.advance(3_000);
+    r.apply(ev("pre_tool"), "/repo");
+
+    expect(turnOf(r)).toBe(10_000);
+  });
+
+  it("EXCLUDES time the agent spent blocked on the human", () => {
+    // This is the answer to "is it just wall clock?" — no. Wall clock here is
+    // 65s; 60 of them were spent waiting on a person, and time waiting on you is
+    // not time spent doing something.
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("session_start"), "/repo");
+    c.advance(3_000);
+    r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
+    c.advance(60_000);
+    r.apply(ev("pre_tool"), "/repo");
+    c.advance(2_000);
+    r.apply(ev("post_tool"), "/repo");
+
+    expect(turnOf(r)).toBe(5_000);
+  });
+
+  it("does not end the turn just because the agent asked a question", () => {
+    // A permission prompt is mid-turn: the turn resumes on approval, so the
+    // total must carry across it rather than restarting.
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("session_start"), "/repo");
+    c.advance(4_000);
+    r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
+    c.advance(1_000);
+    r.apply(ev("pre_tool"), "/repo");
+    c.advance(1_000);
+    r.apply(ev("post_tool"), "/repo");
+
+    expect(turnOf(r)).toBe(5_000);
+  });
+
+  it("resets when the agent hands the floor back", () => {
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("session_start"), "/repo");
+    c.advance(9_000);
+    r.apply(ev("stop"), "/repo");
+
+    expect(turnOf(r)).toBe(0);
+  });
+
+  it("starts from zero on the next turn, not from the last one", () => {
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("session_start"), "/repo");
+    c.advance(9_000);
+    r.apply(ev("stop"), "/repo");
+    c.advance(30_000); // the human is reading
+    r.apply(ev("pre_tool"), "/repo");
+    c.advance(2_000);
+    r.apply(ev("post_tool"), "/repo");
+
+    expect(turnOf(r)).toBe(2_000);
+  });
+
+  it("leaves the session total alone, which answers a different question", () => {
+    const c = clock();
+    const r = new Registry({ nowMs: c.now });
+    r.apply(ev("session_start"), "/repo");
+    c.advance(5_000);
+    r.apply(ev("stop"), "/repo");
+    c.advance(1_000);
+    r.apply(ev("pre_tool"), "/repo");
+    c.advance(4_000);
+    r.apply(ev("post_tool"), "/repo");
+
+    const a = r.get("s1")?.agents.get("s1");
+    expect(a?.turnMs).toBe(4_000);
+    expect(a?.activeMs).toBe(9_000);
   });
 });

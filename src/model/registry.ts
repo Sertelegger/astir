@@ -8,8 +8,35 @@ export type AgentState = "thinking" | "tool-running" | "waiting" | "blocked" | "
 /** States that mean "a human is the bottleneck" — the whole point of G1. */
 const HUMAN_BLOCKING = new Set<AgentState>(["blocked"]);
 const TERMINAL = new Set<AgentState>(["done", "error"]);
+
+/**
+ * The only states in which the agent is actually doing work.
+ *
+ * Time is banked against this set rather than against "everything except
+ * terminal and idle", which silently counted `waiting` as active — so the
+ * minutes a human spent deciding what to type next were recorded as agent
+ * working time, inflating the one number G4 exists to keep honest.
+ *
+ * `waiting` cannot simply join HUMAN_BLOCKING instead: that set drives
+ * `blockedAgents()` and the notifier, so every finished turn would raise a
+ * "waiting on you" alert.
+ */
+const WORKING_STATES = new Set<AgentState>(["thinking", "tool-running"]);
 /** MOD-04: `waiting` and `blocked` are informative and MUST NOT decay to idle. */
 const IDLE_EXEMPT = new Set<AgentState>(["waiting", "blocked", "done", "error", "idle"]);
+
+/** States that mean the agent has given the human the floor back. */
+const TURN_END = new Set<AgentState>(["waiting", "idle"]);
+
+/**
+ * Provider statuses that mean the session is doing something.
+ *
+ * Measured from `claude agents --json`: a session running a tool reports
+ * `busy`, and remote ones have been seen reporting `running`. Anything else —
+ * including a session that reports nothing at all — is treated as no evidence
+ * rather than as evidence of idleness.
+ */
+const PROVIDER_BUSY = new Set(["busy", "running", "working"]);
 
 export interface AgentRecord {
   id: string;
@@ -22,6 +49,18 @@ export interface AgentRecord {
   /** MOD-05 — cumulative, in ms. */
   activeMs: number;
   blockedMs: number;
+  /**
+   * G4 — working time since the human last handed over.
+   *
+   * `activeMs` is the whole session's total, which answers a different question:
+   * "how much work has this session done" rather than "how long has it been
+   * going since I asked". A turn ends when the agent hands control back — it
+   * goes `waiting` or `idle` — and being blocked on a permission prompt is NOT
+   * a turn boundary, because the turn resumes on approval. The prompt's duration
+   * is excluded from this all the same: time spent waiting on a human is not
+   * time spent doing something, which is the whole distinction G4 exists for.
+   */
+  turnMs: number;
   /**
    * Wall ms at which the current state was *entered*. Only a real state change
    * moves it, so "blocked since" is the true start of the wait rather than the
@@ -81,12 +120,25 @@ export interface SessionRecord {
   lastEventTs: number;
   /** OS pid, enriched from discovery — what `clide focus` needs to find a window. */
   pid: number | null;
+  /** DMN-11 — false when no human is sitting at it (a plugin or script drives it). */
+  attended?: boolean;
 }
 
 export interface RegistryOpts {
   /** Injectable per §9 so time-dependent behaviour is testable. */
   nowMs: () => number;
+  /**
+   * How long to wait before calling an agent idle once the PROVIDER also
+   * reports the session as not busy. Only a convergence delay, since by then
+   * both sources agree.
+   */
   idleAfterMs?: number;
+  /**
+   * How long to wait when the provider says nothing at all. Deliberately long:
+   * the only thing being overridden is what the hooks last told us, and a build
+   * that outlives this is rarer than discovery being briefly unavailable.
+   */
+  stalledAfterMs?: number;
   /** How long an ended session stays visible before being dropped. */
   endedGraceMs?: number;
   /**
@@ -113,6 +165,7 @@ export class Registry {
   private seen = new Set<string>();
   private readonly nowMs: () => number;
   private readonly idleAfterMs: number;
+  private readonly stalledAfterMs: number;
   private readonly endedGraceMs: number;
   private readonly undiscoveredTtlMs: number;
   private readonly maxSeen: number;
@@ -128,7 +181,8 @@ export class Registry {
 
   constructor(opts: RegistryOpts) {
     this.nowMs = opts.nowMs;
-    this.idleAfterMs = opts.idleAfterMs ?? 10_000;
+    this.idleAfterMs = opts.idleAfterMs ?? 30_000;
+    this.stalledAfterMs = opts.stalledAfterMs ?? 15 * 60_000;
     this.endedGraceMs = opts.endedGraceMs ?? 60_000;
     this.undiscoveredTtlMs = opts.undiscoveredTtlMs ?? 10 * 60_000;
     this.maxSeen = opts.maxSeenEvents ?? 10_000;
@@ -208,6 +262,18 @@ export class Registry {
     return this.sessions.delete(sessionId);
   }
 
+  /**
+   * `silentSessions` is a snapshot taken at each discovery poll, so between
+   * polls a session that has just started speaking is in BOTH lists — the menu
+   * bar then shows the same repo twice, once live and once "not connected".
+   * Retiring it here rather than waiting for the next reconcile closes that
+   * window at the moment the evidence arrives.
+   */
+  private heard(sessionId: string): void {
+    if (this.silentSessions.length === 0) return;
+    this.silentSessions = this.silentSessions.filter((d) => d.sessionId !== sessionId);
+  }
+
   apply(event: ClideEvent, cwd: string): IngestResult {
     if (this.seen.has(event.eventId)) return { applied: false, reason: "duplicate" };
     this.seen.add(event.eventId);
@@ -218,6 +284,7 @@ export class Registry {
     }
 
     const session = this.ensureSession(event.sessionId, event.provider, cwd);
+    this.heard(event.sessionId);
     const agent = this.ensureAgent(session, event);
 
     // MOD-06 — timestamp-monotonic. A stale event never rewrites state.
@@ -271,9 +338,27 @@ export class Registry {
         continue;
       }
 
+      // The idle timer exists to catch a session that stopped without telling
+      // us. It must not fire on one that is simply BUSY — and it did, constantly:
+      // `lastActivityMs` only moves when an event arrives, and between
+      // `PreToolUse` and `PostToolUse` there are none. Any tool call longer than
+      // the timeout — a build, a test run, a subagent — flipped a working agent
+      // to idle, which is precisely the lie this project exists to prevent, and
+      // the default was ten seconds.
+      //
+      // Discovery already answers this authoritatively, every five seconds, and
+      // its answer was being ignored here.
+      const providerBusy = s.status !== null && PROVIDER_BUSY.has(s.status);
       for (const a of s.agents.values()) {
         if (IDLE_EXEMPT.has(a.state)) continue;
-        if (now - a.lastActivityMs >= this.idleAfterMs) this.transition(a, "idle");
+        // Positive evidence that it is working. Do not contradict it.
+        if (providerBusy) continue;
+        // With no word from the provider there is nothing to corroborate, so
+        // wait far longer before overriding what the hooks last told us — a
+        // long build must not be declared idle just because discovery is
+        // unavailable.
+        const limit = s.status === null ? this.stalledAfterMs : this.idleAfterMs;
+        if (now - a.lastActivityMs >= limit) this.transition(a, "idle");
       }
     }
   }
@@ -314,8 +399,16 @@ export class Registry {
     if (agent.state === next) return; // not a transition; banking would double-count
 
     const elapsed = Math.max(0, now - agent.stateSince);
-    if (HUMAN_BLOCKING.has(agent.state)) agent.blockedMs += elapsed;
-    else if (!TERMINAL.has(agent.state) && agent.state !== "idle") agent.activeMs += elapsed;
+    if (HUMAN_BLOCKING.has(agent.state)) {
+      agent.blockedMs += elapsed;
+    } else if (WORKING_STATES.has(agent.state)) {
+      agent.activeMs += elapsed;
+      agent.turnMs += elapsed;
+    }
+
+    // Handing control back to the human ends the turn. `blocked` deliberately
+    // does not: the agent is mid-turn and resumes the moment you answer.
+    if (TURN_END.has(next)) agent.turnMs = 0;
 
     agent.state = next;
     agent.stateSince = now;
@@ -378,6 +471,7 @@ export class Registry {
       s.status = d.status;
       s.name = d.name;
       s.pid = d.pid;
+      if (d.attended !== undefined) s.attended = d.attended;
       if (d.cwd) s.cwd = d.cwd;
       enriched++;
     }
@@ -420,6 +514,7 @@ export class Registry {
         lastEventTs: 0,
         activeMs: 0,
         blockedMs: 0,
+        turnMs: 0,
         stateSince: this.nowMs(),
         lastActivityMs: this.nowMs(),
         acknowledgedAt: null,

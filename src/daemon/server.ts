@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { defaultNewId, normalizeClaudeHook, type SidecarMeta } from "../adapters/claude/normalize.js";
 import { validateEvent } from "../contract/event.js";
 import type { Registry } from "../model/registry.js";
+import { type FocusResult, focusSession } from "../status/focus.js";
+import type { RemoteSession } from "../status/types.js";
 
 /** DMN-03 — a hook payload is small; anything larger is hostile or a bug. */
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -19,6 +21,22 @@ export interface DaemonOpts {
   onBlocked?: (info: { sessionId: string; agentId: string; kind: string }) => void;
   /** Injectable so tests never touch the real home directory. */
   readSidecar?: (sessionId: string, agentId: string) => SidecarMeta | null;
+  /**
+   * PSH-11 — how to raise a session's window. Injectable so tests never drive
+   * the real window manager.
+   */
+  focus?: (session: {
+    sessionId: string;
+    pid: number | null;
+    cwd: string;
+    name: string | null;
+  }) => FocusResult;
+  /**
+   * DMN-09 — sessions on paired hosts, polled over SSH. A getter rather than a
+   * value because polling happens on its own timer; the daemon only ever reads
+   * the latest cache, so a slow host can never delay a /state response.
+   */
+  remoteSessions?: () => RemoteSession[];
   nowSeconds?: () => number;
 }
 
@@ -58,6 +76,7 @@ export class Daemon {
   private server: Server;
   private readonly opts: DaemonOpts;
   private readonly readSidecar: (s: string, a: string) => SidecarMeta | null;
+  private readonly focus: NonNullable<DaemonOpts["focus"]>;
   private readonly nowSeconds: () => number;
   /** OBS-01 — every counter here is incremented by a real code path. */
   private counters = {
@@ -74,10 +93,22 @@ export class Daemon {
     dismissed: 0,
   };
   private warnedAboutToken = false;
+  /**
+   * When a hook was last rejected for a bad token.
+   *
+   * `unauthorizedIngest` is a lifetime total, so using it to decide what to
+   * *display* means a single rejection hours ago keeps the menu bar asserting
+   * "the token is rejected" long after `clide install` fixed it — telling
+   * someone to repair something that is already correct, while the real reason
+   * their session is silent goes unnamed. A timestamp is the honest signal.
+   */
+  private lastUnauthorizedAt: number | null = null;
+  private readonly startedAt = Date.now();
 
   constructor(opts: DaemonOpts) {
     this.opts = opts;
     this.readSidecar = opts.readSidecar ?? defaultReadSidecar;
+    this.focus = opts.focus ?? focusSession;
     this.nowSeconds = opts.nowSeconds ?? (() => Date.now() / 1000);
     this.server = createServer((req, res) => {
       // DMN-04 — no inbound request may terminate the process.
@@ -145,6 +176,7 @@ export class Daemon {
         // attack. Say so once, loudly: silence here is the failure mode that let
         // the previous version look healthy while receiving nothing.
         this.counters.unauthorizedIngest++;
+        this.lastUnauthorizedAt = Date.now();
         if (!this.warnedAboutToken) {
           this.warnedAboutToken = true;
           process.stderr.write(
@@ -184,6 +216,50 @@ export class Daemon {
 
     // The harder escape hatch: drop the record entirely, for a session that
     // should never have been there.
+    /**
+     * PSH-11 — raising the window happens HERE, in the daemon, not in whatever
+     * process typed `clide focus`.
+     *
+     * macOS attributes a TCC grant (Accessibility, Automation) to the
+     * *responsible process* — the app that spawned the chain — not to the binary
+     * doing the work. Running the window manipulation inside the CLI therefore
+     * charged the permission to whoever invoked it: Visual Studio Code from its
+     * integrated terminal, SwiftBar from a menu click, Ghostty from a shell. The
+     * same feature then demanded a separate grant from every entry point, and
+     * Automation is granted per (controller, target) PAIR, so it multiplied
+     * rather than added.
+     *
+     * The daemon is the one long-lived process every surface already talks to,
+     * so doing it here collapses that to a single identity. It does not solve
+     * the identity itself — an unsigned Node process is attributed to the `node`
+     * binary, which is both too broad and unrecognisable in System Settings —
+     * and a signed clide.app remains the only clean answer. This is the shape
+     * that app would inherit.
+     */
+    if (path === "/focus" && req.method === "POST") {
+      const sessionId = url.searchParams.get("session");
+      if (sessionId === null) return this.json(res, 400, { error: "session required" });
+
+      // A session we cannot hear is still focusable, and is arguably the one you
+      // most want to reach — you cannot see what it is doing from here.
+      const known = this.opts.registry.get(sessionId);
+      const quiet = this.opts.registry.silent().find((d) => d.sessionId === sessionId);
+      const target = known ?? quiet;
+      if (target === undefined) {
+        return this.json(res, 404, { ok: false, detail: `no session ${sessionId}` });
+      }
+
+      // 200 even when the focus itself failed: the detail is the point, and the
+      // client drops a non-2xx body on the floor.
+      const result = this.focus({
+        sessionId,
+        pid: target.pid ?? null,
+        cwd: target.cwd,
+        name: target.name ?? null,
+      });
+      return this.json(res, 200, { ok: result.ok, detail: result.detail });
+    }
+
     if (path === "/forget" && req.method === "POST") {
       const sessionId = url.searchParams.get("session");
       if (sessionId === null) return this.json(res, 400, { error: "session required" });
@@ -260,9 +336,22 @@ export class Daemon {
         sessionId: d.sessionId,
         name: d.name,
         cwd: d.cwd,
+        // Discovery already knows this. Dropping it made a silent session
+        // unfocusable — the one thing you can still usefully do with a session
+        // clide cannot hear is go and look at it.
+        pid: d.pid,
+        startedAt: d.startedAt,
+        ...(d.attended === undefined ? {} : { attended: d.attended }),
       })),
       everIngested: this.counters.ingested > 0,
       unauthorizedIngest: this.counters.unauthorizedIngest,
+      lastUnauthorizedAt: this.lastUnauthorizedAt,
+      // The daemon keeps state in memory only, so a restart forgets every
+      // running session. Their hooks fire on activity, and an idle session
+      // emits nothing — so without this the surface reports perfectly wired
+      // sessions as "not connected" for as long as they stay quiet.
+      daemonStartedAt: this.startedAt,
+      remote: this.opts.remoteSessions?.() ?? [],
       sessions: this.opts.registry.list().map((s) => ({
         sessionId: s.sessionId,
         provider: s.provider,
@@ -270,6 +359,7 @@ export class Daemon {
         name: s.name,
         status: s.status,
         pid: s.pid,
+        ...(s.attended === undefined ? {} : { attended: s.attended }),
         agents: [...s.agents.values()].map((a) => ({
           id: a.id,
           agentType: a.agentType,
@@ -277,6 +367,7 @@ export class Daemon {
           parentSource: a.parentSource,
           state: a.state,
           activeMs: a.activeMs,
+          turnMs: a.turnMs,
           blockedMs: a.blockedMs,
           // Computed here rather than in the renderer: the daemon owns the clock,
           // and a surface reading a cached response should not silently age it.
