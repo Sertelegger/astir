@@ -91,6 +91,17 @@ export interface BlockedAgent {
   agentId: string;
   cwd: string;
   reason: string;
+  /**
+   * How long it has been blocked.
+   *
+   * A permission event is not proof a human is needed. Under `defaultMode:
+   * auto` the classifier resolves some of them with nobody looking, so the
+   * agent enters `blocked` and leaves again in well under a second — and an
+   * alert fired in that window interrupts someone about a decision that was
+   * never theirs to make. The caller uses this to wait for the block to prove
+   * it is real.
+   */
+  blockedForMs: number;
 }
 
 export interface SessionRecord {
@@ -213,6 +224,7 @@ export class Registry {
             agentId: a.id,
             cwd: s.cwd,
             reason: a.blockedReason ?? "blocked",
+            blockedForMs: Math.max(0, this.nowMs() - a.stateSince),
           });
         }
       }

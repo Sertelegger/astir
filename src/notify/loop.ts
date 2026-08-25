@@ -25,15 +25,23 @@ export interface NotifyLoopOpts {
   dispatcher: Dispatcher;
   now?: () => number;
   onDelivered?: (summary: string) => void;
+  /**
+   * PSH-16 — how long a block must last before it is worth interrupting anyone.
+   * Long enough that an auto-resolved permission never reaches it, short enough
+   * to be invisible against the reminder cadence.
+   */
+  notifyAfterMs?: number;
 }
 
 export class NotifyLoop {
   private readonly now: () => number;
   /** Keys we have sent a `blocked` envelope for, and therefore owe a `resolved`. */
   private announced = new Set<string>();
+  private readonly notifyAfterMs: number;
 
   constructor(private opts: NotifyLoopOpts) {
     this.now = opts.now ?? (() => Date.now());
+    this.notifyAfterMs = opts.notifyAfterMs ?? 5_000;
   }
 
   /**
@@ -48,6 +56,20 @@ export class NotifyLoop {
 
     for (const b of blocked) {
       const key = keyOf(b.sessionId, b.agentId);
+      // PSH-16 — let a block prove it is real before interrupting anyone.
+      //
+      // A permission EVENT is not evidence that a human is needed. Under
+      // `defaultMode: auto` the classifier answers some of them itself, so the
+      // agent is blocked for a few hundred milliseconds and never shows a
+      // prompt — and an alert fired inside that window tells the user their
+      // agent needs permission when it does not, which is the same class of lie
+      // as reporting a dead daemon as idle.
+      //
+      // Only the FIRST notification waits. Once announced, the reminder cadence
+      // is the policy's business, and a genuine block is minutes long anyway —
+      // this delay is invisible against a one-minute reminder interval, and the
+      // user is by definition not looking yet.
+      if (!this.announced.has(key) && b.blockedForMs < this.notifyAfterMs) continue;
       if (!this.opts.policy.shouldNotify(key, "blocked", now)) continue;
 
       const envelope = buildEnvelope({
