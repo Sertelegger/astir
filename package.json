@@ -10,18 +10,27 @@
     "astir": "./dist/cli/main.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
-    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs && vite build",
+    "typecheck": "tsc -p tsconfig.json && tsc -p view/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "verify": "npm run typecheck && npm run lint && npm run build && npm run test"
+    "verify": "npm run typecheck && npm run lint && npm run build && npm run test",
+    "dev:view": "vite"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.0",
+    "happy-dom": "^20.11.6",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "typescript": "^5.9.3",
+    "vite": "^8.2.2",
     "vitest": "^4.1.10"
   }
 }

@@ -274,6 +274,32 @@ export class RepoMap {
     return out;
   }
 
+  /**
+   * Per-file state for a wire frame: the stored heat and how old it is.
+   *
+   * Deliberately not the decayed value. A consumer that receives heat-at-touch
+   * plus an age can reproduce the curve continuously at its own framerate; one
+   * that receives heat-now can only ever be as current as its last message.
+   */
+  ages(): Array<{ path: string; total: number; heat: number; ageMs: number }> {
+    const now = this.now();
+    return [...this.entries.entries()].map(([path, e]) => ({
+      path,
+      total: e.total,
+      heat: e.heat,
+      ageMs: Math.max(0, now - e.at),
+    }));
+  }
+
+  /** The curve's parameters, so a consumer can reproduce it. */
+  decayParams(): { halfLifeMs: number; referenceHeat: number; idleFloor: number } {
+    return {
+      halfLifeMs: this.halfLifeMs,
+      referenceHeat: this.referenceHeat,
+      idleFloor: this.idleFloor,
+    };
+  }
+
   /** The hottest `n`. The map itself is never truncated — only this view is. */
   hottest(n: number): Leaf[] {
     return this.list().slice(0, Math.max(0, n));

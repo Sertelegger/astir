@@ -25,6 +25,7 @@ Astir's first job is to make that not happen. Everything else is secondary.
   alert is never lost, and `astir dismiss` is how you stop it
 - A macOS menu-bar badge, including sessions on other machines
 - `astir status` across all live sessions
+- `astir view` — a live map of where a session is working, in a browser
 
 ## Install
 
@@ -242,6 +243,55 @@ than listing a chore. That also means a session found by SSH polling is never
 classified — a terminal is a local fact — so remote background sessions are only
 recognised when astir is running over there and pushing its roster.
 
+## The map
+
+```bash
+astir view              # opens the busiest session's map
+astir view <sessionId>  # a particular one
+astir view --print      # just print the URL
+```
+
+A treemap of the files this session has touched, grouped by directory. Two modes
+over the **same geometry**:
+
+- **Live** — decaying heat. Where work is happening *now*.
+- **Session** — cumulative touches. Where work has happened *at all*.
+
+They look alike and mean opposite things, which is why the active one is spelled
+out rather than merely highlighted. A file edited heavily an hour ago and left
+alone reads stone cold in live mode and hottest in session mode; both are true,
+and the geometry does not move between them — `layout()` is not given heat as an
+argument, so it cannot vary with the mode.
+
+Tile *area* is √(touches), not touches: linear area would let one heavily-edited
+file swallow the map and turn everything else into unclickable slivers. The
+ranked list beside the map carries the real numbers.
+
+Colour is checked rather than chosen. The ramp's lightness is strictly monotonic
+and its steps stay apart under simulated protanopia, deuteranopia and
+tritanopia — both asserted in CI. Heat is *also* drawn as a bar length inside
+each tile, so it never depends on colour alone, and the ranked list is the
+keyboard- and screen-reader-reachable equivalent of the map.
+
+The daemon serves the page and streams frames to it over SSE: one snapshot, then
+only what changed. Frames carry each file's heat *and how long ago it was
+touched*, never heat-as-of-now — so the browser reproduces the decay curve
+locally and the map cools smoothly between messages instead of stepping once a
+second.
+
+### About that token in the URL
+
+`astir view` opens `http://127.0.0.1:47000/view#<token>`. The page itself is not
+token-gated, because a browser cannot attach an `Authorization` header to a
+top-level navigation — a gated page could never be opened by typing its address.
+What it serves is an empty shell containing no session data; every route that
+carries data stays gated.
+
+The token rides in the URL **fragment**, which browsers never transmit to the
+server: it appears in no request line, access log or proxy trace. The page moves
+it into `sessionStorage` and clears the address bar, so a reload still works and
+a screenshot does not leak it.
+
 ## How it works
 
 ```
@@ -259,7 +309,14 @@ Hooks are `type: "http"`, posting the payload straight to the daemon — no proc
 
 ```bash
 npm run verify     # typecheck + lint + build + test
+npm run dev:view   # the view with hot reload, against a running daemon
 ```
+
+The view imports the daemon's own pure modules (`frames`, `layout`, `ramp`,
+`connection`) rather than keeping a browser copy. A snapshot-plus-delta scheme
+fails when the two ends disagree about what a frame means, and that disagreement
+is invisible until something is quietly missing on screen — so `applyDelta` is
+tested against the same fixtures as the producer that emits it.
 
 One rule matters more than the rest, and it's in [CONTRIBUTING.md](CONTRIBUTING.md): **a passing test suite is not evidence that something works.** Entrypoints get tests that execute the built artifact. Provider fixtures are captured from real sessions, never hand-written.
 

@@ -10,6 +10,8 @@ import { validateEvent } from "../contract/event.js";
 import type { Registry } from "../model/registry.js";
 import { type FocusResult, focusSession } from "../status/focus.js";
 import type { RemoteSession } from "../status/types.js";
+import { observer, StreamState, sseFrame } from "./stream.js";
+import { serveAsset, viewRootFor } from "./view.js";
 
 /**
  * How many files `/state` carries per session. Enough for a "hottest files"
@@ -20,6 +22,29 @@ const HOTTEST_ON_STATE = 10;
 
 /** DMN-03 — a hook payload is small; anything larger is hostile or a bug. */
 const MAX_BODY_BYTES = 1024 * 1024;
+
+/**
+ * How often an open /stream re-observes its session.
+ *
+ * Only frames that actually differ are sent, so this bounds LATENCY rather than
+ * bandwidth: a quiet session costs one diff per second and no bytes. Heat is
+ * reconstructed client-side from an age, so the map animates far smoother than
+ * this — the tick rate is not the framerate.
+ */
+const STREAM_TICK_MS = 1_000;
+
+/** Proof of life for a stream that has had nothing to say. */
+const STREAM_HEARTBEAT_MS = 15_000;
+
+/**
+ * Concurrent /stream connections allowed.
+ *
+ * Each holds a socket and a timer for as long as a tab is open, and a reloading
+ * browser can leave the old one briefly alive, so the ceiling has to tolerate
+ * more than one per human. It exists so a stuck client cannot accumulate
+ * connections without bound — refusing loudly beats degrading quietly.
+ */
+const MAX_STREAMS = 16;
 
 export interface DaemonOpts {
   token: string;
@@ -45,6 +70,10 @@ export interface DaemonOpts {
    */
   remoteSessions?: () => RemoteSession[];
   nowSeconds?: () => number;
+  /** Where the built view lives. Injectable so tests need no build output. */
+  viewRoot?: string;
+  /** Injectable so the stream's tick rate is not a test's wall-clock cost. */
+  streamTickMs?: number;
 }
 
 /** CAP-05 route 1 — read `<session>/subagents/agent-<id>.meta.json`. */
@@ -85,6 +114,8 @@ export class Daemon {
   private readonly readSidecar: (s: string, a: string) => SidecarMeta | null;
   private readonly focus: NonNullable<DaemonOpts["focus"]>;
   private readonly nowSeconds: () => number;
+  private readonly viewRoot: string;
+  private readonly streamTickMs: number;
   /** OBS-01 — every counter here is incremented by a real code path. */
   private counters = {
     ingested: 0,
@@ -98,6 +129,13 @@ export class Daemon {
     statePolls: 0,
     /** PSH-10 — agents the human explicitly dismissed. */
     dismissed: 0,
+    /** VIEW-02 — /stream connections opened, and how many are open right now. */
+    streams: 0,
+    streamsOpen: 0,
+    /** Frames actually written. Flat while a session is idle, which is correct. */
+    framesSent: 0,
+    /** Connections refused at MAX_STREAMS. Non-zero means something is leaking. */
+    streamsRefused: 0,
   };
   private warnedAboutToken = false;
   /**
@@ -117,6 +155,8 @@ export class Daemon {
     this.readSidecar = opts.readSidecar ?? defaultReadSidecar;
     this.focus = opts.focus ?? focusSession;
     this.nowSeconds = opts.nowSeconds ?? (() => Date.now() / 1000);
+    this.viewRoot = opts.viewRoot ?? viewRootFor(import.meta.url);
+    this.streamTickMs = opts.streamTickMs ?? STREAM_TICK_MS;
     this.server = createServer((req, res) => {
       // DMN-04 — no inbound request may terminate the process.
       this.route(req, res).catch((err: unknown) => {
@@ -176,6 +216,16 @@ export class Daemon {
       return this.json(res, 200, { ok: true, counters: this.counters });
     }
 
+    // Deliberately ahead of the token check — see the note in view.ts. These
+    // files carry no session data; everything that does is still gated below.
+    if ((path === "/view" || path.startsWith("/view/")) && req.method === "GET") {
+      if (serveAsset(this.viewRoot, path, res)) return;
+      return this.json(res, 404, {
+        error: "view not built",
+        detail: "run `npm run build` to produce dist/view",
+      });
+    }
+
     if (!this.authorized(req)) {
       if (path.startsWith("/hook/")) {
         // CAP-08 — an unset $ASTIR_TOKEN interpolates to an empty string rather
@@ -199,6 +249,13 @@ export class Daemon {
     if (path === "/state" && req.method === "GET") {
       this.counters.statePolls++;
       return this.json(res, 200, this.snapshot());
+    }
+
+    // VIEW-02 — the live wire. One snapshot, then only what changed.
+    if (path === "/stream" && req.method === "GET") {
+      const sessionId = url.searchParams.get("session");
+      if (sessionId === null) return this.json(res, 400, { error: "session required" });
+      return this.stream(req, res, sessionId);
     }
 
     if (path === "/hook/claude" && req.method === "POST") {
@@ -275,6 +332,94 @@ export class Daemon {
     }
 
     return this.json(res, 404, { error: "not found" });
+  }
+
+  /**
+   * Hold a connection open and feed it frames until the client leaves or the
+   * session does.
+   *
+   * Everything about WHAT to send lives in `StreamState`; this method is only
+   * responsible for the socket, the timers and taking them all down again. The
+   * teardown is the part worth reading: a stream that leaks a timer keeps
+   * observing a session nobody is watching, forever.
+   */
+  private stream(req: IncomingMessage, res: ServerResponse, sessionId: string): void {
+    if (this.opts.registry.get(sessionId) === undefined) {
+      this.json(res, 404, { error: "no such session", sessionId });
+      return;
+    }
+    if (this.counters.streamsOpen >= MAX_STREAMS) {
+      this.counters.streamsRefused++;
+      this.json(res, 503, { error: "too many streams", limit: MAX_STREAMS });
+      return;
+    }
+
+    this.counters.streams++;
+    this.counters.streamsOpen++;
+
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+      // Nothing should sit between here and the browser, but if something does,
+      // buffering an event stream turns "live" into "eventually".
+      "x-accel-buffering": "no",
+    });
+
+    const state = new StreamState(sessionId);
+    const observe = observer(
+      this.opts.registry,
+      sessionId,
+      () => ({ droppedPaths: this.counters.droppedPaths, rejected: this.counters.rejected }),
+      () => Date.now(),
+    );
+
+    let closed = false;
+    const stop = (): void => {
+      if (closed) return;
+      closed = true;
+      clearInterval(tick);
+      clearInterval(beat);
+      this.counters.streamsOpen--;
+      if (!res.writableEnded) res.end();
+    };
+
+    const push = (): void => {
+      if (closed) return;
+      const message = state.next(observe());
+      if (message === null) return;
+      // A client that has gone away without the socket noticing yet makes this
+      // throw; that is a reason to stop, not to take the daemon with it.
+      try {
+        res.write(sseFrame(message));
+        this.counters.framesSent++;
+      } catch {
+        stop();
+        return;
+      }
+      if (message.kind === "end") stop();
+    };
+
+    const tick = setInterval(push, this.streamTickMs);
+    const beat = setInterval(() => {
+      if (closed) return;
+      try {
+        res.write(": beat\n\n");
+      } catch {
+        stop();
+      }
+    }, STREAM_HEARTBEAT_MS);
+    // A pending timer must not be the reason this process outlives its work.
+    tick.unref?.();
+    beat.unref?.();
+
+    req.on("close", stop);
+    res.on("close", stop);
+    res.on("error", stop);
+
+    // Send the opening snapshot immediately rather than after one tick: a view
+    // that shows nothing for a second on every load reads as broken.
+    push();
   }
 
   private ingestClaude(payload: unknown, res: ServerResponse): void {

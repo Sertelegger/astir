@@ -77,6 +77,7 @@ function usage(): void {
       "  dismiss [sessionId]             stop reminders for what is waiting (all, or one session)\n" +
       "  forget <sessionId>              drop a session record entirely\n" +
       "  focus <sessionId>               raise the window/pane that session is running in\n" +
+      "  view [sessionId] [--print]      open the live repo map in a browser\n" +
       "  pair <host> [--yes]             let a remote machine notify this one\n" +
       "  allow-sandbox <path>            let a sandboxed project reach the daemon\n" +
       "  watch <host> [--remove]         see sessions on a machine you ssh into\n" +
@@ -853,6 +854,53 @@ async function runFocus(args: Args): Promise<void> {
   if (result.ok !== true) process.exitCode = 1;
 }
 
+/**
+ * VIEW-03 — open the map.
+ *
+ * The token travels in the URL FRAGMENT, which browsers never send to the
+ * server: it appears in no request line, access log or proxy trace. A query
+ * string would put a bearer token everywhere the URL is recorded, and the page
+ * cannot be token-gated in the first place because a browser cannot attach an
+ * Authorization header to a top-level navigation.
+ */
+async function runView(args: Args): Promise<void> {
+  const port = Number(args.flags.get("port") ?? process.env.ASTIR_PORT ?? DEFAULT_PORT);
+  const token = readTokenIfPresent();
+  if (token === null) {
+    process.stderr.write("astir: no token yet — run `astir install` first.\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  // Ask the daemon first, so "it is not running" is reported as itself rather
+  // than as a browser tab that fails to connect for reasons nobody can see.
+  const reachable = await fetch(`http://127.0.0.1:${port}/healthz`)
+    .then((r) => r.ok)
+    .catch(() => false);
+  if (!reachable) {
+    process.stderr.write(`astir: no daemon on 127.0.0.1:${port} — start one with \`astir daemon\`.\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const sessionId = args.positional[0];
+  const query = sessionId === undefined ? "" : `?session=${encodeURIComponent(sessionId)}`;
+  const url = `http://127.0.0.1:${port}/view${query}#${token}`;
+
+  if (args.flags.get("print") === true) {
+    process.stdout.write(`${url}\n`);
+    return;
+  }
+  try {
+    // `open` on macOS, `xdg-open` elsewhere. Failure is not fatal: printing the
+    // URL is a perfectly good outcome, and on a headless box it is the only one.
+    execFileSync(process.platform === "darwin" ? "open" : "xdg-open", [url], { stdio: "ignore" });
+    process.stdout.write(`astir: opened ${url.replace(token, "\u2026")}\n`);
+  } catch {
+    process.stdout.write(`${url}\n`);
+  }
+}
+
 /** PSH-15 — one command to make a remote machine able to reach this one. */
 function runPair(args: Args): void {
   const host = args.positional[0];
@@ -921,6 +969,8 @@ async function main(): Promise<void> {
       return runForget(args);
     case "focus":
       return runFocus(args);
+    case "view":
+      return runView(args);
     case "pair":
       runPair(args);
       return;

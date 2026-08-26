@@ -35,10 +35,10 @@ The rebuild is driven by a rewritten spec (kept locally) and this order:
 
 ## Milestone 3 — the view
 
-**Next.** The push half of the product is done and has been used in anger; the
-pull half does not exist yet. Note that the map's *model* comes first: the
-registry does not consume `event.paths` today, so nothing accumulates per-file
-totals and `/state` exposes no file data. This is not a view over existing data.
+**In progress.** The push half of the product is done and has been used in
+anger. The model landed first — the registry consumes `event.paths` and keeps
+per-file heat and totals — and the first view now ships: `astir view` opens a
+live repo map served by the daemon itself.
 
 - [x] Per-file heat and totals in the daemon (MOD-01/MOD-08), decaying against
       an **absolute** idle floor — the previous version normalised heat against
@@ -47,15 +47,30 @@ totals and `/state` exposes no file data. This is not a view over existing data.
 - [x] MOD-08's bounded progression ring — periodic downsampled samples of
       per-file totals, for the timelapse. Merges older intervals rather than
       dropping them, so a long session coarsens but never truncates.
-- [ ] Web view with user-arrangeable panels (agent rail, changed files, map)
-- [ ] Map that grows from touched files rather than scanning the repo, with an absolute idle floor so it actually cools
-- [ ] Labels, hover, legend, colour-vision-safe ramp — a map with no text is decoration
-- [ ] Real delta frames that can express removal
-- [ ] Session switcher and cross-session overview
+- [x] Real delta frames that can express removal — a snapshot then deltas, over
+      SSE. Frames carry each file's heat *and its age* rather than heat now, so
+      the client reproduces the decay curve locally: the map animates at the
+      browser's framerate rather than the network's, and files only enter a
+      delta when actually touched.
+- [x] Map that grows from touched files rather than scanning the repo, with an
+      absolute idle floor so it actually cools. Squarified treemap, area is
+      √totals so one hot file cannot swallow the map.
+- [x] Labels, hover, legend, colour-vision-safe ramp — a map with no text is
+      decoration. The ramp's monotonic lightness and its separation under
+      simulated protanopia, deuteranopia and tritanopia are asserted in CI, not
+      assumed; heat is also encoded as a bar length, so never by colour alone.
+- [x] Live ⇄ session toggle over identical geometry (VIEW-10/SC11) — `layout()`
+      does not take heat as an argument, so the geometry *cannot* vary with the
+      mode.
+- [ ] User-arrangeable, hideable panels with the arrangement persisted (VIEW-01)
+- [ ] Session switcher (VIEW-08) — today's picker lists sessions but does not
+      preserve per-session panel arrangement
+- [ ] Cross-session overview, blocked agents first (VIEW-09)
+- [ ] Click-to-open a file in the host editor (VIEW-05)
 
 ## Milestone 4 — depth
 
-- [ ] Cumulative session map, toggleable against the live map
+- [x] Cumulative session map, toggleable against the live map
 - [ ] Session timelapse (bounded, downsampled — shape over time, not events over time)
 - [ ] Codex as a second provider
 
