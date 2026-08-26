@@ -1,25 +1,49 @@
 name: CI
 
+# Minute budget, not taste. A private repo draws on 2000 included minutes a
+# month, and GitHub prices the runners very differently: Linux $0.006/min,
+# Windows $0.010, macOS $0.062 — so one macOS job costs about ten Linux ones.
+# Measured over August: 521 billed minutes for this repo, 320 of them from a
+# single macOS job per run. It was the most expensive thing here by a distance
+# and the least likely to catch anything the Linux matrix did not.
+#
+# So the tiers below are cheap-and-always versus expensive-and-often-enough:
+# every push and PR gets the full Node matrix on Linux, and the platforms that
+# cost 2x and 10x run where a regression still gets caught long before a
+# release — on main, weekly, or on demand.
 on:
   push:
     branches: [main]
+    # Repeated rather than shared via a YAML anchor: GitHub's workflow parser
+    # does not support anchors, and a workflow that fails to parse is a repo
+    # with no CI at all.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+  schedule:
+    # Weekly, not nightly. A scheduled run on an unchanged tree re-tests code
+    # that already passed; the only thing it can catch is drift in the runner
+    # image itself, which is rare. Nightly cost nearly as much as running macOS
+    # on every PR did, which would have undone the point of this file.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
 
 jobs:
   verify:
-    name: verify (${{ matrix.os }}, node ${{ matrix.node }})
+    name: verify (ubuntu-latest, node ${{ matrix.node }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        # package.json declares node >=20, so the floor is tested explicitly
+        # rather than assumed.
         node: [20, 22, 24]
-        include:
-          # package.json declares node >=20, so the floor is tested explicitly
-          # rather than assumed, and macOS is covered because it is the primary
-          # development platform and the one with the notification path.
-          - os: macos-latest
-            node: 24
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -37,12 +61,36 @@ jobs:
       # is the specific failure this project exists downstream of.
       - run: npm test
 
+  macos:
+    # The primary development platform, and the only one where the notification
+    # and window-focus paths are real rather than skipped. It genuinely needs
+    # covering — but at 10x Linux it does not need covering on every push of a
+    # branch, when every merge to main still catches a regression the same day.
+    name: verify (macos-latest, node 24)
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+
   windows-early-warning:
     # PLT-02: native Windows is deferred for v1, not rejected, and no decision
     # may foreclose it. Running here surfaces path- and platform-specific
     # regressions while they are cheap to fix, without gating the branch on a
     # platform we do not yet claim to support.
+    #
+    # It is explicitly non-blocking, so running it per PR bought nothing that
+    # running it on main does not: nobody was ever going to hold a merge on it.
     name: windows (early warning, non-blocking)
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     continue-on-error: true
     steps:
