@@ -2,6 +2,7 @@
 
 import type { AstirEvent, ParentSource, Provider } from "../contract/event.js";
 import type { DiscoveredSession } from "../discovery/sessions.js";
+import { RepoMap } from "./map.js";
 
 export type AgentState = "thinking" | "tool-running" | "waiting" | "blocked" | "idle" | "done" | "error";
 
@@ -109,6 +110,11 @@ export interface SessionRecord {
   provider: Provider;
   cwd: string;
   agents: Map<string, AgentRecord>;
+  /**
+   * MOD-01/MOD-08 — where work is happening in this session's repo, grown from
+   * the paths events carry rather than by scanning anything.
+   */
+  map: RepoMap;
   /** Enriched from provider discovery (DMN-05); null until first seen there. */
   status: string | null;
   name: string | null;
@@ -303,6 +309,12 @@ export class Registry {
     if (event.ts < agent.lastEventTs) return { applied: false, reason: "stale" };
     agent.lastEventTs = event.ts;
     agent.lastActivityMs = this.nowMs();
+
+    // MOD-01/MOD-02 — the map grows from paths the adapter already normalised
+    // and scoped to the repo (CAP-04). Deliberately after both guards above:
+    // the eventId dedup at the top of this method is what stops a redelivered
+    // event double-counting heat, and a stale event must not add any.
+    if (event.paths.length > 0) session.map.touch(event.paths);
     session.lastEventTs = agent.lastActivityMs;
 
     if (TERMINAL.has(agent.state) && event.kind !== "session_start") {
@@ -436,6 +448,7 @@ export class Registry {
         provider,
         cwd,
         agents: new Map(),
+        map: new RepoMap(),
         status: null,
         name: null,
         endedAt: null,

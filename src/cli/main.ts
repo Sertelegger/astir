@@ -453,6 +453,24 @@ async function runStatus(flags: Args["flags"]): Promise<void> {
         `    ${a.state.padEnd(12)} ${who.padEnd(18)} active ${secs(a.activeMs)} · blocked ${secs(a.blockedMs)}\n`,
       );
     }
+
+    // VIEW-07 — the map's accessibility fallback, and the only view of it that
+    // exists until the web view does. A ranked list says "where is work
+    // happening" without needing colour, or a browser.
+    const files = s.files;
+    if (files !== undefined && files.hottest.length > 0) {
+      const live = files.hottest.filter((f) => !f.idle).slice(0, 5);
+      const shown = live.length > 0 ? live : files.hottest.slice(0, 3);
+      const heading = live.length > 0 ? "hottest" : "recent (all cold)";
+      // Say how many are NOT shown rather than trimming in silence (VIEW-06).
+      const rest = files.touched - shown.length;
+      const more = rest > 0 ? `  (+${rest} more of ${files.touched} touched)` : "";
+      process.stdout.write(`    ${heading}:${more}\n`);
+      for (const f of shown) {
+        const bar = "█".repeat(Math.max(1, Math.round(f.intensity * 10))).padEnd(10, "░");
+        process.stdout.write(`      ${bar} ${f.path}  ×${f.total}\n`);
+      }
+    }
   }
   if (body.blockedCount > 0) {
     process.stdout.write(`\n${body.blockedCount} agent(s) waiting on you\n`);

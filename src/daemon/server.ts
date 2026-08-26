@@ -11,6 +11,13 @@ import type { Registry } from "../model/registry.js";
 import { type FocusResult, focusSession } from "../status/focus.js";
 import type { RemoteSession } from "../status/types.js";
 
+/**
+ * How many files `/state` carries per session. Enough for a "hottest files"
+ * list — which is also VIEW-07's accessibility fallback for the map — without
+ * turning a 3-second poll into a payload nobody reads.
+ */
+const HOTTEST_ON_STATE = 10;
+
 /** DMN-03 — a hook payload is small; anything larger is hostile or a bug. */
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -360,6 +367,10 @@ export class Daemon {
         status: s.status,
         pid: s.pid,
         ...(s.attended === undefined ? {} : { attended: s.attended }),
+        // MOD-01/MOD-08 — bounded on purpose; see FileSummary.
+        ...(s.map.size === 0
+          ? {}
+          : { files: { touched: s.map.size, hottest: s.map.hottest(HOTTEST_ON_STATE) } }),
         agents: [...s.agents.values()].map((a) => ({
           id: a.id,
           agentType: a.agentType,

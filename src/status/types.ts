@@ -28,7 +28,25 @@ export interface StatusAgent {
   acknowledged: boolean;
 }
 
+/**
+ * MOD-01/MOD-08 — a bounded view of the session's repo map.
+ *
+ * Deliberately a summary rather than the map itself: `/state` is polled every
+ * few seconds by the menu bar, and a session that has touched a thousand files
+ * would make that poll carry a thousand records nobody is reading. `touched`
+ * reports the true size so the summary can never be mistaken for the whole map
+ * — the previous version's silent truncation is exactly what VIEW-06 forbids.
+ */
+export interface FileSummary {
+  /** Total files touched this session. */
+  touched: number;
+  /** Hottest first — what is being worked on right now. */
+  hottest: Array<{ path: string; heat: number; total: number; intensity: number; idle: boolean }>;
+}
+
 export interface StatusSession {
+  /** Absent until a session touches a file. */
+  files?: FileSummary;
   /** DMN-11 — false when a plugin or script drives it, not a person. */
   attended?: boolean;
   sessionId: string;

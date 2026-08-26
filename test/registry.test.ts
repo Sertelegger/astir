@@ -452,3 +452,73 @@ describe("time spent working this turn (G4)", () => {
     expect(a?.activeMs).toBe(9_000);
   });
 });
+
+describe("the repo map grows from events (MOD-01/MOD-02)", () => {
+  const withPaths = (paths: string[]) => ev("post_tool", { paths });
+
+  it("records the paths an event carries", () => {
+    // The adapter already normalises and repo-scopes these (CAP-04); the
+    // registry was discarding them entirely.
+    const r = new Registry({ nowMs: clock().now });
+    r.apply(withPaths(["src/a.ts", "src/b.ts"]), "/repo");
+
+    const map = r.get("s1")?.map;
+    expect(map?.size).toBe(2);
+    expect(
+      map
+        ?.list()
+        .map((l) => l.path)
+        .sort(),
+    ).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("does not double-count heat when an event is redelivered", () => {
+    // MOD-06. A tunnel retry or a sender with two transports must not make a
+    // file look twice as hot as it is.
+    const r = new Registry({ nowMs: clock().now });
+    const once = withPaths(["src/a.ts"]);
+    r.apply(once, "/repo");
+    r.apply(once, "/repo");
+
+    expect(r.get("s1")?.map.totals()[0]).toEqual({ path: "src/a.ts", total: 1 });
+  });
+
+  it("ignores paths on a stale event", () => {
+    // MOD-06: a stale event must not rewrite state, and heat is state.
+    const r = new Registry({ nowMs: clock().now });
+    r.apply(ev("post_tool", { ts: 5_000, paths: ["fresh.ts"] }), "/repo");
+    r.apply(ev("post_tool", { ts: 1_000, paths: ["stale.ts"] }), "/repo");
+
+    expect(
+      r
+        .get("s1")
+        ?.map.list()
+        .map((l) => l.path),
+    ).toEqual(["fresh.ts"]);
+  });
+
+  it("keeps each session's map to itself", () => {
+    const r = new Registry({ nowMs: clock().now });
+    r.apply(withPaths(["a.ts"]), "/repo-one");
+    r.apply(ev("post_tool", { sessionId: "s2", agentId: "s2", paths: ["b.ts"] }), "/repo-two");
+
+    expect(
+      r
+        .get("s1")
+        ?.map.list()
+        .map((l) => l.path),
+    ).toEqual(["a.ts"]);
+    expect(
+      r
+        .get("s2")
+        ?.map.list()
+        .map((l) => l.path),
+    ).toEqual(["b.ts"]);
+  });
+
+  it("leaves the map empty for events that carry no paths", () => {
+    const r = new Registry({ nowMs: clock().now });
+    r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
+    expect(r.get("s1")?.map.size).toBe(0);
+  });
+});
