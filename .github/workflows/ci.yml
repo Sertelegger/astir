@@ -1,31 +1,29 @@
 name: CI
 
-# Minute budget, not taste. A private repo draws on 2000 included minutes a
-# month, and GitHub prices the runners very differently: Linux $0.006/min,
-# Windows $0.010, macOS $0.062 — so one macOS job costs about ten Linux ones.
-# Measured over August: 521 billed minutes for this repo, 320 of them from a
-# single macOS job per run. It was the most expensive thing here by a distance
-# and the least likely to catch anything the Linux matrix did not.
+# Everything, on every push and pull request.
 #
-# So the tiers below are cheap-and-always versus expensive-and-often-enough:
-# every push and PR gets the full Node matrix on Linux, and the platforms that
-# cost 2x and 10x run where a regression still gets caught long before a
-# release — on main, weekly, or on demand.
+# This file previously tiered the expensive runners — macOS at 10x Linux and
+# Windows at 2x — onto main and a weekly cron, and skipped docs-only changes
+# entirely. That was never about coverage: it was a minute budget. While this
+# repo was private it drew on the account's 2000 included minutes, and a single
+# macOS job per run accounted for 320 of the 521 it burned in August.
+#
+# The repository is public now, and GitHub does not charge for standard runners
+# on public repositories, so the only justification those rules ever had is
+# gone. Keeping a coverage reduction whose reason has evaporated is how a
+# codebase ends up with rules nobody can explain.
+#
+# `paths-ignore` had to go for a second reason. Branch protection requires
+# named checks, and a check that never runs never reports — so a docs-only pull
+# request would have sat permanently pending, unmergeable. A skipped required
+# check is indistinguishable from a hanging one.
+#
+# The weekly cron stays: it is the only thing that catches drift in the runner
+# images themselves, which no push-triggered run can see.
 on:
   push:
     branches: [main]
-    # Repeated rather than shared via a YAML anchor: GitHub's workflow parser
-    # does not support anchors, and a workflow that fails to parse is a repo
-    # with no CI at all.
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE"
   pull_request:
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE"
   schedule:
     # Weekly, not nightly. A scheduled run on an unchanged tree re-tests code
     # that already passed; the only thing it can catch is drift in the runner
@@ -64,10 +62,9 @@ jobs:
   macos:
     # The primary development platform, and the only one where the notification
     # and window-focus paths are real rather than skipped. It genuinely needs
-    # covering — but at 10x Linux it does not need covering on every push of a
-    # branch, when every merge to main still catches a regression the same day.
+    # covering: it is the primary development platform and the only one where
+    # the notification and window-focus paths are real rather than skipped.
     name: verify (macos-latest, node 24)
-    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -87,10 +84,10 @@ jobs:
     # regressions while they are cheap to fix, without gating the branch on a
     # platform we do not yet claim to support.
     #
-    # It is explicitly non-blocking, so running it per PR bought nothing that
-    # running it on main does not: nobody was ever going to hold a merge on it.
+    # Non-blocking by design, so it never gates a merge — but running it per
+    # pull request surfaces a path- or platform-specific regression while it is
+    # still cheap to fix, which is the whole point of an early warning.
     name: windows (early warning, non-blocking)
-    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     continue-on-error: true
     steps:
