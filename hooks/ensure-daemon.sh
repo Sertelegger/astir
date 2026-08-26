@@ -14,16 +14,16 @@
 # It ALWAYS exits 0. A hook that reports a failure while trying to prevent hook
 # noise would be self-defeating.
 #
-# Set CLIDE_NO_AUTOSTART=1 to turn it off and manage the daemon yourself.
+# Set ASTIR_NO_AUTOSTART=1 to turn it off and manage the daemon yourself.
 
 set -u
 
-[ "${CLIDE_NO_AUTOSTART:-0}" = "1" ] && exit 0
+[ "${ASTIR_NO_AUTOSTART:-0}" = "1" ] && exit 0
 
-PORT="${CLIDE_PORT:-47000}"
+PORT="${ASTIR_PORT:-47000}"
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ENTRY="$ROOT/dist/cli/main.js"
-LOG="$HOME/.clide/daemon.log"
+LOG="$HOME/.astir/daemon.log"
 
 # Already listening? Nothing to do. This is an optimisation, not the guard —
 # two sessions starting at once would both pass it. The real guard is that a
@@ -49,7 +49,7 @@ done
 NODE="$(command -v node 2>/dev/null)"
 [ -n "$NODE" ] || exit 0
 
-mkdir -p "$HOME/.clide" 2>/dev/null || true
+mkdir -p "$HOME/.astir" 2>/dev/null || true
 
 # Detached, so the daemon outlives both this hook and the session that started
 # it — otherwise every session would kill the daemon on the way out and the next

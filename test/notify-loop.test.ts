@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type ClideEvent, CONTRACT_VERSION, type Kind } from "../src/contract/event.js";
+import { type AstirEvent, CONTRACT_VERSION, type Kind } from "../src/contract/event.js";
 import { Registry } from "../src/model/registry.js";
 import { type DeliveryTarget, Dispatcher } from "../src/notify/dispatch.js";
 import type { NotifyEnvelope } from "../src/notify/envelope.js";
@@ -7,7 +7,7 @@ import { NotifyLoop } from "../src/notify/loop.js";
 import { NotifyPolicy } from "../src/notify/policy.js";
 
 let seq = 0;
-function ev(kind: Kind, over: Partial<ClideEvent> = {}): ClideEvent {
+function ev(kind: Kind, over: Partial<AstirEvent> = {}): AstirEvent {
   seq++;
   return {
     v: CONTRACT_VERSION,
@@ -63,7 +63,7 @@ describe("PSH-16 — a block must prove it is real before interrupting anyone", 
   it("does not alert about a permission the classifier resolved by itself", async () => {
     // The reported bug: under `defaultMode: auto` some permission events are
     // answered with nobody looking, so the agent is blocked for a few hundred
-    // milliseconds and no prompt ever appears — but clide fired a notification
+    // milliseconds and no prompt ever appears — but astir fired a notification
     // saying it needed permission.
     const h = harness(5_000);
     h.blocked();

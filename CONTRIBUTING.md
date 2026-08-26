@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for looking. Clide is a personal open-source project, so issues and PRs get best-effort attention.
+Thanks for looking. Astir is a personal open-source project, so issues and PRs get best-effort attention.
 
 ## Getting set up
 
@@ -13,14 +13,14 @@ Requires Node.js ≥ 20.
 
 ## Scope
 
-Clide answers two questions and tries not to answer others:
+Astir answers two questions and tries not to answer others:
 
 - **Is an agent blocked on me?** — the ambient surface exists for this.
 - **Where in the repo is work happening?** — the map exists for this.
 
 It is **live-only**: no persistent history, no replay, no forensic timeline. Session-scoped aggregates (a cumulative map, a timelapse of the current session) are in scope; anything that survives the session or lets you inspect a past moment is not.
 
-Clide also never steers the AI session. It observes. It does not block, approve, deny, or inject context.
+Astir also never steers the AI session. It observes. It does not block, approve, deny, or inject context.
 
 ## The one rule
 

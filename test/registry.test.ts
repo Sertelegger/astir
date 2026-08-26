@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { type ClideEvent, CONTRACT_VERSION, type Kind } from "../src/contract/event.js";
+import { type AstirEvent, CONTRACT_VERSION, type Kind } from "../src/contract/event.js";
 import { Registry } from "../src/model/registry.js";
 
 let seq = 0;
-function ev(kind: Kind, over: Partial<ClideEvent> = {}): ClideEvent {
+function ev(kind: Kind, over: Partial<AstirEvent> = {}): AstirEvent {
   seq++;
   return {
     v: CONTRACT_VERSION,

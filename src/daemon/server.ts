@@ -98,7 +98,7 @@ export class Daemon {
    *
    * `unauthorizedIngest` is a lifetime total, so using it to decide what to
    * *display* means a single rejection hours ago keeps the menu bar asserting
-   * "the token is rejected" long after `clide install` fixed it — telling
+   * "the token is rejected" long after `astir install` fixed it — telling
    * someone to repair something that is already correct, while the real reason
    * their session is silent goes unnamed. A timestamp is the honest signal.
    */
@@ -171,7 +171,7 @@ export class Daemon {
 
     if (!this.authorized(req)) {
       if (path.startsWith("/hook/")) {
-        // CAP-08 — an unset $CLIDE_TOKEN interpolates to an empty string rather
+        // CAP-08 — an unset $ASTIR_TOKEN interpolates to an empty string rather
         // than failing, so this is far more likely a misconfigured hook than an
         // attack. Say so once, loudly: silence here is the failure mode that let
         // the previous version look healthy while receiving nothing.
@@ -180,9 +180,9 @@ export class Daemon {
         if (!this.warnedAboutToken) {
           this.warnedAboutToken = true;
           process.stderr.write(
-            "clide: a hook POSTed without a valid token — events are being rejected.\n" +
-              "       Is $CLIDE_TOKEN exported in the environment Claude Code runs in?\n" +
-              "       Run `clide install` for the export line.\n",
+            "astir: a hook POSTed without a valid token — events are being rejected.\n" +
+              "       Is $ASTIR_TOKEN exported in the environment Claude Code runs in?\n" +
+              "       Run `astir install` for the export line.\n",
           );
         }
       }
@@ -218,7 +218,7 @@ export class Daemon {
     // should never have been there.
     /**
      * PSH-11 — raising the window happens HERE, in the daemon, not in whatever
-     * process typed `clide focus`.
+     * process typed `astir focus`.
      *
      * macOS attributes a TCC grant (Accessibility, Automation) to the
      * *responsible process* — the app that spawned the chain — not to the binary
@@ -233,7 +233,7 @@ export class Daemon {
      * so doing it here collapses that to a single identity. It does not solve
      * the identity itself — an unsigned Node process is attributed to the `node`
      * binary, which is both too broad and unrecognisable in System Settings —
-     * and a signed clide.app remains the only clean answer. This is the shape
+     * and a signed astir.app remains the only clean answer. This is the shape
      * that app would inherit.
      */
     if (path === "/focus" && req.method === "POST") {
@@ -338,7 +338,7 @@ export class Daemon {
         cwd: d.cwd,
         // Discovery already knows this. Dropping it made a silent session
         // unfocusable — the one thing you can still usefully do with a session
-        // clide cannot hear is go and look at it.
+        // astir cannot hear is go and look at it.
         pid: d.pid,
         startedAt: d.startedAt,
         ...(d.attended === undefined ? {} : { attended: d.attended }),

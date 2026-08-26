@@ -63,7 +63,7 @@ const session = (pid: number | null) => ({
   sessionId: "s1",
   pid,
   cwd: "/repo",
-  name: "clide-ac",
+  name: "astir-ac",
 });
 
 describe("process ancestry", () => {
@@ -80,46 +80,46 @@ describe("process ancestry", () => {
 
 describe("choosing which window", () => {
   it("prefers the window whose title is exactly the folder", () => {
-    expect(pickWindow(["other", "clide", "clide.3s.sh — scratch"], "/Users/x/clide")).toBe(2);
+    expect(pickWindow(["other", "astir", "astir.3s.sh — scratch"], "/Users/x/astir")).toBe(2);
   });
 
   it("matches the folder as a title component, not a bare substring", () => {
     // The bug behind "it opened a VS Code window, just not the right one": an
-    // editor with several projects open can have a *file* called clide.3s.sh in
-    // an unrelated window, and that window's title contains "clide" too.
-    expect(pickWindow(["clide.3s.sh — other-project", "main.ts — clide"], "/Users/x/clide")).toBe(2);
+    // editor with several projects open can have a *file* called astir.3s.sh in
+    // an unrelated window, and that window's title contains "astir" too.
+    expect(pickWindow(["astir.3s.sh — other-project", "main.ts — astir"], "/Users/x/astir")).toBe(2);
   });
 
   it("falls back to a substring rather than giving up", () => {
-    expect(pickWindow(["myclide-stuff"], "/Users/x/clide")).toBe(1);
+    expect(pickWindow(["myastir-stuff"], "/Users/x/astir")).toBe(1);
   });
 
   it("returns null when nothing mentions the folder at all", () => {
-    expect(pickWindow(["mail", "calendar"], "/Users/x/clide")).toBe(null);
+    expect(pickWindow(["mail", "calendar"], "/Users/x/astir")).toBe(null);
   });
 
   it("handles a cwd with a trailing slash", () => {
-    expect(pickWindow(["clide"], "/Users/x/clide/")).toBe(1);
+    expect(pickWindow(["astir"], "/Users/x/astir/")).toBe(1);
   });
 
   it("prefers a home-relative path over a basename match elsewhere", () => {
-    // Ghostty titles a window "✳ Claude Code, ~/Projects/clide". A full path
+    // Ghostty titles a window "✳ Claude Code, ~/Projects/astir". A full path
     // cannot appear inside an unrelated project the way a basename can.
     expect(
       pickWindow(
-        ["clide.3s.sh — other", "✳ Claude Code, ~/Projects/clide"],
-        "/home/u/Projects/clide",
+        ["astir.3s.sh — other", "✳ Claude Code, ~/Projects/astir"],
+        "/home/u/Projects/astir",
         "/home/u",
       ),
     ).toBe(2);
   });
 
   it("matches an absolute path in the title too", () => {
-    expect(pickWindow(["zsh — /home/u/Projects/clide"], "/home/u/Projects/clide", "/home/u")).toBe(1);
+    expect(pickWindow(["zsh — /home/u/Projects/astir"], "/home/u/Projects/astir", "/home/u")).toBe(1);
   });
 
   it("still works when the cwd is not under home", () => {
-    expect(pickWindow(["x", "clide"], "/opt/clide", "/home/u")).toBe(2);
+    expect(pickWindow(["x", "astir"], "/opt/astir", "/home/u")).toBe(2);
   });
 });
 

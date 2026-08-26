@@ -1,4 +1,4 @@
-/** Where Clide keeps its little bit of local state. Nothing here is session content. */
+/** Where Astir keeps its little bit of local state. Nothing here is session content. */
 
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -7,12 +7,12 @@ import { dirname, join } from "node:path";
 
 export const DEFAULT_PORT = 47_000;
 
-export function clideDir(home: string = homedir()): string {
-  return join(home, ".clide");
+export function astirDir(home: string = homedir()): string {
+  return join(home, ".astir");
 }
 
 export function tokenPath(home: string = homedir()): string {
-  return join(clideDir(home), "token");
+  return join(astirDir(home), "token");
 }
 
 /**
@@ -24,7 +24,7 @@ export function tokenPath(home: string = homedir()): string {
  * rename — which also makes the swap atomic for a concurrent reader.
  */
 export function writeSecret(path: string, contents: string, opts: { requireDir?: boolean } = {}): void {
-  // Callers writing outside ~/.clide (INS-04 writes Claude Code's settings.json)
+  // Callers writing outside ~/.astir (INS-04 writes Claude Code's settings.json)
   // have no guarantee the directory exists yet.
   if (opts.requireDir === true) mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
@@ -38,7 +38,7 @@ export function writeSecret(path: string, contents: string, opts: { requireDir?:
  * written once keeps working. Created on first use.
  */
 export function readOrCreateToken(home: string = homedir()): string {
-  const dir = clideDir(home);
+  const dir = astirDir(home);
   const path = tokenPath(home);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
 

@@ -9,8 +9,8 @@ import type { RemoteSession, StatusBody, StatusResult } from "./types.js";
  * lie this project exists downstream of.
  */
 export async function fetchStatus(port: number, timeoutMs = 3_000): Promise<StatusResult> {
-  const token = process.env.CLIDE_TOKEN ?? readTokenIfPresent();
-  if (token === null) return { ok: false, reason: "no token — run `clide install`" };
+  const token = process.env.ASTIR_TOKEN ?? readTokenIfPresent();
+  if (token === null) return { ok: false, reason: "no token — run `astir install`" };
 
   try {
     const res = await fetch(`http://127.0.0.1:${port}/state`, {
@@ -48,7 +48,7 @@ export async function fetchRemote(
   port: number,
   timeoutMs = 3_000,
 ): Promise<{ agents: RemoteAgentView[]; sessions: RemoteSession[] } | null> {
-  const token = process.env.CLIDE_NOTIFY_TOKEN ?? process.env.CLIDE_TOKEN ?? readTokenIfPresent();
+  const token = process.env.ASTIR_NOTIFY_TOKEN ?? process.env.ASTIR_TOKEN ?? readTokenIfPresent();
   if (token === null) return null;
 
   try {

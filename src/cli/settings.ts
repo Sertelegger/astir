@@ -1,19 +1,19 @@
 /**
- * INS-04 — put `CLIDE_TOKEN` where Claude Code will actually read it.
+ * INS-04 — put `ASTIR_TOKEN` where Claude Code will actually read it.
  *
  * The hooks are `type: "http"`: Claude Code POSTs to the daemon from its own
- * process, so no clide code runs at hook time and there is nothing to open
- * `~/.clide/token`. An http hook header can be filled from exactly one source —
+ * process, so no astir code runs at hook time and there is nothing to open
+ * `~/.astir/token`. An http hook header can be filled from exactly one source —
  * an environment variable named in `allowedEnvVars` — so the token has to reach
  * Claude Code's environment or the hooks send `Bearer ` and every event is
  * rejected with a 401.
  *
  * INS-03 originally left that to the user as an `export` line for their shell
- * profile, on the principle that clide must not edit someone's dotfiles. That
+ * profile, on the principle that astir must not edit someone's dotfiles. That
  * principle stands and this module does not touch a dotfile. But the profile was
  * the wrong destination twice over:
  *
- *   - It is silent when skipped. `clide install` printed a line, nothing
+ *   - It is silent when skipped. `astir install` printed a line, nothing
  *     verified it, and the first symptom was a wall of hook errors with the
  *     cause several layers away.
  *   - It does not even work in general. A shell profile is sourced by
@@ -21,7 +21,7 @@
  *     extension never reads it, so the instruction silently does nothing for
  *     everyone not starting from a terminal.
  *
- * `settings.json` has neither problem, and is not a new intrusion: `clide
+ * `settings.json` has neither problem, and is not a new intrusion: `astir
  * install` already rewrites that exact file through `claude plugin install`
  * (INS-02), which adds `enabledPlugins` and `extraKnownMarketplaces` to it.
  * Writing one more key into a file we already cause to be written is the same
@@ -91,7 +91,7 @@ export type TokenState =
 
 export function tokenState(settings: Settings, token: string): TokenState {
   const env = settings.env as Record<string, unknown> | undefined;
-  const existing = env?.CLIDE_TOKEN;
+  const existing = env?.ASTIR_TOKEN;
   if (typeof existing !== "string" || existing.length === 0) return { kind: "absent" };
   return existing === token ? { kind: "current" } : { kind: "stale", existing };
 }
@@ -104,7 +104,7 @@ export function tokenState(settings: Settings, token: string): TokenState {
  */
 export function withToken(settings: Settings, token: string): Settings {
   const env = (settings.env ?? {}) as Record<string, unknown>;
-  return { ...settings, env: { ...env, CLIDE_TOKEN: token } };
+  return { ...settings, env: { ...env, ASTIR_TOKEN: token } };
 }
 
 /** Two-space JSON with a trailing newline — what Claude Code itself writes. */
@@ -114,7 +114,7 @@ export function serializeSettings(settings: Settings): string {
 
 /**
  * `httpHookAllowedEnvVars` intersects with each hook's own `allowedEnvVars`, so
- * a machine that sets it without naming `CLIDE_TOKEN` filters our header back to
+ * a machine that sets it without naming `ASTIR_TOKEN` filters our header back to
  * empty no matter how correctly the variable is installed. Rare, but it fails
  * exactly like a missing token while looking perfectly configured — so it is
  * worth naming rather than leaving someone to find it.
@@ -122,7 +122,7 @@ export function serializeSettings(settings: Settings): string {
 export function tokenIsFilteredOut(settings: Settings): boolean {
   const allowed = settings.httpHookAllowedEnvVars;
   if (!Array.isArray(allowed)) return false;
-  return !allowed.includes("CLIDE_TOKEN");
+  return !allowed.includes("ASTIR_TOKEN");
 }
 
 export interface SettingsDeps {
@@ -162,7 +162,7 @@ export function installToken(token: string, deps: SettingsDeps = defaultSettings
       path,
       detail:
         `left ${path} alone because ${parsed.reason}.\n` +
-        "    Fix or move that file and re-run `clide install` — overwriting it would\n" +
+        "    Fix or move that file and re-run `astir install` — overwriting it would\n" +
         "    silently discard every setting it contains.",
     };
   }
@@ -171,7 +171,7 @@ export function installToken(token: string, deps: SettingsDeps = defaultSettings
   if (state.kind === "current") {
     // Same reasoning as DMN-07's chmod on an existing token file: the value
     // being right says nothing about the mode being right. A file written by an
-    // earlier clide, by Claude Code itself, or restored from a backup holds the
+    // earlier astir, by Claude Code itself, or restored from a backup holds the
     // token at whatever the umask gave it — 0644 on a normal machine. Nothing is
     // rewritten here, so re-asserting the mode is the only chance to fix it.
     deps.harden(path);

@@ -7,7 +7,7 @@ body:
       value: |
         Thanks for the report.
 
-        Clide sits between an AI CLI and your desktop, so the boundaries in between (tmux, SSH, WSL, containers) matter a lot for reproducing. The environment fields below are the ones that usually explain it.
+        Astir sits between an AI CLI and your desktop, so the boundaries in between (tmux, SSH, WSL, containers) matter a lot for reproducing. The environment fields below are the ones that usually explain it.
 
         **Please redact** anything sensitive — repo paths and session ids can identify private work.
   - type: textarea
@@ -51,8 +51,8 @@ body:
     id: versions
     attributes:
       label: Versions
-      description: Provider CLI version (`claude --version` / `codex --version`) and the clide version
-      placeholder: "Claude Code 2.1.233, clide 2.0.0-alpha.0"
+      description: Provider CLI version (`claude --version` / `codex --version`) and the astir version
+      placeholder: "Claude Code 2.1.233, astir 2.0.0-alpha.0"
     validations:
       required: true
   - type: dropdown

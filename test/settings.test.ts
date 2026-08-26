@@ -90,11 +90,11 @@ describe("token state", () => {
   });
 
   it("reports current on an exact match", () => {
-    expect(tokenState({ env: { CLIDE_TOKEN: TOKEN } }, TOKEN)).toEqual({ kind: "current" });
+    expect(tokenState({ env: { ASTIR_TOKEN: TOKEN } }, TOKEN)).toEqual({ kind: "current" });
   });
 
   it("reports stale when the token file has been regenerated", () => {
-    expect(tokenState({ env: { CLIDE_TOKEN: "old" } }, TOKEN)).toEqual({
+    expect(tokenState({ env: { ASTIR_TOKEN: "old" } }, TOKEN)).toEqual({
       kind: "stale",
       existing: "old",
     });
@@ -105,18 +105,18 @@ describe("merging", () => {
   it("preserves every unrelated setting", () => {
     const before = {
       permissions: { defaultMode: "auto" },
-      enabledPlugins: { "clide@clide-marketplace": true },
+      enabledPlugins: { "astir@astir-marketplace": true },
       model: "opus",
     };
     const after = withToken(before, TOKEN);
     expect(after.permissions).toEqual({ defaultMode: "auto" });
-    expect(after.enabledPlugins).toEqual({ "clide@clide-marketplace": true });
+    expect(after.enabledPlugins).toEqual({ "astir@astir-marketplace": true });
     expect(after.model).toBe("opus");
   });
 
   it("preserves other env vars", () => {
     const after = withToken({ env: { DEBUG: "1", PATH_EXTRA: "/x" } }, TOKEN);
-    expect(after.env).toEqual({ DEBUG: "1", PATH_EXTRA: "/x", CLIDE_TOKEN: TOKEN });
+    expect(after.env).toEqual({ DEBUG: "1", PATH_EXTRA: "/x", ASTIR_TOKEN: TOKEN });
   });
 
   it("does not reorder existing keys", () => {
@@ -125,7 +125,7 @@ describe("merging", () => {
   });
 
   it("serializes the way Claude Code writes the file", () => {
-    const out = serializeSettings({ env: { CLIDE_TOKEN: TOKEN } });
+    const out = serializeSettings({ env: { ASTIR_TOKEN: TOKEN } });
     expect(out.endsWith("\n")).toBe(true);
     expect(out).toContain('\n  "env": {');
   });
@@ -136,7 +136,7 @@ describe("installToken", () => {
     const d = deps(null);
     const r = installToken(TOKEN, d);
     expect(r).toMatchObject({ ok: true, outcome: "written" });
-    expect(JSON.parse(d.current() ?? "").env.CLIDE_TOKEN).toBe(TOKEN);
+    expect(JSON.parse(d.current() ?? "").env.ASTIR_TOKEN).toBe(TOKEN);
   });
 
   it("adds the key to an existing file without disturbing it", () => {
@@ -146,11 +146,11 @@ describe("installToken", () => {
     const after = JSON.parse(d.current() ?? "");
     expect(after.model).toBe("opus");
     expect(after.enabledPlugins).toEqual({ "x@y": true });
-    expect(after.env.CLIDE_TOKEN).toBe(TOKEN);
+    expect(after.env.ASTIR_TOKEN).toBe(TOKEN);
   });
 
   it("is idempotent — a second run writes nothing", () => {
-    const d = deps(`{"env":{"CLIDE_TOKEN":"${TOKEN}"}}`);
+    const d = deps(`{"env":{"ASTIR_TOKEN":"${TOKEN}"}}`);
     let writes = 0;
     const counted: SettingsDeps = {
       ...d,
@@ -167,18 +167,18 @@ describe("installToken", () => {
   it("still re-asserts the mode when the token was already correct", () => {
     // The value being right says nothing about the mode being right: a file
     // written before this hardening existed holds the token at 0644.
-    const d = deps(`{"env":{"CLIDE_TOKEN":"${TOKEN}"}}`);
+    const d = deps(`{"env":{"ASTIR_TOKEN":"${TOKEN}"}}`);
     installToken(TOKEN, d);
     expect(d.hardened).toEqual(["/fake/.claude/settings.json"]);
   });
 
   it("replaces a stale token and says so", () => {
-    const d = deps('{"env":{"CLIDE_TOKEN":"stale-value","KEEP":"1"}}');
+    const d = deps('{"env":{"ASTIR_TOKEN":"stale-value","KEEP":"1"}}');
     const r = installToken(TOKEN, d);
     expect(r.outcome).toBe("updated");
     expect(r.detail).toContain("older token");
     const after = JSON.parse(d.current() ?? "");
-    expect(after.env.CLIDE_TOKEN).toBe(TOKEN);
+    expect(after.env.ASTIR_TOKEN).toBe(TOKEN);
     expect(after.env.KEEP).toBe("1");
   });
 
@@ -197,11 +197,11 @@ describe("httpHookAllowedEnvVars", () => {
     expect(tokenIsFilteredOut({})).toBe(false);
   });
 
-  it("is fine when it names CLIDE_TOKEN", () => {
-    expect(tokenIsFilteredOut({ httpHookAllowedEnvVars: ["CLIDE_TOKEN"] })).toBe(false);
+  it("is fine when it names ASTIR_TOKEN", () => {
+    expect(tokenIsFilteredOut({ httpHookAllowedEnvVars: ["ASTIR_TOKEN"] })).toBe(false);
   });
 
-  it("is flagged when set without CLIDE_TOKEN", () => {
+  it("is flagged when set without ASTIR_TOKEN", () => {
     // Intersected with the hook's own allowedEnvVars, so this filters the header
     // to empty while the variable itself looks perfectly installed.
     expect(tokenIsFilteredOut({ httpHookAllowedEnvVars: ["OTHER"] })).toBe(true);
@@ -210,7 +210,7 @@ describe("httpHookAllowedEnvVars", () => {
 
 describe("on-disk write", () => {
   const fixture = (): SettingsDeps & { file: string } => {
-    const home = mkdtempSync(join(tmpdir(), "clide-settings-"));
+    const home = mkdtempSync(join(tmpdir(), "astir-settings-"));
     const file = join(home, ".claude", "settings.json");
     return { ...defaultSettingsDeps(), path: () => file, file };
   };
@@ -219,7 +219,7 @@ describe("on-disk write", () => {
     const d = fixture();
     const r = installToken(TOKEN, d);
     expect(r.ok).toBe(true);
-    expect(JSON.parse(readFileSync(d.file, "utf8")).env.CLIDE_TOKEN).toBe(TOKEN);
+    expect(JSON.parse(readFileSync(d.file, "utf8")).env.ASTIR_TOKEN).toBe(TOKEN);
   });
 
   // PLT-02: POSIX modes do not exist on Windows, so these assert nothing there.

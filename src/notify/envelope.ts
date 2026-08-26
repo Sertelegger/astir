@@ -97,7 +97,7 @@ export function buildEnvelope(input: BuildEnvelopeInput): NotifyEnvelope {
     reason: input.reason,
     origin: { host, user: input.user ?? safeUser() },
     session: { sessionId: input.sessionId, agentId: input.agentId, repo },
-    title: TITLE_BY_KIND[input.kind] ?? "Clide",
+    title: TITLE_BY_KIND[input.kind] ?? "Astir",
     // Retained for receivers that render the envelope directly. Anything that
     // knows where it is should prefer `notificationText` below, which drops the
     // host when the alert did not come from somewhere else.

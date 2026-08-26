@@ -1,18 +1,18 @@
 #!/bin/bash
-# <bitbar.title>Clide</bitbar.title>
+# <bitbar.title>Astir</bitbar.title>
 # <bitbar.version>v0.1.0</bitbar.version>
 # <bitbar.author>Sascha Sertel</bitbar.author>
 # <bitbar.desc>Shows whether an AI coding agent is blocked waiting on you.</bitbar.desc>
-# <bitbar.dependencies>node,clide</bitbar.dependencies>
-# <bitbar.abouturl>https://github.com/Sertelegger/clide</bitbar.abouturl>
+# <bitbar.dependencies>node,astir</bitbar.dependencies>
+# <bitbar.abouturl>https://github.com/Sertelegger/astir</bitbar.abouturl>
 #
 # Install: copy or symlink this into your SwiftBar (or xbar) plugin folder.
-# The filename encodes the refresh interval — clide.3s.sh refreshes every 3s.
+# The filename encodes the refresh interval — astir.3s.sh refreshes every 3s.
 #
-# All formatting lives in `clide menubar` rather than here, so it stays unit
+# All formatting lives in `astir menubar` rather than here, so it stays unit
 # tested and works unchanged if SwiftBar is ever swapped for something else.
 #
-# Finding clide is the fiddly part, and getting it wrong is invisible: SwiftBar
+# Finding astir is the fiddly part, and getting it wrong is invisible: SwiftBar
 # runs plugins from launchd, NOT from your shell, so it does not inherit the PATH
 # you see in a terminal. A version manager (mise, nvm, volta, asdf) installs
 # binaries somewhere that PATH never mentions, and the plugin just quietly reports
@@ -32,9 +32,9 @@ for candidate in \
   [ -d "$candidate" ] && PATH="$PATH:$candidate"
 done
 
-CLIDE="$(command -v clide 2>/dev/null)"
+ASTIR="$(command -v astir 2>/dev/null)"
 
-if [ -z "$CLIDE" ]; then
+if [ -z "$ASTIR" ]; then
   # Resolve this script's real location, following the symlink SwiftBar uses.
   self="${BASH_SOURCE[0]}"
   while [ -L "$self" ]; do
@@ -48,7 +48,7 @@ if [ -z "$CLIDE" ]; then
   entry="$repo/dist/cli/main.js"
   if [ -f "$entry" ]; then
     # Run it through node explicitly. Exec'ing the file relies on its
-    # `#!/usr/bin/env node` shebang, and node is exactly as likely as clide to be
+    # `#!/usr/bin/env node` shebang, and node is exactly as likely as astir to be
     # somewhere launchd's PATH has never heard of.
     NODE="$(command -v node 2>/dev/null)"
     if [ -n "$NODE" ]; then
@@ -57,13 +57,13 @@ if [ -z "$CLIDE" ]; then
   fi
 fi
 
-if [ -z "$CLIDE" ]; then
-  echo "clide ⚠ | sfimage=exclamationmark.triangle color=#888888"
+if [ -z "$ASTIR" ]; then
+  echo "astir ⚠ | sfimage=exclamationmark.triangle color=#888888"
   echo "---"
-  echo "clide not found on PATH | color=#888888"
-  echo "Run 'npm link' in the clide repo, or install it globally | color=#888888"
+  echo "astir not found on PATH | color=#888888"
+  echo "Run 'npm link' in the astir repo, or install it globally | color=#888888"
   echo "Refresh | refresh=true"
   exit 0
 fi
 
-exec "$CLIDE" menubar
+exec "$ASTIR" menubar

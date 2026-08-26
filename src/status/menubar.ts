@@ -33,7 +33,7 @@ export interface RemoteEntry {
 
 export interface MenubarOpts {
   /**
-   * How to run clide, as `[interpreter, script]` — NOT the script alone.
+   * How to run astir, as `[interpreter, script]` — NOT the script alone.
    *
    * SwiftBar launches `bash=` from launchd, whose PATH is roughly
    * `/usr/bin:/bin:/usr/sbin:/sbin`. Handing it `main.js` makes the click depend
@@ -65,7 +65,7 @@ function humanDuration(ms: number): string {
 /**
  * The repo, which is how people actually identify a session.
  *
- * `name` is Claude Code's own session slug (e.g. "clide-56", "seenthat-bd").
+ * `name` is Claude Code's own session slug (e.g. "astir-56", "seenthat-bd").
  * It reads like a branch name but is not one, and its suffix is generated — so
  * as a *primary* label it is close to useless: two sessions in the same project
  * get unrelated-looking names, and a name tells you nothing about which repo it
@@ -275,7 +275,7 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
   if (!result.ok) {
     // Deliberately distinct from "idle": the daemon being unreachable is
     // information, and rendering it as calm would be a lie.
-    lines.push(`clide ⚠ | sfimage=exclamationmark.triangle color=${COLOUR.dim}`);
+    lines.push(`astir ⚠ | sfimage=exclamationmark.triangle color=${COLOUR.dim}`);
     lines.push("---");
     lines.push(`${safe(result.reason)} | color=${COLOUR.dim}`);
     // terminal=true here on purpose: starting the daemon should show its output.
@@ -329,7 +329,7 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     const marker = blockedHere > 0 ? " ⏳" : "";
 
     // Clicking the session goes to where the work is. `terminal=false` because
-    // `clide focus` drives the window manager itself and must not open a shell.
+    // `astir focus` drives the window manager itself and must not open a shell.
     // No colour unless it is blocked: the session title is the primary text of
     // this menu and belongs in the system label colour.
     const state = dominantState(session);
@@ -345,7 +345,7 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     // not a button" — there is no visual difference between them.
     const goThere = action(exe, ["focus", session.sessionId]);
     // The full path disambiguates two repos sharing a basename, and the session
-    // slug is what `clide focus`/`dismiss` and the logs call it — both are worth
+    // slug is what `astir focus`/`dismiss` and the logs call it — both are worth
     // having, neither is worth the top line.
     const slug = session.name == null ? "" : `  ·  ${safe(session.name)}`;
     lines.push(`-- ${safe(session.cwd)}${slug} | color=${COLOUR.dim} ${goThere}`);
@@ -400,20 +400,20 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
       body.daemonStartedAt !== undefined && s.startedAt != null && s.startedAt < body.daemonStartedAt;
 
     if (predatesDaemon && s.sandboxBlocked !== true) {
-      lines.push(`-- Started before clide was listening, so nothing has been | color=${COLOUR.dim}`);
+      lines.push(`-- Started before astir was listening, so nothing has been | color=${COLOUR.dim}`);
       lines.push(`-- heard from it yet — it will appear as soon as it does | color=${COLOUR.dim}`);
       lines.push(`-- anything | color=${COLOUR.dim}`);
     } else if (s.sandboxBlocked === true) {
-      // The one silent case clide can prove rather than guess.
+      // The one silent case astir can prove rather than guess.
       lines.push(`-- This project is sandboxed, so its hooks cannot reach the | color=${COLOUR.dim}`);
       lines.push(`-- daemon — the proxy refuses them before they arrive | color=${COLOUR.dim}`);
-      lines.push(`-- Allow clide through this project's sandbox | ${action(exe, ["allow-sandbox", s.cwd])}`);
+      lines.push(`-- Allow astir through this project's sandbox | ${action(exe, ["allow-sandbox", s.cwd])}`);
     } else if (rejecting) {
       lines.push(`-- Hooks are firing but the token is rejected | color=${COLOUR.dim}`);
-      lines.push(`-- Run \`clide install\` to repair the token | color=${COLOUR.dim}`);
+      lines.push(`-- Run \`astir install\` to repair the token | color=${COLOUR.dim}`);
     } else {
       lines.push(`-- Hooks bind when a session starts, so one older than | color=${COLOUR.dim}`);
-      lines.push(`-- the clide plugin never sends anything — restart it | color=${COLOUR.dim}`);
+      lines.push(`-- the astir plugin never sends anything — restart it | color=${COLOUR.dim}`);
     }
   }
 

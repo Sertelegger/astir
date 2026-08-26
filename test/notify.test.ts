@@ -321,7 +321,7 @@ describe("notifications read as English, not as identifiers", () => {
       reason,
       sessionId: "abc12345",
       agentId: "a1",
-      cwd: "/Users/sascha/Projects/clide",
+      cwd: "/Users/sascha/Projects/astir",
       ...over,
     });
 
@@ -330,10 +330,10 @@ describe("notifications read as English, not as identifiers", () => {
     // it asks the user to do the translation this tool exists to do for them.
     // Pin the origin host so this asserts wording, not whatever machine it runs on.
     expect(notificationText(built("permission_prompt", { host: "mac" }), "mac").body).toBe(
-      "clide needs permission to run something",
+      "astir needs permission to run something",
     );
     expect(notificationText(built("agent_needs_input", { host: "mac" }), "mac").body).toBe(
-      "clide is waiting for your input",
+      "astir is waiting for your input",
     );
   });
 
@@ -393,14 +393,14 @@ describe("PSH-13 — a notification you can act on", () => {
 
   it("attaches a click action that focuses the originating session", async () => {
     const { backend, sent } = capable();
-    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/clide/main.js"])]).send(blocked);
+    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/astir/main.js"])]).send(blocked);
     // The interpreter is part of the command, not assumed to be on PATH: a
     // notification click runs under `/bin/sh` with a minimal environment, where
     // relying on the script's shebang yields `env: node: No such file or
     // directory` and a click that silently does nothing.
     expect(sent[0]?.onClick).toEqual({
       command: "/usr/bin/node",
-      args: ["/opt/clide/main.js", "focus", "sess-1"],
+      args: ["/opt/astir/main.js", "focus", "sess-1"],
     });
   });
 
@@ -408,7 +408,7 @@ describe("PSH-13 — a notification you can act on", () => {
     // Reminding every minute for ten minutes would otherwise leave a column of
     // ten identical banners that only the user can clear.
     const { backend, sent } = capable();
-    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/clide/main.js"])]).send(blocked);
+    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/astir/main.js"])]).send(blocked);
     expect(sent[0]?.group).toBe("sess-1:a1");
   });
 
@@ -422,7 +422,7 @@ describe("PSH-13 — a notification you can act on", () => {
       cwd: "/repo",
     });
 
-    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/clide/main.js"])]).send(resolved);
+    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/astir/main.js"])]).send(resolved);
 
     expect(removed, "a resolution withdraws, it does not announce").toEqual(["sess-1:a1"]);
     expect(sent).toHaveLength(0);
@@ -435,7 +435,7 @@ describe("PSH-13 — a notification you can act on", () => {
     const backend = backendFromNotifier((n: Notification) => {
       sent.push(n);
     });
-    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/clide/main.js"])]).send(blocked);
+    await new Dispatcher([localTarget(backend, ["/usr/bin/node", "/opt/astir/main.js"])]).send(blocked);
     expect(sent[0]?.onClick).toBeUndefined();
   });
 });

@@ -1,6 +1,9 @@
-# Clide
+# ASTIR — Agent Sessions Tracked In Realtime
 
 Know when an AI coding agent is blocked on you — and where in your repo it's working.
+
+*astir* — awake, in motion, stirring. Which is the question: **is anything astir,
+and does any of it need me?**
 
 > **Status: early.** The daemon receives live events from real Claude Code sessions, raises notifications, and drives a macOS menu bar — including sessions on other machines. The repo *map* and web view aren't built yet. See [ROADMAP.md](ROADMAP.md).
 >
@@ -10,7 +13,7 @@ Know when an AI coding agent is blocked on you — and where in your repo it's w
 
 You run two or three sessions in parallel across different projects. One stops and waits for you to approve a command — and you don't notice, because you're on another desktop with the sound off. Twenty minutes later you check.
 
-Clide's first job is to make that not happen. Everything else is secondary.
+Astir's first job is to make that not happen. Everything else is secondary.
 
 ## What works today
 
@@ -19,9 +22,9 @@ Clide's first job is to make that not happen. Everything else is secondary.
 - Per-agent state including `blocked`, and time accounting that separates **working** from **waiting on a human**
 - An OS notification when an agent becomes blocked, re-reminding every minute for
   ten minutes, then every two, then every five, then quarter-hourly — a missed
-  alert is never lost, and `clide dismiss` is how you stop it
+  alert is never lost, and `astir dismiss` is how you stop it
 - A macOS menu-bar badge, including sessions on other machines
-- `clide status` across all live sessions
+- `astir status` across all live sessions
 
 ## Install
 
@@ -29,18 +32,18 @@ Requires Node.js ≥ 20 and Claude Code.
 
 ```bash
 npm install && npm run build
-npm link                # puts `clide` on your PATH (until it's published to npm)
-clide install           # registers the hooks, creates ~/.clide/token (0600)
+npm link                # puts `astir` on your PATH (until it's published to npm)
+astir install           # registers the hooks, creates ~/.astir/token (0600)
 ```
 
-`clide install` runs `claude plugin marketplace add` and `claude plugin install`
+`astir install` runs `claude plugin marketplace add` and `claude plugin install`
 for you, so the hooks are registered without typing slash commands or editing
 any config by hand. Pass `--no-plugin` to skip that and do it yourself.
 
 It also installs the daemon token. The hooks are `type: "http"` — Claude Code
-POSTs to the daemon from its own process, so nothing of clide's runs at hook time
-to read `~/.clide/token`, and an http hook header can only be filled from an
-environment variable. `clide install` writes `CLIDE_TOKEN` into the `env` block of
+POSTs to the daemon from its own process, so nothing of astir's runs at hook time
+to read `~/.astir/token`, and an http hook header can only be filled from an
+environment variable. `astir install` writes `ASTIR_TOKEN` into the `env` block of
 `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`), merging into whatever is
 already there and refusing to touch the file if it cannot parse it.
 
@@ -57,7 +60,7 @@ generally picks the token up within a tool call or two — no restart needed. If
 The daemon starts itself when a Claude Code session starts — a `SessionStart`
 command hook checks the port and launches it if nothing is listening. It runs
 `async`, so it never delays a session, and costs one process per *session*
-rather than per tool call. `CLIDE_NO_AUTOSTART=1` turns it off.
+rather than per tool call. `ASTIR_NO_AUTOSTART=1` turns it off.
 
 That matters more than it sounds. The capture hooks are `type: "http"`, and an
 http hook **cannot fail quietly** — its schema has no field for ignoring a
@@ -69,11 +72,11 @@ If you would rather have it up regardless of Claude Code — after a reboot, or 
 remote sessions pushing rosters to your notifier:
 
 ```bash
-clide autostart          # a LaunchAgent: starts at login, restarts on crash
-clide autostart --remove
+astir autostart          # a LaunchAgent: starts at login, restarts on crash
+astir autostart --remove
 ```
 
-`clide doctor` reports which of these is in place.
+`astir doctor` reports which of these is in place.
 
 **There is deliberately no npm `postinstall` that registers hooks.** Reaching
 into another tool's configuration as a side effect of `npm install` would also
@@ -81,26 +84,26 @@ fire under `npm ci`, inside Docker builds, and for transitive installs where
 nobody asked for it. Installing is an explicit command.
 
 ```bash
-clide daemon        # one terminal
-clide status        # another, while a session runs
+astir daemon        # one terminal
+astir status        # another, while a session runs
 ```
 
 ```
-$ clide status
-d7a79b10  /Users/sascha/Projects/clide
+$ astir status
+d7a79b10  /Users/sascha/Projects/astir
     thinking     main               active 41s · blocked 12s
 
 1 agent(s) waiting on you
 ```
 
 **Hooks bind when a session starts.** A session that was already running when you
-installed the plugin will never send anything — restart it. clide reports this
+installed the plugin will never send anything — restart it. astir reports this
 rather than showing an empty list: if the provider says sessions are running and
 none of them have reached the daemon, the menu bar says so and names them.
 
 If nothing arrives, `curl -s localhost:47000/healthz` tells you which failure it
 is: `ingested` climbing means it works; `unauthorizedIngest` climbing means
-`$CLIDE_TOKEN` isn't visible to Claude Code. `clide doctor` names that case
+`$ASTIR_TOKEN` isn't visible to Claude Code. `astir doctor` names that case
 directly — it compares `settings.json` against the token file rather than
 checking its own environment, which belongs to your terminal and not to the
 Claude Code being diagnosed.
@@ -111,7 +114,7 @@ An always-visible badge for the one thing that matters: is something waiting on 
 
 ```bash
 brew install --cask swiftbar          # if you don't have it
-ln -s "$PWD/contrib/swiftbar/clide.3s.sh" ~/path/to/your/swiftbar/plugins/
+ln -s "$PWD/contrib/swiftbar/astir.3s.sh" ~/path/to/your/swiftbar/plugins/
 ```
 
 The badge shows a count when agents are blocked, a quiet dot while work is happening, and a warning when the daemon isn't reachable — deliberately distinct from "idle", because rendering a dead daemon as calm would be a lie.
@@ -119,7 +122,7 @@ The badge shows a count when agents are blocked, a quiet dot while work is happe
 The dropdown names *which* session needs you, how long it has actually been
 waiting, and gives you somewhere to go:
 
-- **Click a session** to jump to it. `clide focus` finds the tmux pane it lives
+- **Click a session** to jump to it. `astir focus` finds the tmux pane it lives
   in and selects it, then raises the owning application — Terminal, iTerm2,
   Ghostty, WezTerm and VS Code all work, because in every case the terminal's
   process ancestry ends at the bundle that owns the window.
@@ -128,15 +131,15 @@ waiting, and gives you somewhere to go:
 - **Notifications are clickable** and take you to the session, provided
   `terminal-notifier` is installed (`brew install terminal-notifier`). Without it
   macOS attributes notifications to *Script Editor* — so clicking one opens
-  Script Editor, and they can be neither replaced nor dismissed. clide says which
+  Script Editor, and they can be neither replaced nor dismissed. astir says which
   backend it is using rather than leaving you to discover that by clicking.
 - **Forget** drops a session record outright.
 
-The session name comes from Claude Code's own session slug (`clide-ac`), which
+The session name comes from Claude Code's own session slug (`astir-ac`), which
 reads like a branch name but isn't one; without it, the repo directory name is
 used.
 
-All formatting lives in `clide menubar`, not in the plugin script, so it stays unit-tested and works unchanged under xbar, Hammerspoon, or a plain shell prompt if SwiftBar ever stops being the right host.
+All formatting lives in `astir menubar`, not in the plugin script, so it stays unit-tested and works unchanged under xbar, Hammerspoon, or a plain shell prompt if SwiftBar ever stops being the right host.
 
 ## Sessions on another machine
 
@@ -144,22 +147,22 @@ A session opened over SSH — VS Code Remote-SSH, or a terminal on another box �
 runs its process *there*, so `claude agents --json` here cannot see it at all.
 Two routes make those sessions visible, and they compose.
 
-**Watch a host** when clide is not installed on it. Nothing is needed over there
+**Watch a host** when astir is not installed on it. Nothing is needed over there
 beyond the SSH access you already have:
 
 ```bash
-clide watch megabrain-dev
+astir watch megabrain-dev
 ```
 
 The daemon asks it `claude agents --json` every 30s through a *login* shell —
 `ssh host cmd` sources no profile, so a version-managed `claude` would not be on
 PATH — and the menu bar reads a cache, so no render ever waits on a round trip. A
 host that stops answering is shown as unreachable rather than quietly dropped.
-Remove one with `clide watch <host> --remove`, or edit `~/.clide/hosts`. Hosts
+Remove one with `astir watch <host> --remove`, or edit `~/.astir/hosts`. Hosts
 are opted in explicitly; iterating `~/.ssh/config` would connect to production
 boxes and jump hosts on a timer.
 
-**Pair a host** when clide *is* running on it. You get everything above plus live
+**Pair a host** when astir *is* running on it. You get everything above plus live
 status, because that daemon pushes its own roster down the same tunnel it uses
 for doorbells — and it can reach you when an agent blocks. Where both routes know
 a session it is listed once, from the push, which comes from the daemon actually
@@ -168,21 +171,21 @@ watching it.
 Pair the machine once:
 
 ```bash
-clide pair devbox
+astir pair devbox
 ```
 
 That copies the shared token over your existing SSH access and offers to add a
 `RemoteForward` to `~/.ssh/config`, so the tunnel comes up automatically every
 time you connect. It asks before touching your ssh config, refuses to pair a
-machine that has no clide installed, and changes nothing at all if the host is
+machine that has no astir installed, and changes nothing at all if the host is
 unreachable. `--dry-run` prints what it would do instead.
 
 Afterwards:
 
 ```bash
-clide notifier          # here, where you are
+astir notifier          # here, where you are
 ssh devbox              # as you normally would — the tunnel comes with it
-clide daemon            # over there. No flags: it finds this machine itself.
+astir daemon            # over there. No flags: it finds this machine itself.
 ```
 
 The remote daemon probes the forwarded port and attaches when it sees a notifier,
@@ -211,7 +214,7 @@ hostname is shortened to its first label, so an internal domain never travels
 with the doorbell, and it's omitted entirely when the alert is from the machine
 you're already sitting at.
 
-`clide doctor --notify` reports which delivery paths are live and fires a test through them. It has to ask whether you saw it: the OS reports success even when it suppressed the notification.
+`astir doctor --notify` reports which delivery paths are live and fires a test through them. It has to ask whether you saw it: the OS reports success even when it suppressed the notification.
 
 ## Background sessions
 
@@ -233,17 +236,17 @@ layout), and not the provider's `kind` field, which reports `interactive` for
 claude-mem's observers too. A terminal is a property of the process, so this
 keeps working for other providers.
 
-Anything clide can't classify counts as yours: `ps` doesn't exist on Windows and
+Anything astir can't classify counts as yours: `ps` doesn't exist on Windows and
 a process can exit mid-poll, and hiding a session you're working in is far worse
 than listing a chore. That also means a session found by SSH polling is never
 classified — a terminal is a local fact — so remote background sessions are only
-recognised when clide is running over there and pushing its roster.
+recognised when astir is running over there and pushing its roster.
 
 ## How it works
 
 ```
-Claude Code ──http hooks──▶  clide daemon  ──▶  notification
-                             (one, fixed port)  ──▶  clide status
+Claude Code ──http hooks──▶  astir daemon  ──▶  notification
+                             (one, fixed port)  ──▶  astir status
                                     ▲
                      claude agents --json (session discovery)
 ```

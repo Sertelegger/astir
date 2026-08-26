@@ -1,5 +1,5 @@
 /**
- * PSH-15 — `clide pair <host>`: make a remote machine able to reach you, once.
+ * PSH-15 — `astir pair <host>`: make a remote machine able to reach you, once.
  *
  * The manual setup was three steps in two places, one of which had to be
  * repeated on every connection:
@@ -76,7 +76,7 @@ export function alreadyForwards(config: string, host: string, port: number): boo
 }
 
 /**
- * Every host `clide pair` has set up a forward for.
+ * Every host `astir pair` has set up a forward for.
  *
  * This is the paired-host list, derived from the file that already records it
  * rather than from a second config of our own: a host is paired exactly when its
@@ -155,38 +155,38 @@ export function pair(opts: PairOptions, deps: PairDeps = defaultPairDeps()): Pai
     deps.log(`cannot reach ${host} over ssh:`);
     deps.log(`  ${probe.out}`);
     deps.log("");
-    deps.log("`clide pair` uses your existing ssh access — fix the connection first");
+    deps.log("`astir pair` uses your existing ssh access — fix the connection first");
     deps.log("(agent forwarding, key, or Host entry), then run it again.");
     return { ok: false, changed };
   }
   step("ssh", "ok");
 
-  // 2 — is clide even there? Pairing a machine that cannot run the daemon would
+  // 2 — is astir even there? Pairing a machine that cannot run the daemon would
   // produce a setup that looks complete and delivers nothing.
-  const remote = deps.ssh(host, "command -v clide >/dev/null 2>&1 && clide --version || echo MISSING");
+  const remote = deps.ssh(host, "command -v astir >/dev/null 2>&1 && astir --version || echo MISSING");
   if (remote.out.includes("MISSING") || !remote.ok) {
-    step("clide on remote", "NOT FOUND");
+    step("astir on remote", "NOT FOUND");
     deps.log("");
-    deps.log(`Install clide on ${host} first — pairing without it would configure a`);
+    deps.log(`Install astir on ${host} first — pairing without it would configure a`);
     deps.log("path that silently carries nothing.");
     return { ok: false, changed };
   }
-  step("clide on remote", remote.out.split("\n")[0] ?? "present");
+  step("astir on remote", remote.out.split("\n")[0] ?? "present");
 
   // 3 — the shared secret. Written by shell redirection rather than scp so it
   // works on hosts without scp, and chmod'd in the same command so it is never
   // briefly world-readable.
   const put = deps.ssh(
     host,
-    "mkdir -p ~/.clide && cat > ~/.clide/token && chmod 600 ~/.clide/token && echo stored",
+    "mkdir -p ~/.astir && cat > ~/.astir/token && chmod 600 ~/.astir/token && echo stored",
     token,
   );
   if (!put.ok || !put.out.includes("stored")) {
     step("token", `FAILED — ${put.out}`);
     return { ok: false, changed };
   }
-  step("token", "copied to ~/.clide/token (0600)");
-  changed.push(`${host}:~/.clide/token`);
+  step("token", "copied to ~/.astir/token (0600)");
+  changed.push(`${host}:~/.astir/token`);
 
   // 4 — the forward. This is the part that turns "works once" into "works every
   // time you ssh in", and the only thing touching a file the user owns.
@@ -212,9 +212,9 @@ export function pair(opts: PairOptions, deps: PairDeps = defaultPairDeps()): Pai
   deps.log("");
   deps.log(`${host} is paired.`);
   deps.log("");
-  deps.log("  Run `clide notifier` here, then ssh over as you normally would.");
-  deps.log(`  \`clide daemon\` on ${host} will find this machine by itself — no flags.`);
+  deps.log("  Run `astir notifier` here, then ssh over as you normally would.");
+  deps.log(`  \`astir daemon\` on ${host} will find this machine by itself — no flags.`);
   deps.log("");
-  deps.log("  Verify with:  ssh " + host + " clide doctor --notify");
+  deps.log("  Verify with:  ssh " + host + " astir doctor --notify");
   return { ok: true, changed };
 }

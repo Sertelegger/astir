@@ -1,12 +1,12 @@
 {
-  "name": "clide-marketplace",
+  "name": "astir-marketplace",
   "owner": {
     "name": "Sascha Sertel",
     "email": "sascha@needforgeek.com"
   },
   "plugins": [
     {
-      "name": "clide",
+      "name": "astir",
       "source": "./",
       "description": "Live activity view for AI coding sessions (Claude Code + Codex).",
       "version": "0.1.0"

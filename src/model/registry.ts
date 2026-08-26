@@ -1,6 +1,6 @@
 /** MOD-04/05/06 — session + agent state, and the active-vs-blocked accounting. */
 
-import type { ClideEvent, ParentSource, Provider } from "../contract/event.js";
+import type { AstirEvent, ParentSource, Provider } from "../contract/event.js";
 import type { DiscoveredSession } from "../discovery/sessions.js";
 
 export type AgentState = "thinking" | "tool-running" | "waiting" | "blocked" | "idle" | "done" | "error";
@@ -129,7 +129,7 @@ export interface SessionRecord {
   everDiscovered: boolean;
   /** Wall ms of the most recent event, for the undiscovered-session sweep below. */
   lastEventTs: number;
-  /** OS pid, enriched from discovery — what `clide focus` needs to find a window. */
+  /** OS pid, enriched from discovery — what `astir focus` needs to find a window. */
   pid: number | null;
   /** DMN-11 — false when no human is sitting at it (a plugin or script drives it). */
   attended?: boolean;
@@ -286,7 +286,7 @@ export class Registry {
     this.silentSessions = this.silentSessions.filter((d) => d.sessionId !== sessionId);
   }
 
-  apply(event: ClideEvent, cwd: string): IngestResult {
+  apply(event: AstirEvent, cwd: string): IngestResult {
     if (this.seen.has(event.eventId)) return { applied: false, reason: "duplicate" };
     this.seen.add(event.eventId);
     while (this.seen.size > this.maxSeen) {
@@ -375,7 +375,7 @@ export class Registry {
     }
   }
 
-  private nextState(event: ClideEvent, current: AgentState): AgentState {
+  private nextState(event: AstirEvent, current: AgentState): AgentState {
     switch (event.kind) {
       case "session_start":
         return "thinking";
@@ -504,7 +504,7 @@ export class Registry {
   /**
    * Sessions the provider reports as running that have never sent us an event.
    *
-   * This is the "clide is deaf" signal. A session appears here when its hooks are
+   * This is the "astir is deaf" signal. A session appears here when its hooks are
    * not registered — most commonly because it was started before the plugin was
    * installed, since hooks bind at session start and are never picked up
    * mid-session.
@@ -513,7 +513,7 @@ export class Registry {
     return [...this.silentSessions];
   }
 
-  private ensureAgent(session: SessionRecord, event: ClideEvent): AgentRecord {
+  private ensureAgent(session: SessionRecord, event: AstirEvent): AgentRecord {
     let a = session.agents.get(event.agentId);
     if (!a) {
       a = {

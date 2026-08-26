@@ -15,7 +15,7 @@ const agent = (state: string, over: Partial<StatusBody["sessions"][0]["agents"][
 
 const session = (over: Partial<StatusSession> = {}): StatusSession => ({
   sessionId: "c56a03dd-1111-2222-3333-444444444444",
-  cwd: "/Users/sascha/Projects/clide",
+  cwd: "/Users/sascha/Projects/astir",
   name: null,
   status: null,
   pid: null,
@@ -24,7 +24,7 @@ const session = (over: Partial<StatusSession> = {}): StatusSession => ({
 });
 
 const NODE = "/opt/node/bin/node";
-const SCRIPT = "/usr/local/lib/clide/main.js";
+const SCRIPT = "/usr/local/lib/astir/main.js";
 const OPTS = { invocation: [NODE, SCRIPT] };
 
 /** The first line is what actually appears in the menu bar. */
@@ -101,7 +101,7 @@ describe("dropdown", () => {
             session({ name: "api-work", agents: [agent("thinking")] }),
             session({
               sessionId: "other",
-              name: "clide-ac",
+              name: "astir-ac",
               agents: [agent("blocked", { inStateMs: 125_000 })],
             }),
           ],
@@ -109,7 +109,7 @@ describe("dropdown", () => {
       },
       OPTS,
     );
-    expect(out).toContain("clide-ac");
+    expect(out).toContain("astir-ac");
     expect(out).toContain("1 agent waiting on you");
     // Blocked agents report how long they have been waiting, not how long they worked.
     expect(out).toContain("waiting 2m 5s");
@@ -151,8 +151,8 @@ describe("dropdown", () => {
     expect(out).toContain(`param2=forget param3=sid-1`);
     expect(out).toContain(`param2=focus param3=sid-1`);
     expect(out).toContain(`Dismiss all | bash=${NODE} param1=${SCRIPT} param2=dismiss`);
-    // A bare `clide` would not resolve under SwiftBar's PATH.
-    expect(out).not.toMatch(/bash=clide\b/);
+    // A bare `astir` would not resolve under SwiftBar's PATH.
+    expect(out).not.toMatch(/bash=astir\b/);
   });
 
   it("a dismissed agent stays listed but stops shouting", () => {
@@ -180,7 +180,7 @@ describe("dropdown", () => {
       },
       OPTS,
     );
-    expect(out).toContain("clide");
+    expect(out).toContain("astir");
   });
 });
 
@@ -215,12 +215,12 @@ describe("naming a session", () => {
         ok: true,
         body: {
           blockedCount: 0,
-          sessions: [session({ name: "clide-56", agents: [agent("idle")] })],
+          sessions: [session({ name: "astir-56", agents: [agent("idle")] })],
         },
       },
       OPTS,
     );
-    expect(out).toContain("-- /Users/sascha/Projects/clide  ·  clide-56");
+    expect(out).toContain("-- /Users/sascha/Projects/astir  ·  astir-56");
   });
 
   it("numbers sessions only when the repo alone is ambiguous", () => {
@@ -230,16 +230,16 @@ describe("naming a session", () => {
         body: {
           blockedCount: 0,
           sessions: [
-            session({ sessionId: "a", name: "clide-56", agents: [agent("idle")] }),
-            session({ sessionId: "b", name: "clide-99", agents: [agent("idle")] }),
+            session({ sessionId: "a", name: "astir-56", agents: [agent("idle")] }),
+            session({ sessionId: "b", name: "astir-99", agents: [agent("idle")] }),
             session({ sessionId: "c", cwd: "/x/other", name: "other-aa", agents: [agent("idle")] }),
           ],
         },
       },
       OPTS,
     );
-    expect(out).toContain("clide (1)");
-    expect(out).toContain("clide (2)");
+    expect(out).toContain("astir (1)");
+    expect(out).toContain("astir (2)");
     // A solitary session gets no "(1)" — that would be noise on every row.
     expect(out).toMatch(/\nother {2}·/);
   });
@@ -313,7 +313,7 @@ describe("why a session is silent", () => {
       OPTS,
     );
     const lines = out.split("\n");
-    const live = lines.findIndex((l) => l.startsWith("clide ") && l.includes("param2=focus"));
+    const live = lines.findIndex((l) => l.startsWith("astir ") && l.includes("param2=focus"));
     const quiet = lines.findIndex((l) => l.startsWith("y  ·  not connected"));
     expect(live).toBeGreaterThanOrEqual(0);
     expect(quiet).toBeGreaterThan(live);
@@ -334,7 +334,7 @@ describe("why a session is silent", () => {
 
   it("stops blaming the token once the rejections stop", () => {
     // The regression: `unauthorizedIngest` is a LIFETIME total, so testing it for
-    // non-zero pinned "run clide install to repair the token" on screen forever
+    // non-zero pinned "run astir install to repair the token" on screen forever
     // after one historical rejection — telling the user to fix something already
     // correct while the real cause went unnamed.
     const out = silentBody({ unauthorizedIngest: 93, lastUnauthorizedAt: 1_000_000 - 3 * 3600_000 });
@@ -344,7 +344,7 @@ describe("why a session is silent", () => {
 
   it("states the sandbox cause when it can prove it, and offers the fix", () => {
     // A sandboxed project's hook POST is refused by the proxy before it reaches
-    // the daemon, so no clide counter moves — undiagnosable from counters alone,
+    // the daemon, so no astir counter moves — undiagnosable from counters alone,
     // but provable from the project's own settings.
     const out = silentBody({}, { sandboxBlocked: true });
     expect(out).toContain("This project is sandboxed");
@@ -378,15 +378,15 @@ describe("why a session is silent", () => {
     // telling the user to restart it would send them to fix something that
     // works and will reappear on its own.
     const out = silentBody({ daemonStartedAt: 500_000 }, { startedAt: 400_000 });
-    expect(out).toContain("Started before clide was listening");
+    expect(out).toContain("Started before astir was listening");
     expect(out).not.toContain("restart it");
   });
 
   it("still calls out a session that started AFTER the daemon and stayed quiet", () => {
-    // Here silence is real evidence: clide was listening the whole time.
+    // Here silence is real evidence: astir was listening the whole time.
     const out = silentBody({ daemonStartedAt: 500_000 }, { startedAt: 600_000 });
     expect(out).toContain("restart it");
-    expect(out).not.toContain("Started before clide was listening");
+    expect(out).not.toContain("Started before astir was listening");
   });
 
   it("prefers the sandbox diagnosis over the age one, since it is provable", () => {
@@ -420,7 +420,7 @@ describe("state on the session row (VIEW-12)", () => {
   it("says what a session is doing without opening the submenu", () => {
     // The whole point: answering "is anything working right now" used to mean
     // opening each session in turn.
-    const row = rowFor(withState("tool-running"), "clide");
+    const row = rowFor(withState("tool-running"), "astir");
     expect(row).toContain("running");
     // A cog reads as settings rather than work in progress.
     expect(row).toContain("sfimage=hammer.fill");
@@ -429,7 +429,7 @@ describe("state on the session row (VIEW-12)", () => {
   it("carries both an icon and a word, not one or the other", () => {
     // Colour alone fails for a colour vision deficiency and vanishes in a
     // screenshot; a word alone is slower to scan.
-    const row = rowFor(withState("thinking"), "clide");
+    const row = rowFor(withState("thinking"), "astir");
     expect(row).toContain("thinking");
     expect(row).toMatch(/sfimage=\S+/);
     expect(row).toMatch(/sfcolor=#[0-9a-f]{6},#[0-9a-f]{6}/);
@@ -437,14 +437,14 @@ describe("state on the session row (VIEW-12)", () => {
 
   it("lets a blocked agent outrank five busy ones", () => {
     // Ranked by what it asks of the reader: the busy ones need nothing.
-    const row = rowFor(withState("tool-running", "thinking", "blocked", "thinking"), "clide");
+    const row = rowFor(withState("tool-running", "thinking", "blocked", "thinking"), "astir");
     expect(row).toContain("waiting on you");
     expect(row).toContain("bell.badge.fill");
   });
 
   it("reads as working when a subagent finished but the main one has not", () => {
     // Terminal states rank last, or a session would look done while it works.
-    const row = rowFor(withState("done", "tool-running"), "clide");
+    const row = rowFor(withState("done", "tool-running"), "astir");
     expect(row).toContain("running");
   });
 
@@ -459,7 +459,7 @@ describe("state on the session row (VIEW-12)", () => {
       },
       OPTS,
     );
-    const row = rowFor(out, "clide");
+    const row = rowFor(out, "astir");
     expect(row).not.toContain("waiting on you");
     expect(row).toContain("waiting");
   });
@@ -476,15 +476,15 @@ describe("state on the session row (VIEW-12)", () => {
       },
       OPTS,
     );
-    const row = rowFor(out, "clide");
+    const row = rowFor(out, "astir");
     expect(row).not.toContain("sfimage=");
-    expect(row.split("|")[0]?.trim()).toBe("clide");
+    expect(row.split("|")[0]?.trim()).toBe("astir");
   });
 
   it("colours the icon, not the title text", () => {
     // The title stays the system label colour so it is legible in both
     // appearances; the state rides on the symbol.
-    const row = rowFor(withState("idle"), "clide");
+    const row = rowFor(withState("idle"), "astir");
     expect(row).toMatch(/sfcolor=/);
     expect(row).not.toMatch(/(^|\s)color=/);
   });
@@ -502,7 +502,7 @@ describe("sessions nobody is sitting at (DMN-11)", () => {
         body: {
           blockedCount: 0,
           sessions: [
-            session({ sessionId: "a", cwd: "/x/clide", agents: [agent("idle")] }),
+            session({ sessionId: "a", cwd: "/x/astir", agents: [agent("idle")] }),
             session({
               sessionId: "b",
               cwd: "/x/.claude-mem/observer-sessions",
@@ -630,7 +630,7 @@ describe("finished agents", () => {
 
   it("still lists the session once its agents have aged out", () => {
     const out = withAgents(agent("done", { inStateMs: 600_000 }));
-    expect(out).toContain("/Users/sascha/Projects/clide");
+    expect(out).toContain("/Users/sascha/Projects/astir");
   });
 });
 
@@ -717,7 +717,7 @@ describe("legibility in both appearances", () => {
     const out = renderMenubar(
       {
         ok: true,
-        body: { blockedCount: 0, sessions: [session({ name: "clide-56", agents: [agent("idle")] })] },
+        body: { blockedCount: 0, sessions: [session({ name: "astir-56", agents: [agent("idle")] })] },
       },
       OPTS,
     );
@@ -734,7 +734,7 @@ describe("legibility in both appearances", () => {
         ok: true,
         body: {
           blockedCount: 1,
-          sessions: [session({ name: "clide-56", agents: [agent("blocked")] })],
+          sessions: [session({ name: "astir-56", agents: [agent("blocked")] })],
         },
       },
       OPTS,

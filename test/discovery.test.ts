@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type ClideEvent, CONTRACT_VERSION } from "../src/contract/event.js";
+import { type AstirEvent, CONTRACT_VERSION } from "../src/contract/event.js";
 import { type DiscoveredSession, parseAgentsJson } from "../src/discovery/sessions.js";
 import { Registry } from "../src/model/registry.js";
 
@@ -7,11 +7,11 @@ import { Registry } from "../src/model/registry.js";
 const REAL_OUTPUT = JSON.stringify([
   {
     pid: 14609,
-    cwd: "/Users/sascha/Projects/clide",
+    cwd: "/Users/sascha/Projects/astir",
     kind: "interactive",
     startedAt: 1786757507222,
     sessionId: "11e4b108-e67d-48e8-bc1a-e1342255a7d2",
-    name: "clide-ac",
+    name: "astir-ac",
     status: "busy",
   },
   {
@@ -24,7 +24,7 @@ const REAL_OUTPUT = JSON.stringify([
   },
 ]);
 
-function ev(over: Partial<ClideEvent> = {}): ClideEvent {
+function ev(over: Partial<AstirEvent> = {}): AstirEvent {
   return {
     v: CONTRACT_VERSION,
     eventId: `e${Math.random()}`,

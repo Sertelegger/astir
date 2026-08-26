@@ -1,6 +1,6 @@
 # Roadmap
 
-Clide is being rebuilt. An earlier version existed, was thoroughly unit-tested, and had never actually run — the hook entrypoint exported a `main()` that nothing called, so no event ever reached the daemon. That version's design also normalized heat colour against the current maximum, which is invariant under decay, so its map could never cool. Both defects were in the design, not just the code.
+Astir is being rebuilt. An earlier version existed, was thoroughly unit-tested, and had never actually run — the hook entrypoint exported a `main()` that nothing called, so no event ever reached the daemon. That version's design also normalized heat colour against the current maximum, which is invariant under decay, so its map could never cool. Both defects were in the design, not just the code.
 
 The rebuild is driven by a rewritten spec (kept locally) and this order:
 
@@ -14,7 +14,7 @@ The rebuild is driven by a rewritten spec (kept locally) and this order:
 - [x] OS notification on an agent becoming blocked
 - [x] HTTP hook manifest (`type: "http"`) so real sessions feed the daemon
 - [x] Session discovery via `claude agents --json`
-- [x] `clide status --json`
+- [x] `astir status --json`
 - [x] Remove the retired v1 packages
 
 ## Milestone 2 — you find out without looking
@@ -24,12 +24,12 @@ The rebuild is driven by a rewritten spec (kept locally) and this order:
 - [x] Per-state notification lifetimes (transient states decay; "needs input" persists)
 - [x] Multi-session awareness: which session needs you, not just that one does
 - [x] Sessions on machines you only SSH into — polled over your own ssh access
-      (`clide watch`), or pushed by a daemon over there
+      (`astir watch`), or pushed by a daemon over there
 - [x] Sessions nobody is sitting at (plugin- and script-launched) grouped away
       from your own, by controlling terminal
-- [x] `clide install` installs the token; a sandboxed project is diagnosed and
+- [x] `astir install` installs the token; a sandboxed project is diagnosed and
       offered the exception rather than left silently unreachable
-- [x] The daemon starts itself on `SessionStart`, and `clide autostart` keeps it
+- [x] The daemon starts itself on `SessionStart`, and `astir autostart` keeps it
       running across reboots — an http hook cannot fail quietly, so a daemon
       that is down is an active nuisance
 
@@ -57,10 +57,10 @@ totals and `/state` exposes no file data. This is not a view over existing data.
 
 ## Known gaps
 
-- A daemon restart blinds clide to every running session until it next acts
-  ([#32](https://github.com/Sertelegger/clide/issues/32)). The *reporting* is
+- A daemon restart blinds astir to every running session until it next acts
+  ([#32](https://github.com/Sertelegger/astir/issues/32)). The *reporting* is
   honest — a session older than the daemon says so rather than claiming its
-  hooks are unwired — but the hole is described, not filled, and `clide
+  hooks are unwired — but the hole is described, not filled, and `astir
   autostart`'s `KeepAlive` makes restarts more frequent. Fixing it means
   choosing between re-deriving state from provider transcripts and persisting
   it, and the latter is in tension with NG2.
@@ -72,7 +72,7 @@ totals and `/state` exposes no file data. This is not a view over existing data.
   and, more importantly, an unsigned Node process cannot own a macOS permission
   identity: TCC attributes one to the `node` binary, which is both too broad and
   unrecognisable in System Settings. A signed app is the only way to get a single
-  grant named "clide". Switching is cheap because all formatting lives in `clide
+  grant named "astir". Switching is cheap because all formatting lives in `astir
   menubar` as a pure function, and window focus already runs in the daemon.
 - Native Windows support — not rejected, just not first. No design decision may foreclose it.
 - A desktop overlay — revisit once real use shows which visualization earns permanent screen space.

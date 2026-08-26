@@ -12,10 +12,10 @@ function deps(over: Partial<PairDeps> & { config?: string; remote?: Record<strin
     ssh: (_host, command, input) => {
       sshCalls.push(input === undefined ? { command } : { command, input });
       if (command === "echo ok") return { ok: true, out: over.remote?.probe ?? "ok" };
-      if (command.includes("command -v clide")) {
-        return { ok: true, out: over.remote?.version ?? "clide 0.1.0" };
+      if (command.includes("command -v astir")) {
+        return { ok: true, out: over.remote?.version ?? "astir 0.1.0" };
       }
-      if (command.includes("~/.clide/token")) return { ok: true, out: over.remote?.token ?? "stored" };
+      if (command.includes("~/.astir/token")) return { ok: true, out: over.remote?.token ?? "stored" };
       return { ok: true, out: "" };
     },
     readSshConfig: () => over.config ?? "",
@@ -58,7 +58,7 @@ describe("ssh config detection", () => {
   });
 });
 
-describe("PSH-15 — clide pair", () => {
+describe("PSH-15 — astir pair", () => {
   it("copies the token and adds the forward", () => {
     const d = deps();
     const r = pair(opts, d);
@@ -66,7 +66,7 @@ describe("PSH-15 — clide pair", () => {
     expect(r.ok).toBe(true);
     // The token goes over stdin and is chmod'd in the same command, so it is
     // never briefly world-readable on the remote machine.
-    const put = d.sshCalls.find((c) => c.command.includes("~/.clide/token"));
+    const put = d.sshCalls.find((c) => c.command.includes("~/.astir/token"));
     expect(put?.input).toBe("s3cret");
     expect(put?.command).toContain("chmod 600");
     expect(d.appended[0]).toContain("RemoteForward 47001");
@@ -82,14 +82,14 @@ describe("PSH-15 — clide pair", () => {
     expect(d.log_.join("\n")).toContain("Permission denied");
   });
 
-  it("refuses to pair a machine that has no clide", () => {
+  it("refuses to pair a machine that has no astir", () => {
     // Otherwise the setup looks complete and delivers nothing.
     const d = deps({ remote: { version: "MISSING" } });
     const r = pair(opts, d);
 
     expect(r.ok).toBe(false);
     expect(d.appended).toHaveLength(0);
-    expect(d.log_.join("\n")).toContain("Install clide on devbox first");
+    expect(d.log_.join("\n")).toContain("Install astir on devbox first");
   });
 
   it("never edits ssh config without consent, but says what to add", () => {

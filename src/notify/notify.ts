@@ -139,7 +139,7 @@ export function createNotifierBackend(): NotifierBackend {
       name: "notify-send",
       // `notify-send` replaces by hint, but not portably across every daemon.
       capabilities: { click: false, replace: false, remove: false },
-      notify: ({ title, body }) => run("notify-send", ["-u", "critical", "-a", "clide", title, body]),
+      notify: ({ title, body }) => run("notify-send", ["-u", "critical", "-a", "astir", title, body]),
       remove: () => undefined,
     };
   }

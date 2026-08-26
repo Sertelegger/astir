@@ -146,9 +146,9 @@ describe("the SessionStart daemon starter (DMN-12)", () => {
       env: {
         HOME: homedir(),
         PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-        CLAUDE_PLUGIN_ROOT: "/nonexistent/clide",
+        CLAUDE_PLUGIN_ROOT: "/nonexistent/astir",
         // Do not start a daemon from the test run.
-        CLIDE_NO_AUTOSTART: "1",
+        ASTIR_NO_AUTOSTART: "1",
       },
       timeout: 15_000,
     });
@@ -174,8 +174,8 @@ describe("built daemon artifact", () => {
   // whole point: with an inherited PATH this passes even when it is broken for
   // every real user, which is the class of untested-process-boundary bug that
   // made the previous version of this project ship something that never ran.
-  it.skipIf(process.platform === "win32")("the SwiftBar wrapper finds clide with no shell PATH", () => {
-    const wrapper = join(REPO, "contrib", "swiftbar", "clide.3s.sh");
+  it.skipIf(process.platform === "win32")("the SwiftBar wrapper finds astir with no shell PATH", () => {
+    const wrapper = join(REPO, "contrib", "swiftbar", "astir.3s.sh");
     const out = execFileSync("/bin/bash", [wrapper], {
       encoding: "utf8",
       // node itself is a genuine dependency and lives wherever the platform put
@@ -185,8 +185,8 @@ describe("built daemon artifact", () => {
       env: { HOME: homedir(), PATH: `/usr/bin:/bin:/usr/sbin:/sbin:${dirname(process.execPath)}` },
       timeout: 30_000,
     });
-    expect(out, "the wrapper must locate clide without help from the shell").not.toContain(
-      "clide not found on PATH",
+    expect(out, "the wrapper must locate astir without help from the shell").not.toContain(
+      "astir not found on PATH",
     );
     // Whatever the daemon's state, a well-formed plugin always offers a refresh.
     expect(out).toContain("refresh=true");

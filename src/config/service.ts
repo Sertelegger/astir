@@ -7,13 +7,13 @@
  * connection". `async` — which does make a failure quiet — exists only on
  * command hooks. So every event fired while the daemon is down becomes a visible
  * error in whatever session the user is working in, twice per tool call, and
- * clide becomes an active nuisance in exactly the moment it is providing nothing.
+ * astir becomes an active nuisance in exactly the moment it is providing nothing.
  *
  * The honest fix is therefore not to suppress the symptom but to remove the
  * cause: a daemon that comes back by itself after a reboot, a crash, or a
  * logout. That is what a LaunchAgent is for.
  *
- * Installing this is a separate, explicit command for the same reason `clide
+ * Installing this is a separate, explicit command for the same reason `astir
  * install` is (INS-01): registering something that runs at every login is not a
  * thing to do as a side effect of anything else.
  */
@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-export const SERVICE_LABEL = "com.clide.daemon";
+export const SERVICE_LABEL = "com.astir.daemon";
 
 export function servicePath(home: string = homedir()): string {
   return join(home, "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
@@ -36,7 +36,7 @@ function xmlEscape(value: string): string {
 export interface ServiceSpec {
   /** Absolute path to the node binary. */
   node: string;
-  /** Absolute path to clide's entrypoint. */
+  /** Absolute path to astir's entrypoint. */
   script: string;
   logPath: string;
 }
@@ -136,7 +136,7 @@ export function installService(spec: ServiceSpec, deps: ServiceDeps = defaultSer
       ok: false,
       detail:
         `autostart is only implemented for macOS, not ${deps.platform}. ` +
-        "Run `clide daemon` from your session manager (systemd --user, supervisor) instead.",
+        "Run `astir daemon` from your session manager (systemd --user, supervisor) instead.",
     };
   }
 

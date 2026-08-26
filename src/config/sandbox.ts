@@ -1,7 +1,7 @@
 /**
  * DMN-08 — why a sandboxed session is silent, and how to let it through.
  *
- * A project with `sandbox.enabled` runs behind an egress proxy, and clide's
+ * A project with `sandbox.enabled` runs behind an egress proxy, and astir's
  * hooks POST to `http://127.0.0.1:<port>`. Loopback is not in
  * `sandbox.network.allowedDomains` by default, so the proxy answers 403 and the
  * event never reaches the daemon.
@@ -13,7 +13,7 @@
  * that guess into a statement, and into a one-click fix.
  *
  * Nothing here runs on its own. Detection is read-only, and the write is only
- * ever reached from an explicit `clide allow-sandbox` or a menu item the user
+ * ever reached from an explicit `astir allow-sandbox` or a menu item the user
  * clicked: relaxing someone's sandbox is exactly the kind of change that must
  * not happen as a side effect of installing a status tool.
  */
@@ -22,7 +22,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-/** The loopback host clide's hooks POST to. Ports are not part of the allowlist. */
+/** The loopback host astir's hooks POST to. Ports are not part of the allowlist. */
 export const LOOPBACK = "127.0.0.1";
 
 export interface SandboxSettings {
@@ -43,7 +43,7 @@ export function readJsonObject(path: string): Record<string, unknown> | null {
   } catch {
     // A settings file we cannot parse is not a sandbox verdict. Treating it as
     // "not sandboxed" keeps a broken file from producing a confident wrong
-    // diagnosis; the user has a bigger problem than clide either way.
+    // diagnosis; the user has a bigger problem than astir either way.
     return null;
   }
 }

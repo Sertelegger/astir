@@ -9,8 +9,8 @@ import {
 
 const SPEC = {
   node: "/opt/node/bin/node",
-  script: "/usr/local/lib/clide/main.js",
-  logPath: "/home/u/.clide/daemon.log",
+  script: "/usr/local/lib/astir/main.js",
+  logPath: "/home/u/.astir/daemon.log",
 };
 
 function deps(over: Partial<ServiceDeps> & { fail?: string[] } = {}): ServiceDeps & {
@@ -44,7 +44,7 @@ describe("the LaunchAgent", () => {
     // manager — the same failure that made SwiftBar's menu clicks do nothing.
     const plist = servicePlist(SPEC);
     expect(plist).toContain("<string>/opt/node/bin/node</string>");
-    expect(plist).toContain("<string>/usr/local/lib/clide/main.js</string>");
+    expect(plist).toContain("<string>/usr/local/lib/astir/main.js</string>");
     expect(plist).toContain("<string>daemon</string>");
   });
 

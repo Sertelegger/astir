@@ -16,7 +16,7 @@ function project(layers: { user?: unknown; project?: unknown; local?: unknown })
   home: string;
   cwd: string;
 } {
-  const home = mkdtempSync(join(tmpdir(), "clide-sbx-"));
+  const home = mkdtempSync(join(tmpdir(), "astir-sbx-"));
   const cwd = join(home, "repo");
   mkdirSync(join(home, ".claude"), { recursive: true });
   mkdirSync(join(cwd, ".claude"), { recursive: true });
@@ -93,7 +93,7 @@ describe("inspecting a project", () => {
 
   it("does not call an unparseable settings file sandboxed", () => {
     // A confident wrong diagnosis is worse than none — the user has a bigger
-    // problem than clide if this file is broken.
+    // problem than astir if this file is broken.
     const { home, cwd } = project({});
     writeFileSync(join(cwd, ".claude", "settings.local.json"), "{ oops");
     expect(inspectSandbox(cwd, LOOPBACK, home).blocked).toBe(false);

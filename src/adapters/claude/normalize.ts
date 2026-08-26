@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, posix, relative, resolve, sep } from "node:path";
 import {
-  type ClideEvent,
+  type AstirEvent,
   CONTRACT_VERSION,
   type Kind,
   type NotificationKind,
@@ -123,7 +123,7 @@ export function resolveParent(
 }
 
 export interface NormalizeResult {
-  event: ClideEvent | null;
+  event: AstirEvent | null;
   /**
    * OBS-01/VIEW-06 — paths rejected by CAP-04 (outside the repo, unresolvable).
    * Dropping silently is how a monitoring tool ends up lying by omission, so the

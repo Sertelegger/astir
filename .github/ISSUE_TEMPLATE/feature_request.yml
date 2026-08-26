@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Clide has a deliberately narrow scope: know when an agent needs you, and see where work is happening. It is **live-only** — no persistent history, no replay, no forensic timeline, and it never steers the AI session.
+        Astir has a deliberately narrow scope: know when an agent needs you, and see where work is happening. It is **live-only** — no persistent history, no replay, no forensic timeline, and it never steers the AI session.
 
         Requests outside that are still welcome; it just helps to know up front so the discussion is about the right thing.
   - type: textarea
@@ -18,7 +18,7 @@ body:
   - type: textarea
     id: proposal
     attributes:
-      label: What would you like Clide to do?
+      label: What would you like Astir to do?
     validations:
       required: true
   - type: dropdown

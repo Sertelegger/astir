@@ -196,7 +196,7 @@ function reusesFolderWindow(app: OwningApp): boolean {
  */
 function controllingApp(deps: FocusDeps): string {
   const app = owningApp(ancestry(deps.selfPid, deps), deps);
-  return app === null ? "the app that launched clide" : appName(app);
+  return app === null ? "the app that launched astir" : appName(app);
 }
 
 /**
@@ -239,7 +239,7 @@ export function windowTitles(app: OwningApp, deps: FocusDeps): string[] | null {
  *
  * A bare substring test is not enough: an editor with several projects open puts
  * the folder name in one window's title and can equally have a *file* called
- * `clide.3s.sh` open in another, and matching the wrong one sends you to the
+ * `astir.3s.sh` open in another, and matching the wrong one sends you to the
  * wrong desktop while reporting success. So the folder name has to appear as a
  * whole token — VS Code separates title components with an em dash, so the token
  * boundary is real — and a title that is *only* the folder name wins over one
@@ -250,7 +250,7 @@ export function pickWindow(titles: string[], cwd: string, home = ""): number | n
   if (folder === "") return null;
 
   // Terminals commonly title a window with the path, home-relative: Ghostty
-  // shows "✳ Claude Code, ~/Projects/clide". Matching that beats matching the
+  // shows "✳ Claude Code, ~/Projects/astir". Matching that beats matching the
   // basename, because a basename can appear inside an unrelated path while the
   // full path cannot.
   const tilde = home !== "" && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : null;
@@ -399,7 +399,7 @@ export function focusSession(
             anyWindowsVisible(deps)
               ? `${name} — activated it, but it reports no open windows, so there was ` +
                   "nothing to raise (the session may be in a tab of a closed or minimised window)"
-              : `${name} — activated the app; clide cannot see any windows because ` +
+              : `${name} — activated the app; astir cannot see any windows because ` +
                   `${controllingApp(deps)} has no Accessibility permission, so if it has ` +
                   "several this may not be the right one",
           );

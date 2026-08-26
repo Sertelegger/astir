@@ -1,10 +1,10 @@
 /**
- * DMN-09 — which machines clide may reach out to.
+ * DMN-09 — which machines astir may reach out to.
  *
  * An explicit list, because the alternative is worse in both directions:
  * SSH-ing to every `Host` in `~/.ssh/config` would connect to production boxes,
- * jump hosts and long-dead entries on a timer, while requiring a full `clide
- * pair` would gate the feature on installing clide remotely — and the entire
+ * jump hosts and long-dead entries on a timer, while requiring a full `astir
+ * pair` would gate the feature on installing astir remotely — and the entire
  * point of the SSH route is that it works when nothing is installed over there.
  *
  * Paired hosts are watched automatically (pairing is already a stronger opt-in),
@@ -14,10 +14,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { clideDir } from "./paths.js";
+import { astirDir } from "./paths.js";
 
 export function hostsPath(home: string = homedir()): string {
-  return join(clideDir(home), "hosts");
+  return join(astirDir(home), "hosts");
 }
 
 /** One host per line. `#` comments and blank lines are ignored. */
@@ -52,7 +52,7 @@ export function addWatchedHost(host: string, home: string = homedir()): WatchRes
   const existing = readWatchedHosts(home);
   if (existing.includes(host)) return { ok: true, added: false, path };
 
-  mkdirSync(clideDir(home), { recursive: true, mode: 0o700 });
+  mkdirSync(astirDir(home), { recursive: true, mode: 0o700 });
   writeFileSync(path, `${[...existing, host].join("\n")}\n`);
   return { ok: true, added: true, path };
 }

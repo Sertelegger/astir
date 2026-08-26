@@ -35,7 +35,7 @@ export interface ContractVersion {
 /** VER-01: every event and frame carries {major,minor}. */
 export const CONTRACT_VERSION: ContractVersion = { major: 2, minor: 0 };
 
-export interface ClideEvent {
+export interface AstirEvent {
   v: ContractVersion;
   eventId: string;
   provider: Provider;
@@ -64,7 +64,7 @@ export const LIMITS = {
   maxTs: 4_102_444_800,
 } as const;
 
-export type ValidateResult = { ok: true; event: ClideEvent } | { ok: false; error: string };
+export type ValidateResult = { ok: true; event: AstirEvent } | { ok: false; error: string };
 
 const KINDS = new Set<string>([
   "session_start",

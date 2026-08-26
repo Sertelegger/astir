@@ -26,7 +26,7 @@ export interface DeliveryTarget {
 /**
  * The local desktop. Always present; the floor beneath everything else.
  *
- * `invocation` is the full argv prefix that runs clide — normally
+ * `invocation` is the full argv prefix that runs astir — normally
  * `[process.execPath, <script>]`, NOT the script alone. A notification's click
  * action is executed by `/bin/sh` with a minimal PATH, so relying on the script's
  * `#!/usr/bin/env node` shebang produces `env: node: No such file or directory`

@@ -1,5 +1,5 @@
 {
-  "name": "clide",
+  "name": "astir",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,7 +7,7 @@
     "node": ">=20"
   },
   "bin": {
-    "clide": "./dist/cli/main.js"
+    "astir": "./dist/cli/main.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",

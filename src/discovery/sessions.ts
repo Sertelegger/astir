@@ -20,7 +20,7 @@ export interface DiscoveredSession {
   /**
    * Epoch ms the session started, when the provider reports it.
    *
-   * This is what makes "clide heard nothing from it" interpretable. A session
+   * This is what makes "astir heard nothing from it" interpretable. A session
    * older than the daemon cannot have had its `SessionStart` received, so its
    * silence says nothing about whether its hooks work — and calling that "hooks
    * are not wired, restart it" sends someone to restart a session that was fine.

@@ -115,7 +115,7 @@ export class RosterStore {
 /**
  * One list from both routes, push winning.
  *
- * A machine running a clide daemon AND reachable over SSH reports the same
+ * A machine running a astir daemon AND reachable over SSH reports the same
  * session twice, and rendering it twice is exactly the duplicate-row problem
  * that made the local view untrustworthy. The push wins because it comes from
  * the daemon that is actually watching the session rather than from a poll of

@@ -16,7 +16,7 @@ Closes #
 Tick what you actually did, not what you intended.
 
 The one rule this project cares about most: unit tests passing is not evidence
-that a thing works. A previous version of Clide had 214 green tests and a
+that a thing works. A previous version of Astir had 214 green tests and a
 `main()` that nothing ever called.
 -->
 

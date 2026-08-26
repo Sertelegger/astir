@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-/** The `clide` entrypoint. Kept thin: everything here is covered by an artifact test. */
+/** The `astir` entrypoint. Kept thin: everything here is covered by an artifact test. */
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, readSync } from "node:fs";
@@ -8,7 +8,7 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addWatchedHost, hostsPath, readWatchedHosts, removeWatchedHost } from "../config/hosts.js";
-import { clideDir, DEFAULT_PORT, readOrCreateToken, readTokenIfPresent, tokenPath } from "../config/paths.js";
+import { astirDir, DEFAULT_PORT, readOrCreateToken, readTokenIfPresent, tokenPath } from "../config/paths.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
 import { installService, serviceInstalled, servicePath, uninstallService } from "../config/service.js";
 import { Daemon } from "../daemon/server.js";
@@ -67,7 +67,7 @@ export function parseArgs(argv: string[]): Args {
 
 function usage(): void {
   process.stdout.write(
-    "clide <command>\n\n" +
+    "astir <command>\n\n" +
       "  daemon [--port N] [--token T]   run the activity daemon\n" +
       "  install [--no-plugin]           register the hooks, install the token, report the rest\n" +
       "  status [--json]                 show live sessions and who is waiting on you\n" +
@@ -96,7 +96,7 @@ function repoRoot(): string {
  * Register the plugin — and therefore the hooks — without the user hand-editing
  * anything or typing slash commands.
  *
- * Deliberately invoked from an explicit `clide install`, never from an npm
+ * Deliberately invoked from an explicit `astir install`, never from an npm
  * `postinstall`. Reaching into another tool's configuration as a side effect of
  * `npm install` is the behaviour the ecosystem treats as hostile, and it would
  * fire under `npm ci` in CI, inside Docker builds, and for transitive installs
@@ -125,7 +125,7 @@ function registerPlugin(root: string, out: (line: string) => void): boolean {
     return false;
   }
 
-  const install = run(["plugin", "install", "clide@clide-marketplace", "--yes"]);
+  const install = run(["plugin", "install", "astir@astir-marketplace", "--yes"]);
   if (!install.ok && !/already/i.test(install.detail)) {
     out(`  could not install the plugin: ${install.detail}`);
     return false;
@@ -141,7 +141,7 @@ function runInstall(flags: Args["flags"]): void {
   };
 
   if (flags.get("no-plugin") !== true) {
-    out("Registering the clide plugin with Claude Code…");
+    out("Registering the astir plugin with Claude Code…");
     if (registerPlugin(root, out)) {
       out("  hooks registered — restart Claude Code to pick them up");
     } else {
@@ -169,17 +169,17 @@ function runInstall(flags: Args["flags"]): void {
     out("  the egress proxy refuses them before they arrive, which looks");
     out("  identical to no hooks at all. Allow it — only if you want to — with:");
     out("");
-    out(`    clide allow-sandbox ${process.cwd()}`);
+    out(`    astir allow-sandbox ${process.cwd()}`);
     out("");
   }
 
   process.stdout.write(
     [
-      "clide setup",
+      "astir setup",
       "",
       ...(installed.ok
         ? [
-            "1. The daemon token is installed. Hooks read it via $CLIDE_TOKEN, which",
+            "1. The daemon token is installed. Hooks read it via $ASTIR_TOKEN, which",
             `   Claude Code now sets from "env" in ${installed.path}.`,
             `   (source of truth is ${tokenPath()}, mode 0600)`,
             "",
@@ -189,28 +189,28 @@ function runInstall(flags: Args["flags"]): void {
           ]
         : [
             "1. Put the daemon token where Claude Code can see it — THIS IS NOT DONE YET.",
-            "   Hooks read it via $CLIDE_TOKEN. Unset, the header interpolates to an empty",
+            "   Hooks read it via $ASTIR_TOKEN. Unset, the header interpolates to an empty",
             "   string and every event is rejected; the daemon counts those separately",
             "   rather than failing silently, but nothing will work until this is fixed.",
             "",
             `   Add to ${claudeSettingsPath()}:`,
             '     "env": {',
-            `       "CLIDE_TOKEN": "${token}"`,
+            `       "ASTIR_TOKEN": "${token}"`,
             "     }",
             "",
             "   A shell profile works too, but only for Claude Code started from a",
             "   terminal — the desktop app and IDE extensions never source one:",
-            `     export CLIDE_TOKEN=${token}`,
+            `     export ASTIR_TOKEN=${token}`,
           ]),
       "",
-      "2. The plugin registers the hooks. `clide install` does this for you; if it",
+      "2. The plugin registers the hooks. `astir install` does this for you; if it",
       "   could not, or you passed --no-plugin, do it by hand in Claude Code:",
       `     /plugin marketplace add ${root}`,
-      "     /plugin install clide@clide-marketplace",
+      "     /plugin install astir@astir-marketplace",
       "",
       "3. Start the daemon, then restart Claude Code so it picks up the hooks.",
       "",
-      "     clide daemon",
+      "     astir daemon",
       "",
       "Verify with `curl -s localhost:47000/healthz` — once a session is running,",
       "`ingested` should climb. If `unauthorizedIngest` climbs instead, step 1 is missing.",
@@ -221,24 +221,24 @@ function runInstall(flags: Args["flags"]): void {
       "                         A blocked agent is re-reminded every minute for ten",
       "                         minutes, then every two, then every five, then",
       "                         quarter-hourly — so a missed alert is never lost.",
-      "                         `clide dismiss` stops the reminders without pretending",
+      "                         `astir dismiss` stops the reminders without pretending",
       "                         the agent is unblocked.",
       "",
       "  Menu bar (macOS)       optional, and the only always-visible surface.",
       "                         Requires SwiftBar:",
       "                           brew install --cask swiftbar",
-      `                           ln -s ${join(root, "contrib/swiftbar/clide.3s.sh")} <plugin-folder>/`,
+      `                           ln -s ${join(root, "contrib/swiftbar/astir.3s.sh")} <plugin-folder>/`,
       "                         Without it you still get notifications — you just have",
       "                         to catch them when they fire.",
       "",
       "  Another machine        if the agent runs behind SSH, in WSL, or in a container,",
-      "                         run `clide notifier` HERE, and on that machine start",
+      "                         run `astir notifier` HERE, and on that machine start",
       "                         the daemon with --notify-url pointing back through an",
       "                         `ssh -R 47001:127.0.0.1:47001` tunnel. Remote sessions",
       '                         then appear in this menu bar under "Other machines",',
       "                         and clear themselves when answered.",
       "",
-      "`clide doctor --notify` reports which of these are actually live and fires a",
+      "`astir doctor --notify` reports which of these are actually live and fires a",
       "test through them. It has to ask whether you saw it: the OS reports success",
       "even when it suppressed the notification.",
       "",
@@ -247,8 +247,8 @@ function runInstall(flags: Args["flags"]): void {
 }
 
 async function runDaemon(flags: Args["flags"]): Promise<void> {
-  const port = Number(flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
-  const explicit = flags.get("token") ?? process.env.CLIDE_TOKEN;
+  const port = Number(flags.get("port") ?? process.env.ASTIR_PORT ?? DEFAULT_PORT);
+  const explicit = flags.get("token") ?? process.env.ASTIR_TOKEN;
   // A stable on-disk token means a hook configuration written once keeps working
   // across daemon restarts.
   const token = explicit !== undefined ? String(explicit) : readOrCreateToken();
@@ -258,7 +258,7 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   // PSH-06 — delivery paths. Local is the floor; a remote notifier is added when
   // configured, so a session behind SSH or in a container can reach the human.
   const backend = createNotifierBackend();
-  // The absolute path is what a notification click will invoke; a bare `clide`
+  // The absolute path is what a notification click will invoke; a bare `astir`
   // would not resolve in the environment the notification daemon runs in.
   // The interpreter AND the script: a notification click runs under `/bin/sh`
   // with a minimal PATH, where the shebang alone cannot find node.
@@ -271,8 +271,8 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
         "    brew install terminal-notifier\n",
     );
   }
-  const notifyPort = Number(flags.get("notify-port") ?? process.env.CLIDE_NOTIFY_PORT ?? port + 1);
-  const remoteToken = String(flags.get("notify-token") ?? process.env.CLIDE_NOTIFY_TOKEN ?? token);
+  const notifyPort = Number(flags.get("notify-port") ?? process.env.ASTIR_NOTIFY_PORT ?? port + 1);
+  const remoteToken = String(flags.get("notify-token") ?? process.env.ASTIR_NOTIFY_TOKEN ?? token);
   const notifyUrl = flags.get("notify-url");
   // Whichever notifier we currently believe in — set explicitly or found by the
   // probe below, and cleared when the tunnel drops. The roster follows it.
@@ -298,7 +298,7 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   const remoteDiscovery = new RemoteDiscovery({
     hosts: () => {
       // Pairing is a stronger opt-in and implies watching; the hosts file
-      // covers the machines where clide is not installed at all.
+      // covers the machines where astir is not installed at all.
       let paired: string[] = [];
       try {
         paired = pairedHosts(readFileSync(sshConfigPath(), "utf8"), notifyPort);
@@ -319,7 +319,7 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
 
   const bound = await daemon.listen(port);
   // The artifact test parses this line; keep the format stable.
-  process.stdout.write(`clide daemon listening on 127.0.0.1:${bound}\n`);
+  process.stdout.write(`astir daemon listening on 127.0.0.1:${bound}\n`);
   process.stdout.write(`delivery paths: ${dispatcher.names().join(", ")}\n`);
 
   const tick = setInterval(() => {
@@ -411,10 +411,10 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
 
   // DMN-04 — nothing inbound may kill the process.
   process.on("unhandledRejection", (err) => {
-    process.stderr.write(`clide: unhandled rejection: ${String(err)}\n`);
+    process.stderr.write(`astir: unhandled rejection: ${String(err)}\n`);
   });
   process.on("uncaughtException", (err) => {
-    process.stderr.write(`clide: uncaught exception: ${String(err)}\n`);
+    process.stderr.write(`astir: uncaught exception: ${String(err)}\n`);
   });
 }
 
@@ -424,11 +424,11 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
  * output still feeds a shell prompt, a statusline, or a different implementation.
  */
 async function runStatus(flags: Args["flags"]): Promise<void> {
-  const port = Number(flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
+  const port = Number(flags.get("port") ?? process.env.ASTIR_PORT ?? DEFAULT_PORT);
   const result = await fetchStatus(port);
 
   if (!result.ok) {
-    process.stderr.write(`clide: ${result.reason}\n`);
+    process.stderr.write(`astir: ${result.reason}\n`);
     process.exitCode = 1;
     return;
   }
@@ -461,7 +461,7 @@ async function runStatus(flags: Args["flags"]): Promise<void> {
 
 /** PSH-03 — SwiftBar/xbar plugin output. Formatting lives in the pure renderer. */
 async function runMenubar(flags: Args["flags"]): Promise<void> {
-  const port = Number(flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
+  const port = Number(flags.get("port") ?? process.env.ASTIR_PORT ?? DEFAULT_PORT);
   // The interpreter AND the script. SwiftBar's `bash=` runs from launchd with a
   // minimal PATH, so handing it main.js alone leaves the click depending on
   // `#!/usr/bin/env node` finding node there — which it does not when node came
@@ -471,7 +471,7 @@ async function runMenubar(flags: Args["flags"]): Promise<void> {
   // cannot delay the local view.
   const [status, remote] = await Promise.all([
     fetchStatus(port),
-    fetchRemote(Number(flags.get("notify-port") ?? process.env.CLIDE_NOTIFY_PORT ?? port + 1)),
+    fetchRemote(Number(flags.get("notify-port") ?? process.env.ASTIR_NOTIFY_PORT ?? port + 1)),
   ]);
   // DMN-08 — the daemon cannot detect this: the whole symptom is that nothing
   // arrives from these sessions. Their own project settings can, so the surface
@@ -490,8 +490,8 @@ async function runMenubar(flags: Args["flags"]): Promise<void> {
  * reach it with no broker and no third-party service.
  */
 async function runNotifier(flags: Args["flags"]): Promise<void> {
-  const port = Number(flags.get("port") ?? process.env.CLIDE_NOTIFY_PORT ?? DEFAULT_PORT + 1);
-  const token = String(flags.get("token") ?? process.env.CLIDE_NOTIFY_TOKEN ?? readOrCreateToken());
+  const port = Number(flags.get("port") ?? process.env.ASTIR_NOTIFY_PORT ?? DEFAULT_PORT + 1);
+  const token = String(flags.get("token") ?? process.env.ASTIR_NOTIFY_TOKEN ?? readOrCreateToken());
 
   const server = new NotifierServer({
     token,
@@ -500,10 +500,10 @@ async function runNotifier(flags: Args["flags"]): Promise<void> {
   });
 
   const bound = await server.listen(port);
-  process.stdout.write(`clide notifier listening on 127.0.0.1:${bound}\n`);
+  process.stdout.write(`astir notifier listening on 127.0.0.1:${bound}\n`);
   process.stdout.write("on the remote host, run the daemon with:\n");
   process.stdout.write(
-    `  clide daemon --notify-url http://127.0.0.1:${bound}/notify --notify-token <token>\n`,
+    `  astir daemon --notify-url http://127.0.0.1:${bound}/notify --notify-token <token>\n`,
   );
   process.stdout.write(`forward it with:  ssh -R ${bound}:127.0.0.1:${bound} <host>\n`);
 
@@ -521,20 +521,20 @@ async function runNotifier(flags: Args["flags"]): Promise<void> {
  * only honest test is to fire one and ask whether it was seen.
  */
 async function runDoctor(flags: Args["flags"]): Promise<void> {
-  const port = Number(flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
+  const port = Number(flags.get("port") ?? process.env.ASTIR_PORT ?? DEFAULT_PORT);
   const out = (l: string): void => {
     process.stdout.write(`${l}\n`);
   };
 
-  out("clide doctor");
+  out("astir doctor");
   out("");
 
   const fileToken = readTokenIfPresent();
-  out(`  token file      ${fileToken === null ? "MISSING — run `clide install`" : `ok (${tokenPath()})`}`);
+  out(`  token file      ${fileToken === null ? "MISSING — run `astir install`" : `ok (${tokenPath()})`}`);
 
   // INS-04 — where the hooks actually read the token from. Doctor's own
   // environment is not the signal: it runs in a terminal that may well export
-  // CLIDE_TOKEN while the Claude Code being diagnosed was launched from the
+  // ASTIR_TOKEN while the Claude Code being diagnosed was launched from the
   // desktop app and never saw it. settings.json is what both of them share.
   const settings = defaultSettingsDeps();
   const settingsPath = settings.path();
@@ -547,13 +547,13 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
     const state = tokenState(parsed.settings, fileToken);
     const described =
       state.kind === "current"
-        ? `CLIDE_TOKEN set (${settingsPath})`
+        ? `ASTIR_TOKEN set (${settingsPath})`
         : state.kind === "stale"
-          ? "CLIDE_TOKEN is STALE — does not match the token file; run `clide install`"
-          : "CLIDE_TOKEN NOT SET — hooks will be rejected; run `clide install`";
+          ? "ASTIR_TOKEN is STALE — does not match the token file; run `astir install`"
+          : "ASTIR_TOKEN NOT SET — hooks will be rejected; run `astir install`";
     out(`  settings.json   ${described}`);
     if (tokenIsFilteredOut(parsed.settings)) {
-      out('  ⚠ httpHookAllowedEnvVars is set and omits "CLIDE_TOKEN" — the header will');
+      out('  ⚠ httpHookAllowedEnvVars is set and omits "ASTIR_TOKEN" — the header will');
       out("    be filtered to empty no matter how the variable is installed.");
     }
   }
@@ -564,7 +564,7 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
     `  autostart       ${
       serviceInstalled()
         ? `on (${servicePath()})`
-        : "off — hooks error while the daemon is down; `clide autostart` fixes that"
+        : "off — hooks error while the daemon is down; `astir autostart` fixes that"
     }`,
   );
 
@@ -574,12 +574,12 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
     out(`  daemon          ok — ${status.body.sessions.length} session(s), ${agents} agent(s)`);
     out(`  blocked now     ${status.body.blockedCount}`);
 
-    // DMN-08 — name the silent sessions clide can actually explain.
+    // DMN-08 — name the silent sessions astir can actually explain.
     const blocked = (status.body.silent ?? []).filter((s) => inspectSandbox(s.cwd).blocked);
     for (const s of blocked) {
       out(`  ⚠ sandboxed     ${s.cwd}`);
       out(`                  its hooks are refused before they reach the daemon; allow with`);
-      out(`                  clide allow-sandbox ${s.cwd}`);
+      out(`                  astir allow-sandbox ${s.cwd}`);
     }
   } else {
     out(`  daemon          ${status.reason}`);
@@ -639,8 +639,8 @@ async function control(
  * deliberately deferring.
  */
 async function runDismiss(args: Args): Promise<void> {
-  const port = Number(args.flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
-  const notifyPort = Number(args.flags.get("notify-port") ?? process.env.CLIDE_NOTIFY_PORT ?? port + 1);
+  const port = Number(args.flags.get("port") ?? process.env.ASTIR_PORT ?? DEFAULT_PORT);
+  const notifyPort = Number(args.flags.get("notify-port") ?? process.env.ASTIR_NOTIFY_PORT ?? port + 1);
   const sessionId = args.positional[0];
 
   // Dismiss on both surfaces: a session may be local, or reported by the
@@ -652,7 +652,7 @@ async function runDismiss(args: Args): Promise<void> {
   ]);
 
   if (local === null && remote === null) {
-    process.stderr.write(`clide: could not reach a daemon on 127.0.0.1:${port}\n`);
+    process.stderr.write(`astir: could not reach a daemon on 127.0.0.1:${port}\n`);
     process.exitCode = 1;
     return;
   }
@@ -664,16 +664,16 @@ async function runDismiss(args: Args): Promise<void> {
 
 /** Drop a session record outright — the escape hatch for one that should not exist. */
 async function runForget(args: Args): Promise<void> {
-  const port = Number(args.flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
+  const port = Number(args.flags.get("port") ?? process.env.ASTIR_PORT ?? DEFAULT_PORT);
   const sessionId = args.positional[0];
   if (sessionId === undefined) {
-    process.stderr.write("clide forget <sessionId>\n");
+    process.stderr.write("astir forget <sessionId>\n");
     process.exitCode = 1;
     return;
   }
   const result = await control(port, "/forget", sessionId);
   if (result === null) {
-    process.stderr.write(`clide: no such session, or the daemon is not running\n`);
+    process.stderr.write(`astir: no such session, or the daemon is not running\n`);
     process.exitCode = 1;
     return;
   }
@@ -697,7 +697,7 @@ function runAllowSandbox(args: Args): void {
   const target = args.positional[0] ?? (typeof flagged === "string" ? flagged : undefined);
   const dryRun = flagged !== undefined;
   if (target === undefined) {
-    process.stderr.write("clide allow-sandbox <path-to-project>\n");
+    process.stderr.write("astir allow-sandbox <path-to-project>\n");
     process.exitCode = 1;
     return;
   }
@@ -707,7 +707,7 @@ function runAllowSandbox(args: Args): void {
     process.stdout.write(
       `${target} is not sandboxed — nothing to allow.\n` +
         "If its sessions are still silent, they were probably started before the\n" +
-        "clide plugin; hooks bind at session start, so restart them.\n",
+        "astir plugin; hooks bind at session start, so restart them.\n",
     );
     return;
   }
@@ -734,15 +734,15 @@ function runAllowSandbox(args: Args): void {
 /**
  * DMN-09 — watch a machine you only ever ssh into.
  *
- * Deliberately lighter than `clide pair`: that copies a token and edits
- * ~/.ssh/config so a remote daemon can call back, and refuses if clide is not
- * installed over there. Watching needs none of it — clide asks the far side
+ * Deliberately lighter than `astir pair`: that copies a token and edits
+ * ~/.ssh/config so a remote daemon can call back, and refuses if astir is not
+ * installed over there. Watching needs none of it — astir asks the far side
  * `claude agents --json` over the ssh access you already have.
  */
 function runWatch(args: Args): void {
   const host = args.positional[0];
   if (host === undefined) {
-    process.stderr.write("clide watch <host> [--remove]\n");
+    process.stderr.write("astir watch <host> [--remove]\n");
     process.exitCode = 1;
     return;
   }
@@ -758,8 +758,8 @@ function runWatch(args: Args): void {
   const watched = readWatchedHosts();
   process.stdout.write(`  ${watched.length} host(s): ${watched.join(", ")}\n`);
   process.stdout.write(
-    "  clide asks each one `claude agents --json` over ssh every 30s.\n" +
-      `  Remove with \`clide watch ${host} --remove\`, or edit ${hostsPath()}.\n`,
+    "  astir asks each one `claude agents --json` over ssh every 30s.\n" +
+      `  Remove with \`astir watch ${host} --remove\`, or edit ${hostsPath()}.\n`,
   );
 }
 
@@ -786,7 +786,7 @@ function runAutostart(args: Args): void {
   const result = installService({
     node: process.execPath,
     script: process.argv[1] ?? "",
-    logPath: join(clideDir(), "daemon.log"),
+    logPath: join(astirDir(), "daemon.log"),
   });
   out(result.detail);
   if (!result.ok) {
@@ -795,15 +795,15 @@ function runAutostart(args: Args): void {
   }
   out("");
   out("The daemon now starts at login and restarts if it dies.");
-  out(`  logs:    ${join(clideDir(), "daemon.log")}`);
-  out(`  remove:  clide autostart --remove`);
+  out(`  logs:    ${join(astirDir(), "daemon.log")}`);
+  out(`  remove:  astir autostart --remove`);
 }
 
 async function runFocus(args: Args): Promise<void> {
-  const port = Number(args.flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
+  const port = Number(args.flags.get("port") ?? process.env.ASTIR_PORT ?? DEFAULT_PORT);
   const sessionId = args.positional[0];
   if (sessionId === undefined) {
-    process.stderr.write("clide focus <sessionId>\n");
+    process.stderr.write("astir focus <sessionId>\n");
     process.exitCode = 1;
     return;
   }
@@ -814,9 +814,9 @@ async function runFocus(args: Args): Promise<void> {
   const result = await control(port, "/focus", sessionId);
   if (result === null) {
     process.stderr.write(
-      `clide: could not reach a daemon on 127.0.0.1:${port}\n` +
+      `astir: could not reach a daemon on 127.0.0.1:${port}\n` +
         "focus is performed by the daemon so that only one application needs\n" +
-        "macOS permission to raise windows; start it with `clide daemon`.\n",
+        "macOS permission to raise windows; start it with `astir daemon`.\n",
     );
     process.exitCode = 1;
     return;
@@ -830,12 +830,12 @@ async function runFocus(args: Args): Promise<void> {
 function runPair(args: Args): void {
   const host = args.positional[0];
   if (host === undefined) {
-    process.stderr.write("clide pair <host>   (an ssh host, as you would type it)\n");
+    process.stderr.write("astir pair <host>   (an ssh host, as you would type it)\n");
     process.exitCode = 1;
     return;
   }
-  const port = Number(args.flags.get("port") ?? process.env.CLIDE_PORT ?? DEFAULT_PORT);
-  const notifyPort = Number(args.flags.get("notify-port") ?? process.env.CLIDE_NOTIFY_PORT ?? port + 1);
+  const port = Number(args.flags.get("port") ?? process.env.ASTIR_PORT ?? DEFAULT_PORT);
+  const notifyPort = Number(args.flags.get("notify-port") ?? process.env.ASTIR_NOTIFY_PORT ?? port + 1);
 
   const deps = defaultPairDeps();
   const result = pair(
@@ -913,6 +913,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((err: unknown) => {
-  process.stderr.write(`clide: failed to start: ${String(err)}\n`);
+  process.stderr.write(`astir: failed to start: ${String(err)}\n`);
   process.exit(1);
 });

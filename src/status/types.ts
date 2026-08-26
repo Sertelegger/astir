@@ -1,4 +1,4 @@
-/** The shape `clide status` and `clide menubar` both consume from the daemon. */
+/** The shape `astir status` and `astir menubar` both consume from the daemon. */
 
 export interface StatusAgent {
   /**
@@ -35,12 +35,12 @@ export interface StatusSession {
   cwd: string;
   name: string | null;
   status: string | null;
-  /** OS pid where the session runs, when discovery knows it — used by `clide focus`. */
+  /** OS pid where the session runs, when discovery knows it — used by `astir focus`. */
   pid: number | null;
   agents: StatusAgent[];
 }
 
-/** A session the provider reports running that has never sent clide an event. */
+/** A session the provider reports running that has never sent astir an event. */
 export interface SilentSession {
   sessionId: string;
   name: string | null;
@@ -52,7 +52,7 @@ export interface SilentSession {
   /**
    * Epoch ms the session started, when the provider reports it. Compared with
    * `daemonStartedAt` to tell "its hooks are not wired" apart from "it started
-   * before clide was listening" — silence means completely different things.
+   * before astir was listening" — silence means completely different things.
    */
   startedAt?: number | null;
   /**
@@ -69,7 +69,7 @@ export interface SilentSession {
  *
  * Two independent routes produce these, because neither alone covers the cases
  * that matter. A daemon running over there PUSHES its roster (live, knows agent
- * state, needs clide installed remotely); an SSH POLL from here asks
+ * state, needs astir installed remotely); an SSH POLL from here asks
  * `claude agents --json` over the user's existing access (works with nothing
  * installed remotely, but only sees what discovery sees and costs a round trip).
  * `source` records which, so a push always wins the tie.

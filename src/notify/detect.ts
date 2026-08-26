@@ -20,7 +20,7 @@ export interface DetectResult {
 }
 
 /**
- * Is there a clide notifier on this port? Checked by role rather than by mere
+ * Is there a astir notifier on this port? Checked by role rather than by mere
  * reachability — something else on 47001 answering 200 must not be mistaken for
  * a place to send notifications.
  */
