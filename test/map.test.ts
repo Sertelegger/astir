@@ -181,3 +181,111 @@ describe("MOD-02 — grows from what was touched", () => {
     expect(map.totals()).toEqual([]);
   });
 });
+
+describe("MOD-08 — a bounded, downsampled progression", () => {
+  it("holds an 8-hour session below a fixed ceiling while still spanning it", () => {
+    // The spec's own test. Memory must be O(1) in session length, not O(t).
+    const c = clock();
+    const map = new RepoMap({ nowMs: c.now, progressionSamples: 60 });
+    const start = c.now();
+
+    // 8 hours, sampled every 30s — 960 intervals through a 60-slot ring.
+    for (let i = 0; i < 960; i++) {
+      map.touch([`f${i % 25}.ts`]);
+      c.advance(30_000);
+      map.sample();
+    }
+
+    expect(map.samples).toBeLessThanOrEqual(60);
+    const frames = map.frames();
+    expect(frames.length).toBeLessThanOrEqual(60);
+    // Still spans the whole session rather than only its tail.
+    expect((frames.at(-1)?.at ?? 0) - start).toBeGreaterThanOrEqual(8 * 60 * MIN - 30_000);
+    expect(frames[0]?.at).toBeLessThan(start + 8 * 60 * MIN);
+  });
+
+  it("loses no totals to compaction — merging is summation, not eviction", () => {
+    // The property that makes "merged rather than dropped" true. If compaction
+    // discarded a sample instead of folding it, the final frame would disagree
+    // with the map's own totals.
+    const c = clock();
+    const map = new RepoMap({ nowMs: c.now, progressionSamples: 4 });
+    for (let i = 0; i < 200; i++) {
+      map.touch(["a.ts", i % 3 === 0 ? "b.ts" : "c.ts"]);
+      c.advance(1_000);
+      map.sample();
+    }
+
+    const last = map.frames().at(-1)?.totals ?? {};
+    const truth = Object.fromEntries(map.totals().map((t) => [t.path, t.total]));
+    expect(last).toEqual(truth);
+  });
+
+  it("is monotonic — a cumulative total never decreases between frames", () => {
+    const c = clock();
+    const map = new RepoMap({ nowMs: c.now, progressionSamples: 8 });
+    for (let i = 0; i < 100; i++) {
+      map.touch([`f${i % 5}.ts`]);
+      c.advance(1_000);
+      map.sample();
+    }
+
+    const frames = map.frames();
+    for (let i = 1; i < frames.length; i++) {
+      for (const [path, total] of Object.entries(frames[i]?.totals ?? {})) {
+        expect(total).toBeGreaterThanOrEqual(frames[i - 1]?.totals[path] ?? 0);
+      }
+    }
+  });
+
+  it("records a quiet interval rather than skipping it", () => {
+    // A stretch where nothing happened is a real feature of how work spread.
+    const c = clock();
+    const map = new RepoMap({ nowMs: c.now, progressionSamples: 10 });
+    map.touch(["a.ts"]);
+    c.advance(MIN);
+    map.sample();
+    c.advance(MIN);
+    map.sample(); // nothing happened in this one
+
+    expect(map.samples).toBe(2);
+    expect(map.frames()[1]?.totals).toEqual({ "a.ts": 1 });
+  });
+
+  it("keeps the oldest interval through repeated compaction", () => {
+    // Halving pairs preserves the head; evicting one would truncate the span,
+    // which is the thing MOD-08 forbids.
+    const c = clock();
+    const map = new RepoMap({ nowMs: c.now, progressionSamples: 4 });
+    map.touch(["first.ts"]);
+    c.advance(1_000);
+    map.sample();
+
+    for (let i = 0; i < 50; i++) {
+      map.touch(["later.ts"]);
+      c.advance(1_000);
+      map.sample();
+    }
+
+    // The very first file is still represented in the earliest frame.
+    expect(map.frames()[0]?.totals["first.ts"]).toBe(1);
+  });
+
+  it("retains only paths and counts — no events, arguments or reasoning", () => {
+    const c = clock();
+    const map = new RepoMap({ nowMs: c.now });
+    map.touch(["a.ts"]);
+    map.sample();
+
+    const frame = map.frames()[0];
+    expect(Object.keys(frame ?? {}).sort()).toEqual(["at", "totals"]);
+    expect(Object.values(frame?.totals ?? {}).every((v) => typeof v === "number")).toBe(true);
+  });
+
+  it("has no frames before the first sample", () => {
+    const map = new RepoMap({ nowMs: clock().now });
+    map.touch(["a.ts"]);
+    expect(map.frames()).toEqual([]);
+    expect(map.samples).toBe(0);
+  });
+});

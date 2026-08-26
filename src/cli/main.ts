@@ -399,9 +399,18 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   }, 10_000);
   rosterTick.unref();
 
+  // MOD-08 — seal a progression interval periodically. Slower than the state
+  // tick on purpose: this is the shape of a session over hours, and sampling it
+  // every second would spend the ring's whole budget on the first minute.
+  const progressionTick = setInterval(() => {
+    for (const s of registry.list()) s.map.sample();
+  }, 30_000);
+  progressionTick.unref();
+
   const shutdown = (): void => {
     clearInterval(tick);
     clearInterval(discoveryTick);
+    clearInterval(progressionTick);
     clearInterval(remoteTick);
     clearInterval(rosterTick);
     void daemon.close().then(() => process.exit(0));

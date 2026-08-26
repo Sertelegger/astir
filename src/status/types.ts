@@ -42,6 +42,16 @@ export interface FileSummary {
   touched: number;
   /** Hottest first — what is being worked on right now. */
   hottest: Array<{ path: string; heat: number; total: number; intensity: number; idle: boolean }>;
+  /**
+   * MOD-08 — progression intervals sealed so far, and when the map started.
+   *
+   * The frames themselves are not on this route: only VIEW-11's timelapse
+   * consumes them and they are far too large for a poll. The count is here so
+   * a progression that has silently stopped advancing is visible rather than
+   * being a feature nobody can tell has broken.
+   */
+  samples: number;
+  since: number;
 }
 
 export interface StatusSession {

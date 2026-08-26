@@ -370,7 +370,14 @@ export class Daemon {
         // MOD-01/MOD-08 — bounded on purpose; see FileSummary.
         ...(s.map.size === 0
           ? {}
-          : { files: { touched: s.map.size, hottest: s.map.hottest(HOTTEST_ON_STATE) } }),
+          : {
+              files: {
+                touched: s.map.size,
+                hottest: s.map.hottest(HOTTEST_ON_STATE),
+                samples: s.map.samples,
+                since: s.map.since,
+              },
+            }),
         agents: [...s.agents.values()].map((a) => ({
           id: a.id,
           agentType: a.agentType,
