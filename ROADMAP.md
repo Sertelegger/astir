@@ -40,9 +40,12 @@ pull half does not exist yet. Note that the map's *model* comes first: the
 registry does not consume `event.paths` today, so nothing accumulates per-file
 totals and `/state` exposes no file data. This is not a view over existing data.
 
-- [ ] Per-file totals in the daemon (MOD-08), decaying against an **absolute**
-      idle floor — the previous version normalised heat against the current
-      maximum, which is invariant under decay, so its map could never cool
+- [x] Per-file heat and totals in the daemon (MOD-01/MOD-08), decaying against
+      an **absolute** idle floor — the previous version normalised heat against
+      the current maximum, which is invariant under decay, so its map could
+      never cool. `astir status` shows the hottest files today.
+- [ ] MOD-08's bounded progression ring — periodic downsampled samples of
+      per-file totals, for the timelapse. Only VIEW-11 consumes it.
 - [ ] Web view with user-arrangeable panels (agent rail, changed files, map)
 - [ ] Map that grows from touched files rather than scanning the repo, with an absolute idle floor so it actually cools
 - [ ] Labels, hover, legend, colour-vision-safe ramp — a map with no text is decoration
