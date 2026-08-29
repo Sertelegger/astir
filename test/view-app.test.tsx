@@ -38,7 +38,7 @@ function snapshotOf(repo: RepoMap, seq: number): Snapshot {
       },
     ],
     map: repo,
-    counters: { droppedPaths: 2, rejected: 0 },
+    counters: { pathsOutsideRepo: 2, invalidEvents: 0 },
     seq,
   });
 }
@@ -181,15 +181,40 @@ describe("the assembled view", () => {
     expect(view.container.textContent).not.toContain("unreachable");
   });
 
-  it("carries the dropped-path count through to the honesty banner", async () => {
-    // VIEW-06 end to end: the daemon counted it, the frame carried it, the view
-    // says it. A break anywhere in that chain is invisible without this.
+  it("carries this session's out-of-repo count through to the banner", async () => {
+    // VIEW-06 end to end: the session counted it, the frame carried it, the
+    // view says it. A break anywhere in that chain is invisible without this.
     const repo = map();
     repo.touch(["a.ts"]);
     stubDaemon([frame("snapshot", snapshotOf(repo, 1), 1)]);
 
     const view = render(<App token={TOKEN} />);
-    await waitFor(() => expect(view.container.textContent).toContain("2 paths dropped"));
+    await waitFor(() => expect(view.container.textContent).toContain("2 paths outside this repo"));
+    // …and says it calmly, because nothing actually went wrong.
+    expect(view.container.querySelector(".honesty.warn")).toBeNull();
+  });
+
+  it("advances an agent's clock without a new frame arriving", async () => {
+    // The symptom that made "Live" a lie: the label was live, the number was
+    // not. Only one frame is ever sent here; the time must still move.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const repo = map();
+      repo.touch(["a.ts"]);
+      stubDaemon([frame("snapshot", snapshotOf(repo, 1), 1)]);
+
+      const view = render(<App token={TOKEN} />);
+      await waitFor(() => expect(view.container.querySelector(".agents .num")).not.toBeNull());
+      const before = view.container.querySelector(".agents .num")?.textContent;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+
+      expect(view.container.querySelector(".agents .num")?.textContent).not.toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("switches modes without losing the file list", async () => {

@@ -135,6 +135,23 @@ export interface SessionRecord {
   everDiscovered: boolean;
   /** Wall ms of the most recent event, for the undiscovered-session sweep below. */
   lastEventTs: number;
+  /**
+   * VIEW-06 — what this SESSION could not record, kept per session rather than
+   * per daemon.
+   *
+   * A daemon-wide total attributed to one session is the same dishonesty as
+   * hiding it: a session that dropped nothing renders a warning about work it
+   * never lost, and once a surface has cried wolf about that it has spent the
+   * credibility it needs for a real gap.
+   *
+   * `pathsOutsideRepo` is not a malfunction. It counts paths CAP-04 refused
+   * because they resolve outside the repo root — reading `~/.zshrc` from a
+   * session rooted in a project is the ordinary cause. A repo map genuinely
+   * cannot place them, which is worth saying plainly and not worth alarming
+   * anyone about. `invalidEvents` is the one that means something broke.
+   */
+  pathsOutsideRepo: number;
+  invalidEvents: number;
   /** OS pid, enriched from discovery — what `astir focus` needs to find a window. */
   pid: number | null;
   /** DMN-11 — false when no human is sitting at it (a plugin or script drives it). */
@@ -211,6 +228,25 @@ export class Registry {
 
   get(sessionId: string): SessionRecord | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  /**
+   * VIEW-06 — record what this session could not record.
+   *
+   * Takes a session id rather than a record so the daemon can call it for a
+   * payload that never became a valid event: the session is often still
+   * identifiable when the event is not, and losing the attribution is how a
+   * count ends up daemon-wide and misleading.
+   *
+   * Deliberately does NOT create a session. A count for a session we have never
+   * heard from has nowhere honest to appear, and inventing a record to hold it
+   * would put a phantom row in every surface.
+   */
+  noteGaps(sessionId: string, gaps: { pathsOutsideRepo?: number; invalidEvents?: number }): void {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return;
+    session.pathsOutsideRepo += gaps.pathsOutsideRepo ?? 0;
+    session.invalidEvents += gaps.invalidEvents ?? 0;
   }
 
   /**
@@ -454,6 +490,8 @@ export class Registry {
         endedAt: null,
         everDiscovered: false,
         lastEventTs: this.nowMs(),
+        pathsOutsideRepo: 0,
+        invalidEvents: 0,
         pid: null,
       };
       this.sessions.set(sessionId, s);

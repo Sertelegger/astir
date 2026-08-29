@@ -8,7 +8,6 @@ import { Registry } from "../src/model/registry.js";
 import type { Delta, Snapshot } from "../src/status/frames.js";
 
 const TOKEN = "t".repeat(48);
-const COUNTERS = { droppedPaths: 0, rejected: 0 };
 
 let seq = 0;
 function ev(kind: Kind, over: Partial<AstirEvent> = {}): AstirEvent {
@@ -41,7 +40,7 @@ function registryWithSession(): Registry {
 
 const look = (r: Registry, id = "s1") => {
   const s = r.get(id);
-  return s === undefined ? null : observe(s, 1_000, COUNTERS);
+  return s === undefined ? null : observe(s, 1_000);
 };
 
 describe("StreamState — the contract the client is written against", () => {
@@ -296,3 +295,131 @@ describe("GET /view", () => {
     expect(res.status).not.toBe(401);
   });
 });
+
+/* ── VIEW-06: gaps belong to a session, not to the daemon ────────────────── */
+
+const hook = (port: number, body: unknown): Promise<Response> =>
+  fetch(`http://127.0.0.1:${port}/hook/claude`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+const start = (id: string, cwd = "/repo") => ({
+  hook_event_name: "SessionStart",
+  session_id: id,
+  cwd,
+});
+
+const edit = (id: string, path: string, cwd = "/repo") => ({
+  hook_event_name: "PreToolUse",
+  session_id: id,
+  cwd,
+  tool_name: "Edit",
+  tool_input: { file_path: path },
+});
+
+async function firstSnapshot(port: number, session: string): Promise<Snapshot> {
+  const res = await stream(port, session);
+  const got = read(res, 1);
+  await got.done;
+  got.cancel();
+  return got.events[0]?.data as unknown as Snapshot;
+}
+
+describe("a session is told about its OWN gaps", () => {
+  it("does not blame one session for another's out-of-repo paths", async () => {
+    // The bug: the frame carried the daemon's global counter, so every session
+    // showed every other session's number. A session that dropped nothing
+    // displayed a warning about work it never lost — which is the same
+    // dishonesty as hiding a real gap, pointed the other way.
+    const registry = new Registry({ nowMs: () => 1_000 });
+    const port = await serve(registry);
+
+    await hook(port, start("clean"));
+    await hook(port, start("messy"));
+    await hook(port, edit("messy", "/somewhere/else/outside.ts"));
+    await hook(port, edit("clean", "inside.ts"));
+
+    const messy = await firstSnapshot(port, "messy");
+    const clean = await firstSnapshot(port, "clean");
+
+    expect(messy.counters.pathsOutsideRepo).toBe(1);
+    expect(clean.counters.pathsOutsideRepo, "this session lost nothing").toBe(0);
+  });
+
+  it("counts a path outside the repo from the session's FIRST event", async () => {
+    // `noteGaps` will not create a session, so counting before `apply` silently
+    // discarded exactly the case where a misconfigured cwd produces the most
+    // drops: the opening events.
+    const registry = new Registry({ nowMs: () => 1_000 });
+    const port = await serve(registry);
+
+    await hook(port, edit("fresh", "/outside/the/repo.ts"));
+
+    expect((await firstSnapshot(port, "fresh")).counters.pathsOutsideRepo).toBe(1);
+  });
+
+  it("does NOT count a deliberately unmapped hook as a gap", async () => {
+    // PreCompact is not mapped on purpose. Counting it made the view announce
+    // "this map is missing work that happened" every time a session compacted,
+    // spending on a non-event the credibility a real gap needs.
+    const registry = new Registry({ nowMs: () => 1_000 });
+    const port = await serve(registry);
+
+    await hook(port, start("s1"));
+    for (let i = 0; i < 3; i++) {
+      await hook(port, { hook_event_name: "PreCompact", session_id: "s1", cwd: "/repo" });
+    }
+
+    const snap = await firstSnapshot(port, "s1");
+    expect(snap.counters.invalidEvents).toBe(0);
+    expect(snap.counters.pathsOutsideRepo).toBe(0);
+
+    const c = await counters(port);
+    expect(c.unmapped, "still counted daemon-wide, for /healthz").toBe(3);
+    expect(c.rejected, "but not as a fault").toBe(0);
+  });
+
+  it("keeps a path inside the repo, obviously", async () => {
+    const registry = new Registry({ nowMs: () => 1_000 });
+    const port = await serve(registry);
+    await hook(port, start("s1"));
+    await hook(port, edit("s1", "src/real.ts"));
+
+    const snap = await firstSnapshot(port, "s1");
+    expect(snap.files.map((f) => f.path)).toEqual(["src/real.ts"]);
+    expect(snap.counters.pathsOutsideRepo).toBe(0);
+  });
+});
+
+describe("shutting the daemon down", () => {
+  it("does not hang while a view is watching", async () => {
+    // `server.close()` waits for every connection to end, and an SSE stream is
+    // a connection that by design never does — so before this, stopping a
+    // daemon with a view open never returned at all.
+    const port = await serve(registryWithSession());
+    const res = await stream(port, "s1");
+    const got = read(res, 1);
+    await got.done;
+
+    const closed = open.splice(0)[0] as () => Promise<void>;
+    await expect(Promise.race([closed(), timeout(2000)])).resolves.toBeUndefined();
+    got.cancel();
+  });
+
+  it("ends the stream rather than severing it", async () => {
+    // The client must be able to tell "the daemon stopped" from "the socket
+    // broke", which is the same distinction VIEW-02 draws on the other side.
+    const port = await serve(registryWithSession());
+    const res = await stream(port, "s1");
+    const got = read(res, 1);
+    await got.done;
+
+    await (open.splice(0)[0] as () => Promise<void>)();
+    await expect(Promise.race([got.done, timeout(2000)])).resolves.toBeUndefined();
+  });
+});
+
+const timeout = (ms: number): Promise<never> =>
+  new Promise((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms));

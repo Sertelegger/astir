@@ -43,7 +43,7 @@ function snap(over: Partial<Snapshot> = {}, map = new RepoMap({ nowMs: clock().n
       status: "busy",
       agents: [agent()],
       map,
-      counters: { droppedPaths: 0, rejected: 0 },
+      counters: { pathsOutsideRepo: 0, invalidEvents: 0 },
       seq: 1,
     }),
     ...over,

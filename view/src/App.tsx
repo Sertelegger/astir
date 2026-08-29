@@ -2,7 +2,8 @@ import { type JSX, useEffect, useMemo, useState } from "react";
 import { describeConnection } from "../../src/status/connection";
 import type { MapMode } from "../../src/status/frames";
 import { MapPanel } from "./MapPanel";
-import { Honesty, Hottest, Legend } from "./Sidebar";
+import { Agents, Honesty, Hottest, Legend } from "./Sidebar";
+import { useNow } from "./useNow";
 import { useSession, useSessionList } from "./useSession";
 
 export function App({ token }: { token: string }): JSX.Element {
@@ -23,7 +24,10 @@ export function App({ token }: { token: string }): JSX.Element {
 
   const { snapshot, receivedAt, connection } = useSession(token, chosen);
   const files = useMemo(() => snapshot?.files ?? [], [snapshot]);
-  const elapsed = mode === "live" && snapshot !== null ? performance.now() - receivedAt : 0;
+  // Ticks once a second so every duration on screen advances between frames —
+  // the daemon does not send a frame just because a clock moved.
+  const now = useNow();
+  const elapsed = mode === "live" && snapshot !== null ? Math.max(0, now - receivedAt) : 0;
 
   return (
     <div className="app">
@@ -93,36 +97,31 @@ export function App({ token }: { token: string }): JSX.Element {
           />
         )}
 
+        {/* Each region scrolls on its own. With one scroll for the whole
+            sidebar, a session with many agents pushed the legend and the
+            hottest-files list off the bottom — the two things the map is
+            unreadable without. */}
         <aside>
-          <div className="agents">
-            <h2>Agents</h2>
-            {(snapshot?.agents ?? []).length === 0 ? (
-              <p className="empty">None reported.</p>
-            ) : (
-              <ul>
-                {(snapshot?.agents ?? []).map((a) => (
-                  <li key={a.id}>
-                    <span className={`state ${a.state}`}>{a.state}</span>
-                    <span className="who">{a.agentType ?? "main"}</span>
-                    <span className="num">{Math.round(a.inStateMs / 1000)}s</span>
-                  </li>
-                ))}
-              </ul>
+          <section className="rail">
+            <Agents agents={snapshot?.agents ?? []} receivedAt={receivedAt} now={now} />
+          </section>
+
+          <section className="grow">
+            {snapshot !== null && (
+              <Hottest
+                files={files}
+                decay={snapshot.decay}
+                mode={mode}
+                elapsed={elapsed}
+                selected={selected}
+                onSelect={setSelected}
+              />
             )}
-          </div>
+          </section>
 
-          <Legend mode={mode} />
-
-          {snapshot !== null && (
-            <Hottest
-              files={files}
-              decay={snapshot.decay}
-              mode={mode}
-              elapsed={elapsed}
-              selected={selected}
-              onSelect={setSelected}
-            />
-          )}
+          <section className="foot">
+            <Legend mode={mode} />
+          </section>
         </aside>
       </main>
     </div>

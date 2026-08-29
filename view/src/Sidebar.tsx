@@ -1,5 +1,7 @@
 import type { JSX } from "react";
-import { type FileFrame, type FrameCounters, type MapMode, shades } from "../../src/status/frames";
+import { humanDuration, visibleAgents } from "../../src/status/agents";
+import type { AgentFrame, FileFrame, FrameCounters, MapMode } from "../../src/status/frames";
+import { shades } from "../../src/status/frames";
 import { css, ramp } from "../../src/status/ramp";
 
 const STEPS = 9;
@@ -87,20 +89,86 @@ export function Hottest(props: HottestProps): JSX.Element {
  * VIEW-06 — what this view is NOT showing.
  *
  * A monitoring tool must not lie by omission, and the most comfortable lie is
- * the one where dropped data simply never appears. Rendered only when there is
- * something to admit, and it stays for the rest of the session once shown.
+ * the one where absent data simply never appears. But there is a second way to
+ * be untrustworthy, and the first version of this banner committed it: dressing
+ * an ordinary fact about scope as a malfunction.
+ *
+ * Paths outside the repo are the overwhelmingly common case — an agent reads
+ * `~/.zshrc`, or a file in a sibling checkout — and a REPO map has nowhere to
+ * put them. Saying "this map is missing work that happened" about that is
+ * alarming, unactionable, and spends on a non-event the credibility the banner
+ * needs for a real gap. So the two are separated by severity and by wording,
+ * and only one of them is a warning.
  */
 export function Honesty({ counters }: { counters: FrameCounters }): JSX.Element | null {
-  const { droppedPaths, rejected } = counters;
-  if (droppedPaths === 0 && rejected === 0) return null;
-  const parts = [
-    droppedPaths > 0 ? `${droppedPaths} path${droppedPaths === 1 ? "" : "s"} dropped` : null,
-    rejected > 0 ? `${rejected} event${rejected === 1 ? "" : "s"} rejected` : null,
-  ].filter((p): p is string => p !== null);
+  const { pathsOutsideRepo, invalidEvents } = counters;
+  if (pathsOutsideRepo === 0 && invalidEvents === 0) return null;
+
+  if (invalidEvents > 0) {
+    return (
+      <div className="honesty warn" role="status">
+        <strong>Incomplete</strong> — {invalidEvents} event
+        {invalidEvents === 1 ? "" : "s"} could not be read
+        {pathsOutsideRepo > 0 ? `, and ${pathsOutsideRepo} paths fell outside this repo` : ""}. This map is
+        missing work that happened.
+      </div>
+    );
+  }
 
   return (
-    <div className="honesty" role="status">
-      <strong>Incomplete</strong> — {parts.join(", ")}. This map is missing work that happened.
+    <div className="honesty note" role="status">
+      {pathsOutsideRepo} path{pathsOutsideRepo === 1 ? "" : "s"} outside this repo{" "}
+      {pathsOutsideRepo === 1 ? "is" : "are"} not on the map — a repo map can only place files within it.
+      Nothing was lost.
+    </div>
+  );
+}
+
+export interface AgentsProps {
+  agents: AgentFrame[];
+  /** `performance.now()` when the frame landed, so times advance between frames. */
+  receivedAt: number;
+  now: number;
+}
+
+/**
+ * The agent rail.
+ *
+ * Two things this gets right that the first version did not. It shows only
+ * agents `visibleAgents` considers current — a daemon left running for days had
+ * been rendering every subagent that had ever finished, a wall of "done" rows
+ * burying the one or two actually working. And it ADVANCES the clock rather
+ * than printing whatever the last frame happened to say, because the daemon
+ * deliberately does not send a frame merely because a timer moved.
+ */
+export function Agents({ agents, receivedAt, now }: AgentsProps): JSX.Element {
+  const elapsed = Math.max(0, now - receivedAt);
+  const live = visibleAgents(agents);
+  const hidden = agents.length - live.length;
+
+  return (
+    <div className="agents">
+      <h2>Agents</h2>
+      {live.length === 0 ? (
+        <p className="empty">Nothing running.</p>
+      ) : (
+        <ul>
+          {live.map((a) => (
+            <li key={a.id}>
+              <span className={`state ${a.state}`}>{a.state}</span>
+              <span className="who" title={a.agentType ?? "main session"}>
+                {a.agentType ?? "main"}
+              </span>
+              <span className="num">{humanDuration(a.inStateMs + elapsed)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {hidden > 0 && (
+        // Said rather than silently omitted: the rows are gone because they
+        // finished, which is different from the session never having had them.
+        <p className="muted">{hidden} finished earlier</p>
+      )}
     </div>
   );
 }

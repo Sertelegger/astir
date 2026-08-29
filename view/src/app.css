@@ -56,15 +56,21 @@ header {
 .conn.ended { color: var(--dim); }
 .conn.unreachable, .conn.connecting { color: #ffb454; }
 
-/* VIEW-06 — deliberately not subtle. Being ignorable is the failure mode. */
+/*
+ * VIEW-06, at two severities.
+ *
+ * A real gap must be hard to ignore. Paths outside the repo are an ordinary
+ * fact about scope, and painting that in warning colours trains people to
+ * ignore the colour — which costs exactly when it matters.
+ */
 .honesty {
-  background: #3a2411;
-  border-bottom: 1px solid #6b4318;
-  color: #ffce8f;
   padding: 6px 12px;
   font-size: 12px;
   flex: 0 0 auto;
+  border-bottom: 1px solid var(--line);
 }
+.honesty.warn { background: #3a2411; border-bottom-color: #6b4318; color: #ffce8f; }
+.honesty.note { background: #16161d; color: var(--dim); }
 
 main { display: flex; flex: 1 1 auto; min-height: 0; }
 
@@ -74,12 +80,23 @@ main { display: flex; flex: 1 1 auto; min-height: 0; }
 aside {
   flex: 0 0 320px;
   border-left: 1px solid var(--line);
-  overflow-y: auto;
-  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  min-height: 0;      /* or a tall child stretches the column instead of scrolling */
+  overflow: hidden;
 }
+
+/*
+ * Three independently scrolling regions rather than one long column.
+ *
+ * The legend is what makes the colours mean anything and the ranked list is the
+ * map's keyboard-reachable equivalent (VIEW-07); neither may be pushed out of
+ * sight by a session that happens to have spawned a lot of agents.
+ */
+aside > section { padding: 12px; min-height: 0; }
+aside > .rail { flex: 0 1 auto; max-height: 32%; overflow-y: auto; }
+aside > .grow { flex: 1 1 auto; overflow-y: auto; border-top: 1px solid var(--line); }
+aside > .foot { flex: 0 0 auto; border-top: 1px solid var(--line); }
 
 aside h2 {
   font-size: 11px;
@@ -90,6 +107,7 @@ aside h2 {
 }
 
 .empty { color: var(--dim); margin: 0; }
+.muted { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
 
 .legend-swatches { display: flex; height: 12px; border-radius: 3px; overflow: hidden; }
 .legend-step { flex: 1 1 0; }
@@ -143,7 +161,13 @@ aside h2 {
 
 .agents ul { list-style: none; margin: 0; padding: 0; }
 .agents li { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
-.agents .who { flex: 1 1 auto; color: var(--dim); }
+.agents .who {
+  flex: 1 1 auto;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .state {
   font-size: 11px;
@@ -153,6 +177,8 @@ aside h2 {
   border: 1px solid var(--line);
 }
 .state.blocked { color: #ffb454; border-color: #6b4318; }
+.state.error { color: #ff8a8a; border-color: #6b2020; }
+.state.done, .state.idle { color: var(--dim); }
 .state.thinking, .state.tool-running { color: #7fd98a; border-color: #2c5333; }
 
 .tooltip {

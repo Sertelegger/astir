@@ -12,6 +12,7 @@
 
 import { reasonText } from "../notify/envelope.js";
 import { mergeRemoteSessions } from "../notify/roster.js";
+import { humanDuration, visibleAgents as visible } from "./agents.js";
 import type { RemoteSession, StatusAgent, StatusBody, StatusResult, StatusSession } from "./types.js";
 
 /** States that mean work is actively happening. */
@@ -52,14 +53,6 @@ export interface MenubarOpts {
   remote?: { agents: RemoteEntry[]; sessions?: RemoteSession[] } | null;
   /** For rendering elapsed time on remote entries. Injectable for tests. */
   now?: number;
-}
-
-function humanDuration(ms: number): string {
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
 /**
@@ -141,20 +134,6 @@ function action(invocation: string[], args: string[]): string {
 }
 
 /**
- * How long a finished agent stays listed.
- *
- * Dropping it the instant it completes loses the glance that says "that just
- * finished"; keeping it forever turns a live view into a log, and a session that
- * has run a few subagents accumulates a stack of `done` lines that push the one
- * live agent out of sight. A minute is long enough to notice and short enough
- * that an idle session settles down to just its name.
- *
- * `error` is deliberately exempt: an agent that failed is not clutter, it is the
- * thing you most need to still be there when you look up.
- */
-const DONE_LINGER_MS = 60_000;
-
-/**
  * How recently a token rejection must have happened to still be the diagnosis.
  * Hooks fire constantly in an active session, so an ongoing auth failure keeps
  * refreshing this; anything older describes a problem that has since been fixed.
@@ -210,7 +189,7 @@ export function dominantState(session: StatusSession): string | null {
   let bestRank = STATE_RANK.length;
   // The same agents the submenu shows, so the row cannot claim "done" about an
   // agent that has already aged out of the list beneath it.
-  for (const a of visibleAgents(session)) {
+  for (const a of visible(session.agents)) {
     // A dismissed agent is still blocked, but the human has already seen it and
     // chose to defer — surfacing it as an alert again would be nagging.
     const state = a.state === "blocked" && a.acknowledged ? "waiting" : a.state;
@@ -221,10 +200,6 @@ export function dominantState(session: StatusSession): string | null {
     }
   }
   return best;
-}
-
-function visibleAgents(session: StatusSession): StatusAgent[] {
-  return session.agents.filter((a) => a.state !== "done" || a.inStateMs < DONE_LINGER_MS);
 }
 
 function countWorking(body: StatusBody): number {
@@ -350,7 +325,7 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     const slug = session.name == null ? "" : `  ·  ${safe(session.name)}`;
     lines.push(`-- ${safe(session.cwd)}${slug} | color=${COLOUR.dim} ${goThere}`);
 
-    for (const agent of visibleAgents(session)) {
+    for (const agent of visible(session.agents)) {
       const who = agent.agentType ?? "main";
       const dismissed = agent.state === "blocked" && agent.acknowledged;
       // Dismissed agents stay listed but stop shouting: still blocked, already seen.

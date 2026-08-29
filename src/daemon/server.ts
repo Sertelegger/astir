@@ -122,7 +122,14 @@ export class Daemon {
     rejected: 0,
     duplicates: 0,
     blocked: 0,
-    droppedPaths: 0,
+    /**
+     * Daemon-wide totals for /healthz. The PER-SESSION versions on each
+     * `SessionRecord` are what surfaces render; these answer "is anything
+     * strange happening overall", which is a different question.
+     */
+    pathsOutsideRepo: 0,
+    /** Hook kinds astir deliberately does not map. Not a fault, not a gap. */
+    unmapped: 0,
     /** CAP-08 — distinct from "no events": a hook fired but could not authenticate. */
     unauthorizedIngest: 0,
     /** Reads of /state. Non-zero means a surface (status, menu bar) is watching. */
@@ -137,6 +144,8 @@ export class Daemon {
     /** Connections refused at MAX_STREAMS. Non-zero means something is leaking. */
     streamsRefused: 0,
   };
+  /** Teardown for each live /stream, so shutdown is not blocked by one. */
+  private readonly openStreams = new Set<() => void>();
   private warnedAboutToken = false;
   /**
    * When a hook was last rejected for a bad token.
@@ -176,8 +185,31 @@ export class Daemon {
     });
   }
 
+  /**
+   * Stop listening, and actually stop.
+   *
+   * `server.close()` alone waits for every open connection to end, and an SSE
+   * stream is a connection that by design never does — so a daemon with a view
+   * open would hang here forever. Open streams are ended explicitly first.
+   *
+   * Idle keep-alive sockets are dropped for the same reason at a smaller scale:
+   * a client that has finished talking can still hold a pooled socket for
+   * several seconds, which turns a graceful stop into a stall for no benefit.
+   */
   close(): Promise<void> {
-    return new Promise((resolve) => this.server.close(() => resolve()));
+    for (const stop of [...this.openStreams]) stop();
+    return new Promise((resolve) => {
+      this.server.close(() => resolve());
+      // AFTER `close()`, which is what stops new connections being accepted.
+      this.server.closeIdleConnections();
+      // Then let go of the rest. A socket sitting in a client's connection pool
+      // is not going to send another request — it just waits out that client's
+      // keep-alive timeout, during which `close()` has not resolved and the
+      // process cannot exit. Streams were ended gracefully above and any other
+      // request here is sub-millisecond, so the next tick is a generous grace
+      // period rather than a guess.
+      setImmediate(() => this.server.closeAllConnections());
+    });
   }
 
   private authorized(req: IncomingMessage): boolean {
@@ -367,12 +399,7 @@ export class Daemon {
     });
 
     const state = new StreamState(sessionId);
-    const observe = observer(
-      this.opts.registry,
-      sessionId,
-      () => ({ droppedPaths: this.counters.droppedPaths, rejected: this.counters.rejected }),
-      () => Date.now(),
-    );
+    const observe = observer(this.opts.registry, sessionId, () => Date.now());
 
     let closed = false;
     const stop = (): void => {
@@ -380,9 +407,11 @@ export class Daemon {
       closed = true;
       clearInterval(tick);
       clearInterval(beat);
+      this.openStreams.delete(stop);
       this.counters.streamsOpen--;
       if (!res.writableEnded) res.end();
     };
+    this.openStreams.add(stop);
 
     const push = (): void => {
       if (closed) return;
@@ -436,12 +465,31 @@ export class Daemon {
       readSidecar: this.readSidecar,
     });
 
-    // A dropped path is a hole in the picture. Count it so the view can say so.
-    this.counters.droppedPaths += droppedPaths;
+    // The session this payload claims to belong to, read from the raw body so a
+    // gap can still be attributed when the payload never became a valid event.
+    // Losing that attribution is exactly how a count ends up daemon-wide, and a
+    // daemon-wide count shown against one session is a warning about work that
+    // session never lost.
+    const claimed = (payload as Record<string, unknown> | null)?.session_id;
+    const claimedSession = typeof claimed === "string" ? claimed : null;
+
+    this.counters.pathsOutsideRepo += droppedPaths;
 
     if (event === null) {
-      // A deliberately unmapped hook is not an error, but it must be visible.
-      this.counters.rejected++;
+      // Two very different things arrive here, and only one is a gap.
+      //
+      // A hook kind astir deliberately does not map (PreCompact, for one) is
+      // working as designed — nothing was lost, because nothing was ever going
+      // to be recorded. A payload that is malformed, or that names no session,
+      // IS a gap. Counting them together made the view announce "this map is
+      // missing work that happened" every time a session compacted, which
+      // spends on a non-event the credibility a real gap needs.
+      const unmapped = claimedSession !== null;
+      if (unmapped) {
+        this.counters.unmapped++;
+      } else {
+        this.counters.rejected++;
+      }
       this.json(res, 422, { error: "unmapped or invalid hook payload" });
       return;
     }
@@ -449,6 +497,12 @@ export class Daemon {
     const valid = validateEvent(event);
     if (!valid.ok) {
       this.counters.rejected++;
+      if (claimedSession !== null) {
+        this.opts.registry.noteGaps(claimedSession, {
+          invalidEvents: 1,
+          pathsOutsideRepo: droppedPaths,
+        });
+      }
       this.json(res, 400, { error: valid.error });
       return;
     }
@@ -459,6 +513,13 @@ export class Daemon {
         : "";
 
     const result = this.opts.registry.apply(valid.event, cwd);
+    // Recorded AFTER apply, deliberately: `noteGaps` will not create a session,
+    // and apply is what creates it. Counting before would silently discard the
+    // drops from a session's very first event, which is exactly when a
+    // misconfigured cwd produces the most of them.
+    if (droppedPaths > 0) {
+      this.opts.registry.noteGaps(valid.event.sessionId, { pathsOutsideRepo: droppedPaths });
+    }
     if (result.applied) this.counters.ingested++;
     else if (result.reason === "duplicate") this.counters.duplicates++;
 

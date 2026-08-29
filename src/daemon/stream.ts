@@ -18,7 +18,6 @@ import {
   buildSnapshot,
   diffSnapshots,
   type Frame,
-  type FrameCounters,
   type Snapshot,
   type SnapshotInput,
 } from "../status/frames.js";
@@ -94,7 +93,7 @@ export type Observation = Omit<SnapshotInput, "seq">;
  * daemon owns the clock, and a surface that derives it from a cached response
  * would silently age.
  */
-export function observe(session: SessionRecord, now: number, counters: FrameCounters): Observation {
+export function observe(session: SessionRecord, now: number): Observation {
   const agents: StatusAgent[] = [...session.agents.values()].map((a) => ({
     id: a.id,
     agentType: a.agentType,
@@ -112,20 +111,19 @@ export function observe(session: SessionRecord, now: number, counters: FrameCoun
     status: session.status,
     agents,
     map: session.map,
-    counters,
+    // Off the session, never off the daemon — see `SessionRecord.pathsOutsideRepo`.
+    counters: {
+      pathsOutsideRepo: session.pathsOutsideRepo,
+      invalidEvents: session.invalidEvents,
+    },
   };
 }
 
 /** Reads the session out of the registry, or `null` once it is gone. */
-export function observer(
-  registry: Registry,
-  sessionId: string,
-  counters: () => FrameCounters,
-  now: () => number,
-): () => Observation | null {
+export function observer(registry: Registry, sessionId: string, now: () => number): () => Observation | null {
   return () => {
     const session = registry.get(sessionId);
-    return session === undefined ? null : observe(session, now(), counters());
+    return session === undefined ? null : observe(session, now());
   };
 }
 

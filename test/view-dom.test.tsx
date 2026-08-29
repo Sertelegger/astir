@@ -2,7 +2,7 @@
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { FileFrame } from "../src/status/frames.js";
-import { Honesty, Hottest, Legend } from "../view/src/Sidebar.js";
+import { Agents, Honesty, Hottest, Legend } from "../view/src/Sidebar.js";
 
 afterEach(cleanup);
 
@@ -136,18 +136,137 @@ describe("VIEW-04 — the legend says what the colours mean", () => {
 
 describe("VIEW-06 — the view admits what it is missing", () => {
   it("stays silent when nothing was dropped", () => {
-    const view = render(<Honesty counters={{ droppedPaths: 0, rejected: 0 }} />);
+    const view = render(<Honesty counters={{ pathsOutsideRepo: 0, invalidEvents: 0 }} />);
     expect(view.container.textContent).toBe("");
   });
 
-  it("names the counts when something was", () => {
-    const view = render(<Honesty counters={{ droppedPaths: 3, rejected: 1 }} />);
-    expect(view.container.textContent).toContain("3 paths dropped");
-    expect(view.container.textContent).toContain("1 event rejected");
+  it("does not call an out-of-repo path a malfunction", () => {
+    // The wording that shipped read "Incomplete — 7 paths dropped. This map is
+    // missing work that happened." for a session whose agent had merely read a
+    // file outside the repo. Alarming, unactionable, and it spends on a
+    // non-event the credibility the banner needs for a real gap.
+    const view = render(<Honesty counters={{ pathsOutsideRepo: 7, invalidEvents: 0 }} />);
+    const text = view.container.textContent ?? "";
+
+    expect(text).toContain("7 paths outside this repo");
+    expect(text).toContain("Nothing was lost");
+    expect(text).not.toMatch(/incomplete/i);
+    expect(view.container.querySelector(".honesty.note")).not.toBeNull();
+    expect(view.container.querySelector(".honesty.warn")).toBeNull();
+  });
+
+  it("DOES warn when events could not be read, which is a real gap", () => {
+    const view = render(<Honesty counters={{ pathsOutsideRepo: 0, invalidEvents: 2 }} />);
+    const text = view.container.textContent ?? "";
+
+    expect(text).toMatch(/incomplete/i);
+    expect(text).toContain("2 events could not be read");
+    expect(text).toContain("missing work that happened");
+    expect(view.container.querySelector(".honesty.warn")).not.toBeNull();
+  });
+
+  it("leads with the fault when both are present", () => {
+    const view = render(<Honesty counters={{ pathsOutsideRepo: 7, invalidEvents: 1 }} />);
+    expect(view.container.querySelector(".honesty.warn")).not.toBeNull();
+    expect(view.container.textContent).toContain("7 paths fell outside this repo");
+  });
+
+  it("gets its singulars right", () => {
+    const one = render(<Honesty counters={{ pathsOutsideRepo: 1, invalidEvents: 0 }} />);
+    expect(one.container.textContent).toContain("1 path outside this repo is not on the map");
+    cleanup();
+    const many = render(<Honesty counters={{ pathsOutsideRepo: 2, invalidEvents: 0 }} />);
+    expect(many.container.textContent).toContain("2 paths outside this repo are not");
   });
 
   it("is announced to assistive technology rather than only drawn", () => {
-    const view = render(<Honesty counters={{ droppedPaths: 2, rejected: 0 }} />);
+    const view = render(<Honesty counters={{ pathsOutsideRepo: 2, invalidEvents: 0 }} />);
     expect(view.container.querySelector('[role="status"]')).not.toBeNull();
+  });
+});
+
+/* ── the agent rail ──────────────────────────────────────────────────────── */
+
+const agentFrame = (over: Partial<Parameters<typeof Agents>[0]["agents"][number]> = {}) => ({
+  id: "a1",
+  agentType: null,
+  state: "thinking",
+  activeMs: 0,
+  blockedMs: 0,
+  inStateMs: 0,
+  turnMs: 0,
+  acknowledged: false,
+  ...over,
+});
+
+describe("the agent rail says what is happening now", () => {
+  it("does not list every agent that has ever finished", () => {
+    // What the view actually did: a daemon up for days rendered a wall of
+    // "done" rows, burying the one agent still working.
+    const agents = [
+      agentFrame({ id: "live", state: "tool-running", inStateMs: 4_000 }),
+      ...Array.from({ length: 12 }, (_, i) =>
+        agentFrame({ id: `old${i}`, state: "done", inStateMs: 232_129_000 }),
+      ),
+    ];
+    const view = render(<Agents agents={agents} receivedAt={0} now={0} />);
+
+    expect(view.container.querySelectorAll("li")).toHaveLength(1);
+    expect(view.container.textContent).toContain("tool-running");
+  });
+
+  it("says how many it retired, rather than silently omitting them", () => {
+    // "Gone because they finished" and "this session never had them" are
+    // different facts, and the surface should not merge them.
+    const agents = [
+      agentFrame({ id: "live", state: "thinking", inStateMs: 1_000 }),
+      agentFrame({ id: "old", state: "done", inStateMs: 600_000 }),
+      agentFrame({ id: "old2", state: "done", inStateMs: 600_000 }),
+    ];
+    const view = render(<Agents agents={agents} receivedAt={0} now={0} />);
+    expect(view.container.textContent).toContain("2 finished earlier");
+  });
+
+  it("keeps a recently finished agent, so it is there when you look back", () => {
+    const view = render(
+      <Agents agents={[agentFrame({ state: "done", inStateMs: 3_000 })]} receivedAt={0} now={0} />,
+    );
+    expect(view.container.querySelectorAll("li")).toHaveLength(1);
+  });
+
+  it("renders a readable duration, not a raw second count", () => {
+    // The bug on screen was `232129s`.
+    const view = render(
+      <Agents
+        agents={[agentFrame({ state: "error", inStateMs: 232_129_000 })]}
+        receivedAt={0}
+        now={0}
+      />,
+    );
+    expect(view.container.querySelector(".num")?.textContent).toBe("2d 16h");
+  });
+
+  it("ADVANCES the clock between frames, which is what `Live` promises", () => {
+    // The daemon deliberately does not send a frame merely because a timer
+    // moved, so a client that renders `inStateMs` verbatim shows a number
+    // frozen at the last real change — under a label vouching for it.
+    const agents = [agentFrame({ state: "thinking", inStateMs: 5_000 })];
+    const view = render(<Agents agents={agents} receivedAt={1_000} now={1_000} />);
+    expect(view.container.querySelector(".num")?.textContent).toBe("5s");
+
+    view.rerender(<Agents agents={agents} receivedAt={1_000} now={41_000} />);
+    expect(view.container.querySelector(".num")?.textContent).toBe("45s");
+  });
+
+  it("never shows a negative age if the clocks disagree", () => {
+    const view = render(
+      <Agents agents={[agentFrame({ inStateMs: 5_000 })]} receivedAt={9_000} now={1_000} />,
+    );
+    expect(view.container.querySelector(".num")?.textContent).toBe("5s");
+  });
+
+  it("says nothing is running rather than showing an empty box", () => {
+    const view = render(<Agents agents={[]} receivedAt={0} now={0} />);
+    expect(view.container.textContent).toContain("Nothing running");
   });
 });

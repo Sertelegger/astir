@@ -67,12 +67,22 @@ export interface AgentFrame {
 }
 
 /**
- * VIEW-06 — what was dropped. Carried on every snapshot so the view can show a
- * persistent indicator rather than quietly rendering an incomplete picture.
+ * VIEW-06 — what THIS SESSION could not record. Carried on every snapshot so
+ * the view can show a persistent indicator rather than quietly rendering an
+ * incomplete picture.
+ *
+ * Named for what they are rather than for how they are produced, because the
+ * name is what the banner ends up saying. An earlier `droppedPaths` invited
+ * "this map is missing work that happened", which reads as a malfunction; the
+ * overwhelmingly common cause is an agent reading a file outside the repo,
+ * which a repo map simply has nowhere to put. The two are worth telling apart:
+ * one is a fact about scope, the other is a fault.
  */
 export interface FrameCounters {
-  droppedPaths: number;
-  rejected: number;
+  /** Paths CAP-04 refused because they resolve outside the repo root. */
+  pathsOutsideRepo: number;
+  /** Events that named this session and could not be applied. A real gap. */
+  invalidEvents: number;
 }
 
 export interface Snapshot {
@@ -212,8 +222,8 @@ export function diffSnapshots(prev: Snapshot, next: Snapshot): Delta | null {
   }
 
   if (
-    prev.counters.droppedPaths !== next.counters.droppedPaths ||
-    prev.counters.rejected !== next.counters.rejected
+    prev.counters.pathsOutsideRepo !== next.counters.pathsOutsideRepo ||
+    prev.counters.invalidEvents !== next.counters.invalidEvents
   ) {
     delta.counters = next.counters;
     changed = true;
