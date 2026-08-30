@@ -1,5 +1,5 @@
 import type { JSX } from "react";
-import { humanDuration, visibleAgents } from "../../src/status/agents";
+import { describeAgent, humanDuration, visibleAgents } from "../../src/status/agents";
 import type { AgentFrame, FileFrame, FrameCounters, MapMode } from "../../src/status/frames";
 import { shades } from "../../src/status/frames";
 import { css, ramp } from "../../src/status/ramp";
@@ -153,15 +153,33 @@ export function Agents({ agents, receivedAt, now }: AgentsProps): JSX.Element {
         <p className="empty">Nothing running.</p>
       ) : (
         <ul>
-          {live.map((a) => (
-            <li key={a.id}>
-              <span className={`state ${a.state}`}>{a.state}</span>
-              <span className="who" title={a.agentType ?? "main session"}>
-                {a.agentType ?? "main"}
-              </span>
-              <span className="num">{humanDuration(a.inStateMs + elapsed)}</span>
-            </li>
-          ))}
+          {live.map((a) => {
+            const { who, task, doing } = describeAgent(a);
+            return (
+              <li key={a.id}>
+                <div className="agent-head">
+                  <span className={`state ${a.state}`}>{a.state}</span>
+                  <span className="who">{who}</span>
+                  <span className="num">{humanDuration(a.inStateMs + elapsed)}</span>
+                </div>
+                {/* Both, when both exist: the standing brief and the current
+                    action answer different questions, and an agent three
+                    minutes into a task wants the first while a burst of tool
+                    calls wants the second. The main agent has no brief, and
+                    that absence renders as absence. */}
+                {task !== null && (
+                  <div className="agent-task" title={task}>
+                    {task}
+                  </div>
+                )}
+                {doing !== null && (
+                  <div className="agent-doing" title={doing}>
+                    {doing}
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
       {hidden > 0 && (

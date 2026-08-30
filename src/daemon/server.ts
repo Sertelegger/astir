@@ -597,6 +597,9 @@ export class Daemon {
           // and a surface reading a cached response should not silently age it.
           inStateMs: Math.max(0, now - a.stateSince),
           acknowledged: a.acknowledgedAt !== null,
+          description: a.description,
+          tool: a.tool,
+          toolPath: a.toolPath,
         })),
       })),
     };

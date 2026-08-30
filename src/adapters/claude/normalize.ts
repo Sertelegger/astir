@@ -191,10 +191,18 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
 
   let parentAgentId: string | null = null;
   let parentSource: ParentSource | null = null;
+  let description: string | null = null;
   if (kind === "subagent_start") {
-    const resolved = resolveParent(sessionId, agentId, deps.readSidecar);
+    // Read once and reuse: parentage and the task description come out of the
+    // same tiny file, and it is the only disk touch on the hook path.
+    const meta = deps.readSidecar(sessionId, agentId);
+    const resolved = resolveParent(sessionId, agentId, () => meta);
     parentAgentId = resolved.parentAgentId;
     parentSource = resolved.parentSource;
+    // The brief the spawning side wrote — "Extract chunk 5 social preview svg".
+    // Present on every sidecar observed, and the only thing that distinguishes
+    // eight concurrent `general-purpose` agents from each other.
+    description = typeof meta?.description === "string" ? meta.description : null;
   }
 
   return {
@@ -211,6 +219,7 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
       parentAgentId,
       parentSource,
       tool,
+      description,
       paths,
       op,
       ok,

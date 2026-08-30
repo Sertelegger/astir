@@ -103,6 +103,9 @@ export function observe(session: SessionRecord, now: number): Observation {
     blockedMs: a.blockedMs,
     inStateMs: Math.max(0, now - a.stateSince),
     acknowledged: a.acknowledgedAt !== null,
+    description: a.description,
+    tool: a.tool,
+    toolPath: a.toolPath,
   }));
   return {
     sessionId: session.sessionId,

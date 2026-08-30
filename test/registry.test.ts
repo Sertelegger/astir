@@ -17,6 +17,7 @@ function ev(kind: Kind, over: Partial<AstirEvent> = {}): AstirEvent {
     parentAgentId: null,
     parentSource: null,
     tool: null,
+    description: null,
     paths: [],
     op: null,
     ok: null,
@@ -520,5 +521,80 @@ describe("the repo map grows from events (MOD-01/MOD-02)", () => {
     const r = new Registry({ nowMs: clock().now });
     r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
     expect(r.get("s1")?.map.size).toBe(0);
+  });
+});
+
+describe("what an agent is doing", () => {
+  it("keeps the tool and path only while the tool is running", () => {
+    const r = new Registry({ nowMs: clock().now });
+    r.apply(ev("session_start"), "/repo");
+    r.apply(ev("pre_tool", { tool: "Edit", paths: ["src/a.ts"] }), "/repo");
+
+    const agent = () => r.get("s1")?.agents.get("s1");
+    expect(agent()?.tool).toBe("Edit");
+    expect(agent()?.toolPath).toBe("src/a.ts");
+
+    r.apply(ev("post_tool", { tool: "Edit", paths: ["src/a.ts"] }), "/repo");
+    expect(agent()?.tool, "a finished tool is not what it is doing now").toBeNull();
+    expect(agent()?.toolPath).toBeNull();
+  });
+
+  it("stops claiming to edit while blocked on a permission prompt", () => {
+    // Mid-Edit, the human is asked to approve. The agent is waiting on a
+    // person, not editing, and the rail must not say otherwise.
+    const r = new Registry({ nowMs: clock().now });
+    r.apply(ev("session_start"), "/repo");
+    r.apply(ev("pre_tool", { tool: "Edit", paths: ["src/a.ts"] }), "/repo");
+    r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
+
+    const agent = r.get("s1")?.agents.get("s1");
+    expect(agent?.state).toBe("blocked");
+    expect(agent?.tool).toBeNull();
+  });
+
+  it("NEVER retains a tool argument, only the name and a path", () => {
+    // NG1. Paths are carved out because the map is grown from them; a Bash
+    // command line is not a path and must not reach memory or the screen.
+    const r = new Registry({ nowMs: clock().now });
+    r.apply(ev("session_start"), "/repo");
+    r.apply(ev("pre_tool", { tool: "Bash", paths: [] }), "/repo");
+
+    const agent = r.get("s1")?.agents.get("s1");
+    expect(agent?.tool).toBe("Bash");
+    expect(agent?.toolPath).toBeNull();
+    expect(JSON.stringify(agent)).not.toMatch(/rm -rf|command/i);
+  });
+
+  it("remembers a subagent's brief for as long as it lives", () => {
+    // Standing, not transient: it is what the agent was SENT to do, so a tool
+    // finishing must not erase it.
+    const r = new Registry({ nowMs: clock().now });
+    r.apply(ev("session_start"), "/repo");
+    r.apply(
+      ev("subagent_start", { agentId: "sub", agentType: "Explore", description: "Find the leak" }),
+      "/repo",
+    );
+    r.apply(ev("pre_tool", { agentId: "sub", tool: "Grep", paths: ["src/a.ts"] }), "/repo");
+    r.apply(ev("post_tool", { agentId: "sub", tool: "Grep", paths: ["src/a.ts"] }), "/repo");
+
+    const sub = r.get("s1")?.agents.get("sub");
+    expect(sub?.description).toBe("Find the leak");
+    expect(sub?.tool).toBeNull();
+  });
+
+  it("accepts a brief that arrives after the agent already exists", () => {
+    // Out-of-order delivery: the same reason `agentType` is upserted.
+    const r = new Registry({ nowMs: clock().now });
+    r.apply(ev("session_start"), "/repo");
+    r.apply(ev("pre_tool", { agentId: "sub", tool: "Read", paths: ["a.ts"] }), "/repo");
+    r.apply(ev("subagent_start", { agentId: "sub", description: "Late brief" }), "/repo");
+
+    expect(r.get("s1")?.agents.get("sub")?.description).toBe("Late brief");
+  });
+
+  it("leaves the main agent without a brief rather than inventing one", () => {
+    const r = new Registry({ nowMs: clock().now });
+    r.apply(ev("session_start"), "/repo");
+    expect(r.get("s1")?.agents.get("s1")?.description).toBeNull();
   });
 });

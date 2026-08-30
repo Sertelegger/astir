@@ -24,6 +24,7 @@ function ev(kind: Kind, over: Partial<AstirEvent> = {}): AstirEvent {
     parentAgentId: null,
     parentSource: null,
     tool: null,
+    description: null,
     paths: [],
     op: null,
     ok: null,
@@ -423,3 +424,34 @@ describe("shutting the daemon down", () => {
 
 const timeout = (ms: number): Promise<never> =>
   new Promise((_, reject) => setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms));
+
+describe("a change of tool reaches the view", () => {
+  it("sends a delta when the tool changes inside one state", () => {
+    // An agent can run six tools without leaving `tool-running`, so a diff that
+    // only watched `state` would show the first tool of a burst and freeze.
+    const r = registryWithSession();
+    const s = new StreamState("s1");
+    r.apply(ev("pre_tool", { tool: "Read", paths: ["a.ts"] }), "/repo");
+    s.next(look(r));
+
+    r.apply(ev("post_tool", { tool: "Read", paths: ["a.ts"] }), "/repo");
+    r.apply(ev("pre_tool", { tool: "Edit", paths: ["b.ts"] }), "/repo");
+    const delta = s.next(look(r)) as Delta;
+
+    expect(delta?.agents?.upsert?.[0]?.tool).toBe("Edit");
+    expect(delta?.agents?.upsert?.[0]?.toolPath).toBe("b.ts");
+  });
+
+  it("carries a subagent's brief in the snapshot", () => {
+    const r = registryWithSession();
+    r.apply(
+      ev("subagent_start", { agentId: "sub", agentType: "Explore", description: "Find the leak" }),
+      "/repo",
+    );
+    const snap = new StreamState("s1").next(look(r)) as Snapshot;
+    const sub = snap.agents.find((a) => a.id === "sub");
+
+    expect(sub?.description).toBe("Find the leak");
+    expect(snap.agents.find((a) => a.id === "s1")?.description).toBeNull();
+  });
+});

@@ -12,7 +12,7 @@
 
 import { reasonText } from "../notify/envelope.js";
 import { mergeRemoteSessions } from "../notify/roster.js";
-import { humanDuration, visibleAgents as visible } from "./agents.js";
+import { agentDetail, ellipsise, humanDuration, visibleAgents as visible } from "./agents.js";
 import type { RemoteSession, StatusAgent, StatusBody, StatusResult, StatusSession } from "./types.js";
 
 /** States that mean work is actively happening. */
@@ -182,6 +182,14 @@ const BADGE: Record<string, { sfimage: string; colour: string; label: string }> 
  * whose subagents have finished while the main one still works should read as
  * working, so terminal states rank last.
  */
+/**
+ * How much of an agent's task fits in the dropdown.
+ *
+ * A menu grows to its widest row, so an unbounded description would drag the
+ * whole menu across the screen and push every elapsed time out of alignment.
+ */
+const DETAIL_CHARS = 40;
+
 const STATE_RANK = ["blocked", "error", "tool-running", "thinking", "waiting", "done", "idle"];
 
 export function dominantState(session: StatusSession): string | null {
@@ -331,8 +339,13 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
       // Dismissed agents stay listed but stop shouting: still blocked, already seen.
       const colour = dismissed ? COLOUR.dim : agent.state === "blocked" ? COLOUR.alert : COLOUR.detail;
       const suffix = dismissed ? "  (dismissed)" : "";
+      // What it is doing, when there is anything to say. Bounded because a menu
+      // is a fixed-width surface and a long task description would push the
+      // elapsed time off the right edge — losing the number this row exists for.
+      const detail = agentDetail(agent);
+      const doing = detail === null ? "" : `  ·  ${safe(ellipsise(detail, DETAIL_CHARS))}`;
       lines.push(
-        `-- ${agent.state.padEnd(12)} ${safe(who)}  ·  ${timeText(agent)}${suffix}` +
+        `-- ${agent.state.padEnd(12)} ${safe(who)}${doing}  ·  ${timeText(agent)}${suffix}` +
           ` | color=${colour} font=Menlo ${goThere}`,
       );
     }

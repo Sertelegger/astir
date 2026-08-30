@@ -98,6 +98,9 @@ function toFrame(a: StatusAgent) {
   return {
     id: a.id,
     agentType: a.agentType,
+    description: a.description ?? null,
+    tool: a.tool ?? null,
+    toolPath: a.toolPath ?? null,
     state: a.state,
     activeMs: a.activeMs,
     blockedMs: a.blockedMs,

@@ -160,10 +160,30 @@ aside h2 {
 }
 
 .agents ul { list-style: none; margin: 0; padding: 0; }
-.agents li { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+.agents li { padding: 3px 0 5px; border-bottom: 1px solid #1c1c24; }
+.agents li:last-child { border-bottom: 0; }
+.agent-head { display: flex; gap: 8px; align-items: center; }
+
+/*
+ * The brief, then the action. Both truncate rather than wrap: a rail that
+ * reflows as an agent's tool changes is unreadable while it is working, which
+ * is the only time it is being read.
+ */
+.agent-task, .agent-doing {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  margin-top: 2px;
+}
+.agent-task { color: #b9b9c8; }
+.agent-doing {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .agents .who {
   flex: 1 1 auto;
-  color: var(--dim);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

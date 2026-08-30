@@ -190,6 +190,9 @@ describe("VIEW-06 — the view admits what it is missing", () => {
 const agentFrame = (over: Partial<Parameters<typeof Agents>[0]["agents"][number]> = {}) => ({
   id: "a1",
   agentType: null,
+  description: null,
+  tool: null,
+  toolPath: null,
   state: "thinking",
   activeMs: 0,
   blockedMs: 0,
@@ -268,5 +271,71 @@ describe("the agent rail says what is happening now", () => {
   it("says nothing is running rather than showing an empty box", () => {
     const view = render(<Agents agents={[]} receivedAt={0} now={0} />);
     expect(view.container.textContent).toContain("Nothing running");
+  });
+});
+
+describe("the rail says what each agent is doing", () => {
+  it("shows a subagent's brief and its current action together", () => {
+    const view = render(
+      <Agents
+        agents={[
+          agentFrame({
+            agentType: "Explore",
+            description: "Find where heat is computed",
+            tool: "Grep",
+            toolPath: "src/model/map.ts",
+            state: "tool-running",
+          }),
+        ]}
+        receivedAt={0}
+        now={0}
+      />,
+    );
+    const text = view.container.textContent ?? "";
+    expect(text).toContain("Explore");
+    expect(text).toContain("Find where heat is computed");
+    expect(text).toContain("Grep src/model/map.ts");
+  });
+
+  it("shows the main agent's action, since it has no brief", () => {
+    // The row that prompted this: `main · thinking` said nothing at all.
+    const view = render(
+      <Agents
+        agents={[agentFrame({ tool: "Edit", toolPath: "src/status/ramp.ts" })]}
+        receivedAt={0}
+        now={0}
+      />,
+    );
+    expect(view.container.textContent).toContain("Edit src/status/ramp.ts");
+    expect(view.container.querySelector(".agent-task"), "no invented brief").toBeNull();
+  });
+
+  it("renders no action line at all between tools", () => {
+    const view = render(<Agents agents={[agentFrame({ state: "thinking" })]} receivedAt={0} now={0} />);
+    expect(view.container.querySelector(".agent-doing")).toBeNull();
+  });
+
+  it("keeps the full text reachable when it is truncated on screen", () => {
+    // CSS ellipsis hides the rest; without a title the information is simply
+    // gone for anyone who needs it.
+    const long = "Investigate why the progression ring drops its oldest interval under compaction";
+    const view = render(
+      <Agents agents={[agentFrame({ description: long })]} receivedAt={0} now={0} />,
+    );
+    expect(view.container.querySelector(".agent-task")?.getAttribute("title")).toBe(long);
+  });
+
+  it("keeps element identity when only the tool changes", () => {
+    // A burst of tool calls inside one `tool-running` state must not remount
+    // the row — see VIEW-03.
+    const view = render(
+      <Agents agents={[agentFrame({ tool: "Read", toolPath: "a.ts" })]} receivedAt={0} now={0} />,
+    );
+    const before = view.container.querySelector("li");
+    view.rerender(
+      <Agents agents={[agentFrame({ tool: "Edit", toolPath: "b.ts" })]} receivedAt={0} now={0} />,
+    );
+    expect(view.container.querySelector("li")).toBe(before);
+    expect(view.container.textContent).toContain("Edit b.ts");
   });
 });

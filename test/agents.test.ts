@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { DONE_LINGER_MS, humanDuration, isVisibleAgent, visibleAgents } from "../src/status/agents.js";
+import {
+  agentDetail,
+  DONE_LINGER_MS,
+  describeAgent,
+  ellipsise,
+  humanDuration,
+  isVisibleAgent,
+  visibleAgents,
+} from "../src/status/agents.js";
 
 const agent = (state: string, inStateMs: number) => ({ state, inStateMs });
 
@@ -60,5 +68,80 @@ describe("durations a person can read", () => {
   it("says nothing rather than something wrong for a nonsense input", () => {
     expect(humanDuration(Number.NaN)).toBe("—");
     expect(humanDuration(-5)).toBe("—");
+  });
+});
+
+/* ── what an agent is doing ──────────────────────────────────────────────── */
+
+const labelled = (over: Record<string, unknown> = {}) =>
+  ({
+    agentType: null,
+    description: null,
+    tool: null,
+    toolPath: null,
+    ...over,
+  }) as Parameters<typeof describeAgent>[0];
+
+describe("saying what an agent is doing", () => {
+  it("separates the standing brief from the current action", () => {
+    // Two different questions. An agent three minutes into a task wants the
+    // first; a burst of tool calls wants the second. Folding them into one
+    // string forces every renderer to pick, and the pick is wrong half the time.
+    const label = describeAgent(
+      labelled({
+        agentType: "Explore",
+        description: "Find where heat is computed",
+        tool: "Grep",
+        toolPath: "src/model/map.ts",
+      }),
+    );
+    expect(label).toEqual({
+      who: "Explore",
+      task: "Find where heat is computed",
+      doing: "Grep src/model/map.ts",
+    });
+  });
+
+  it("calls the main agent `main` and gives it no invented task", () => {
+    // Sidecars are per subagent, so the main agent has no brief. That is a real
+    // absence, and a surface must be able to render it as one.
+    expect(describeAgent(labelled({ tool: "Edit", toolPath: "a.ts" }))).toEqual({
+      who: "main",
+      task: null,
+      doing: "Edit a.ts",
+    });
+  });
+
+  it("names a pathless tool without inventing a path", () => {
+    expect(describeAgent(labelled({ tool: "Bash" })).doing).toBe("Bash");
+  });
+
+  it("says nothing at all between tools", () => {
+    // Rather than showing the last tool, which beside a `thinking` chip would
+    // read as a claim about the present.
+    expect(describeAgent(labelled({ agentType: "Plan" })).doing).toBeNull();
+  });
+
+  it("prefers the present over the standing brief on a one-line surface", () => {
+    const busy = labelled({ description: "Audit the CI", tool: "Read", toolPath: "ci.yml" });
+    expect(agentDetail(busy)).toBe("Read ci.yml");
+    expect(agentDetail(labelled({ description: "Audit the CI" }))).toBe("Audit the CI");
+    expect(agentDetail(labelled())).toBeNull();
+  });
+});
+
+describe("shortening for a fixed-width surface", () => {
+  it("leaves a short string alone", () => {
+    expect(ellipsise("Edit a.ts", 40)).toBe("Edit a.ts");
+  });
+
+  it("marks that it cut something", () => {
+    const cut = ellipsise("x".repeat(80), 20);
+    expect(cut).toHaveLength(20);
+    expect(cut.endsWith("…")).toBe(true);
+  });
+
+  it("does not produce something longer than asked for", () => {
+    for (const n of [1, 2, 3, 10]) expect(ellipsise("abcdefghij", n).length).toBeLessThanOrEqual(10);
   });
 });

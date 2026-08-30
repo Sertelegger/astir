@@ -33,7 +33,9 @@ export interface ContractVersion {
 }
 
 /** VER-01: every event and frame carries {major,minor}. */
-export const CONTRACT_VERSION: ContractVersion = { major: 2, minor: 0 };
+// 2.1 adds `description`. A minor bump: the field is optional and nullable, so
+// a 2.0 producer still validates and a 2.0 consumer still works.
+export const CONTRACT_VERSION: ContractVersion = { major: 2, minor: 1 };
 
 export interface AstirEvent {
   v: ContractVersion;
@@ -47,6 +49,16 @@ export interface AstirEvent {
   parentAgentId: string | null;
   parentSource: ParentSource | null;
   tool: string | null;
+  /**
+   * What this agent was SENT to do, from the subagent sidecar's `description`.
+   *
+   * Present on `subagent_start` and nowhere else — a sidecar exists per
+   * subagent, so the main agent has none and never will. It is the agent's
+   * task, not its reasoning: NG1 rules out retaining reasoning text, and this
+   * is the one-line brief that was handed over, which the spawning side wrote
+   * and already knows.
+   */
+  description: string | null;
   paths: string[];
   op: Op | null;
   ok: boolean | null;
@@ -117,6 +129,17 @@ export function validateEvent(raw: unknown): ValidateResult {
   const op = r.op == null ? null : (r.op as string);
   if (op !== null && !OPS.has(op)) return { ok: false, error: "bad op" };
 
+  // DMN-03 — bounded like every other string crossing this boundary. Rejected
+  // rather than truncated, per LIMITS, and a rejection is now attributed to the
+  // session rather than vanishing into a daemon-wide total. Observed real
+  // descriptions are a few dozen characters; 4KB is a malformed payload.
+  if (r.description !== undefined && r.description !== null) {
+    if (typeof r.description !== "string") return { ok: false, error: "description not a string" };
+    if (r.description.length > LIMITS.maxStringLength) {
+      return { ok: false, error: "description too long" };
+    }
+  }
+
   const rawPaths = r.paths;
   if (rawPaths !== undefined && !Array.isArray(rawPaths)) return { ok: false, error: "paths not an array" };
   const pathArr = (rawPaths ?? []) as unknown[];
@@ -143,6 +166,7 @@ export function validateEvent(raw: unknown): ValidateResult {
       parentAgentId: typeof r.parentAgentId === "string" ? r.parentAgentId : null,
       parentSource: (r.parentSource as ParentSource | undefined) ?? null,
       tool: typeof r.tool === "string" ? r.tool : null,
+      description: typeof r.description === "string" ? r.description : null,
       paths,
       op: op as Op | null,
       ok: typeof r.ok === "boolean" ? r.ok : null,

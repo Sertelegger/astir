@@ -26,6 +26,15 @@ export interface StatusAgent {
   inStateMs: number;
   /** True once the human has dismissed this one; still blocked, no longer shouting. */
   acknowledged: boolean;
+  /**
+   * What the agent was sent to do, from its sidecar. Null for the main agent,
+   * which has no sidecar — a surface must render that absence as absence, not
+   * invent a label for it.
+   */
+  description?: string | null;
+  /** The tool running right now and the path it is on, or null between tools. */
+  tool?: string | null;
+  toolPath?: string | null;
 }
 
 /**

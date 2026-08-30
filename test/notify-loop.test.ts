@@ -21,6 +21,7 @@ function ev(kind: Kind, over: Partial<AstirEvent> = {}): AstirEvent {
     parentAgentId: null,
     parentSource: null,
     tool: null,
+    description: null,
     paths: [],
     op: null,
     ok: null,

@@ -57,3 +57,58 @@ export function humanDuration(ms: number): string {
   if (h < 24) return `${h}h ${m % 60}m`;
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
+
+/** Everything a surface needs to say who an agent is and what it is doing. */
+export interface AgentLabel {
+  /** Which agent: its type, or `main` for the session itself. */
+  who: string;
+  /** What it was sent to do. Null for the main agent — it has no sidecar. */
+  task: string | null;
+  /** What it is doing this instant, e.g. `Edit src/status/ramp.ts`. */
+  doing: string | null;
+}
+
+/**
+ * Two different questions, deliberately kept apart.
+ *
+ * `task` is standing and `doing` is instantaneous, and a surface wants both:
+ * "Explore — finding where heat is computed — currently grepping src/". Folding
+ * them into one string forces every renderer to pick one, and whichever it
+ * picks is wrong half the time. The main agent has no task, which is a real
+ * absence and must render as one rather than as an invented label.
+ *
+ * The tool NAME and its path only. NG1 forbids retaining tool arguments; paths
+ * are carved out because the map is grown from them, but a Bash command line is
+ * not a path and has no business here.
+ */
+export function describeAgent(
+  agent: Pick<StatusAgent, "agentType" | "description" | "tool" | "toolPath">,
+): AgentLabel {
+  const tool = agent.tool ?? null;
+  const path = agent.toolPath ?? null;
+  return {
+    who: agent.agentType ?? "main",
+    task: agent.description ?? null,
+    doing: tool === null ? null : path === null ? tool : `${tool} ${path}`,
+  };
+}
+
+/**
+ * The most specific true thing about this agent, for a surface with one line.
+ *
+ * Prefers what it is doing NOW over what it was sent to do, because a menu bar
+ * is read to answer "what is happening", and returns null rather than padding
+ * with a state word the caller is already rendering next to it.
+ */
+export function agentDetail(
+  agent: Pick<StatusAgent, "agentType" | "description" | "tool" | "toolPath">,
+): string | null {
+  const { task, doing } = describeAgent(agent);
+  return doing ?? task;
+}
+
+/** Shorten for a fixed-width surface, keeping the end when it is a path. */
+export function ellipsise(text: string, max: number): string {
+  if (max <= 1 || text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
+}

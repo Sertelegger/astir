@@ -77,6 +77,31 @@ export interface AgentRecord {
   /** Why this agent is blocked, e.g. `permission_prompt`. Null when not blocked. */
   blockedReason: string | null;
   /**
+   * What this agent was sent to do, from the sidecar. Set once at spawn and
+   * never cleared — it is the agent's standing brief, not its current state.
+   *
+   * Always null for the main agent: sidecars exist per subagent. That is not a
+   * gap to be filled with a guess; "what is the main session doing" is answered
+   * by `tool` below, and by the human who typed the prompt.
+   */
+  description: string | null;
+  /**
+   * The tool running RIGHT NOW, and the path it is working on. Both null the
+   * moment the tool returns.
+   *
+   * Cleared rather than left showing the last tool, because a stale "Edit"
+   * beside a "thinking" chip reads as a claim about the present. The state
+   * already says what phase the agent is in; this says what it is doing in it,
+   * or nothing.
+   *
+   * The tool NAME and a repo-relative path only, never the argument body. NG1
+   * forbids retaining tool arguments; paths are carved out because MOD-02 grows
+   * the map from them, but a Bash command line is not a path and does not
+   * belong in memory or on screen.
+   */
+  tool: string | null;
+  toolPath: string | null;
+  /**
    * PSH-10 — wall ms at which the human said "I have seen this", or null.
    *
    * Acknowledgement silences reminders and clears the badge without pretending
@@ -340,6 +365,9 @@ export class Registry {
     const session = this.ensureSession(event.sessionId, event.provider, cwd);
     this.heard(event.sessionId);
     const agent = this.ensureAgent(session, event);
+    if (agent.description === null && event.description !== null) {
+      agent.description = event.description;
+    }
 
     // MOD-06 — timestamp-monotonic. A stale event never rewrites state.
     if (event.ts < agent.lastEventTs) return { applied: false, reason: "stale" };
@@ -368,6 +396,18 @@ export class Registry {
 
     if (HUMAN_BLOCKING.has(next)) agent.blockedReason = event.notificationKind ?? "blocked";
     else agent.blockedReason = null;
+
+    // What it is doing, for as long as it is doing it. `pre_tool` opens the
+    // action and anything else closes it — including `notification`, because an
+    // agent blocked on a permission prompt mid-Edit is waiting on a human, not
+    // editing, and saying "Edit" there would describe the wrong thing.
+    if (event.kind === "pre_tool") {
+      agent.tool = event.tool;
+      agent.toolPath = event.paths[0] ?? null;
+    } else if (agent.tool !== null) {
+      agent.tool = null;
+      agent.toolPath = null;
+    }
 
     this.transition(agent, next);
 
@@ -582,6 +622,9 @@ export class Registry {
         lastActivityMs: this.nowMs(),
         acknowledgedAt: null,
         blockedReason: null,
+        description: null,
+        tool: null,
+        toolPath: null,
       };
       session.agents.set(event.agentId, a);
       return a;
@@ -589,6 +632,9 @@ export class Registry {
     // Upsert identity fields that only some events carry, so an out-of-order
     // subagent_stop before subagent_start cannot strand an agent with a null type.
     if (a.agentType === null && event.agentType !== null) a.agentType = event.agentType;
+    // Same reason as agentType: only `subagent_start` carries it, and it may
+    // arrive after an event that created the record.
+    if (a.description === null && event.description !== null) a.description = event.description;
     if (a.parentSource === null && event.parentSource !== null) {
       a.parentId = event.parentAgentId;
       a.parentSource = event.parentSource;

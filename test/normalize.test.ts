@@ -150,3 +150,79 @@ describe("normalizeClaudeHook", () => {
     ).toBeNull();
   });
 });
+
+describe("the subagent's brief, from its sidecar", () => {
+  /** Exactly the shape observed in all 383 sidecars on this machine. */
+  const real: SidecarMeta = {
+    agentType: "general-purpose",
+    description: "Extract chunk 5 social preview svg",
+    toolUseId: "toolu_01F8VeoWJGxApFgxsHwCR9v1",
+    spawnDepth: 1,
+  };
+
+  const hook = (over: Record<string, unknown> = {}) => ({
+    hook_event_name: "SubagentStart",
+    session_id: "s1",
+    cwd: "/repo",
+    agent_id: "sub-1",
+    agent_type: "general-purpose",
+    ...over,
+  });
+
+  const deps = (sidecar: SidecarMeta | null) => ({
+    now: () => 1_786_900_000,
+    newId: () => "e1",
+    realpath: (p: string) => p,
+    readSidecar: () => sidecar,
+  });
+
+  it("carries the description onto the event", () => {
+    // It was already being read for parentage and thrown away — the one thing
+    // that distinguishes eight concurrent `general-purpose` agents.
+    const { event } = normalizeClaudeHook(hook(), deps(real));
+    expect(event?.description).toBe("Extract chunk 5 social preview svg");
+  });
+
+  it("reads the sidecar ONCE for both parentage and the brief", () => {
+    let reads = 0;
+    normalizeClaudeHook(hook(), {
+      ...deps(real),
+      readSidecar: () => {
+        reads++;
+        return real;
+      },
+    });
+    // It is the only disk touch on the hook path, and hooks are synchronous.
+    expect(reads).toBe(1);
+  });
+
+  it("is null when there is no sidecar, rather than a guess", () => {
+    expect(normalizeClaudeHook(hook(), deps(null)).event?.description).toBeNull();
+  });
+
+  it("is null for events that are not a spawn", () => {
+    // Only `subagent_start` carries it; a sidecar read on every tool call would
+    // put a stat() in the hot path for a field that cannot have changed.
+    const { event } = normalizeClaudeHook(
+      hook({ hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: { file_path: "a.ts" } }),
+      deps(real),
+    );
+    expect(event?.kind).toBe("pre_tool");
+    expect(event?.description).toBeNull();
+  });
+
+  it("never carries a tool argument body, only the tool name", () => {
+    // NG1. The command is in the payload; it must not survive normalisation.
+    const { event } = normalizeClaudeHook(
+      hook({
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "rm -rf /tmp/secret", description: "clean up" },
+      }),
+      deps(null),
+    );
+    expect(event?.tool).toBe("Bash");
+    expect(JSON.stringify(event)).not.toContain("rm -rf");
+    expect(event?.description, "the TOOL's description is not the AGENT's brief").toBeNull();
+  });
+});

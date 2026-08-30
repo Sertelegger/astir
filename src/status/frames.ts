@@ -58,6 +58,11 @@ export interface FileFrame {
 export interface AgentFrame {
   id: string;
   agentType: string | null;
+  /** The agent's standing brief. Null for the main agent, which has no sidecar. */
+  description: string | null;
+  /** What it is doing right now, or null between tools. */
+  tool: string | null;
+  toolPath: string | null;
   state: string;
   activeMs: number;
   blockedMs: number;
@@ -151,6 +156,9 @@ function toAgentFrame(a: StatusAgent): AgentFrame {
   return {
     id: a.id,
     agentType: a.agentType,
+    description: a.description ?? null,
+    tool: a.tool ?? null,
+    toolPath: a.toolPath ?? null,
     state: a.state,
     activeMs: a.activeMs,
     blockedMs: a.blockedMs,
@@ -167,6 +175,12 @@ function agentChanged(a: AgentFrame, b: AgentFrame): boolean {
     a.state !== b.state ||
     a.acknowledged !== b.acknowledged ||
     a.agentType !== b.agentType ||
+    // What it is doing changes far more often than what state it is in — an
+    // agent can run six tools without leaving `tool-running` — so without these
+    // the rail would show the first tool of a burst and then freeze on it.
+    a.tool !== b.tool ||
+    a.toolPath !== b.toolPath ||
+    a.description !== b.description ||
     a.activeMs !== b.activeMs ||
     a.blockedMs !== b.blockedMs ||
     a.turnMs !== b.turnMs
