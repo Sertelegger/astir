@@ -13,7 +13,8 @@
 import { reasonText } from "../notify/envelope.js";
 import { mergeRemoteSessions } from "../notify/roster.js";
 import { agentDetail, ellipsise, humanDuration, visibleAgents as visible } from "./agents.js";
-import type { RemoteSession, StatusAgent, StatusBody, StatusResult, StatusSession } from "./types.js";
+import { background, dominantState, repoName, sessionLabels } from "./overview.js";
+import type { RemoteSession, StatusAgent, StatusBody, StatusResult } from "./types.js";
 
 /** States that mean work is actively happening. */
 const WORKING = new Set(["thinking", "tool-running"]);
@@ -56,41 +57,11 @@ export interface MenubarOpts {
 }
 
 /**
- * The repo, which is how people actually identify a session.
- *
- * `name` is Claude Code's own session slug (e.g. "astir-56", "seenthat-bd").
- * It reads like a branch name but is not one, and its suffix is generated — so
- * as a *primary* label it is close to useless: two sessions in the same project
- * get unrelated-looking names, and a name tells you nothing about which repo it
- * belongs to. The directory basename is the thing you were thinking in.
- */
-function repoName(cwd: string, fallback: string): string {
-  return cwd.split("/").filter(Boolean).pop() ?? fallback;
-}
-
-/**
  * Titles for a list of sessions, numbered only where the repo alone is
  * ambiguous. Numbering unconditionally would put "(1)" beside every solitary
  * session, which is noise; leaving collisions unnumbered would leave two
  * identical rows and no way to tell which is which.
  */
-export function sessionLabels(sessions: Array<{ cwd: string; sessionId: string }>): string[] {
-  const total = new Map<string, number>();
-  for (const s of sessions) {
-    const repo = repoName(s.cwd, s.sessionId.slice(0, 8));
-    total.set(repo, (total.get(repo) ?? 0) + 1);
-  }
-
-  const seen = new Map<string, number>();
-  return sessions.map((s) => {
-    const repo = repoName(s.cwd, s.sessionId.slice(0, 8));
-    if ((total.get(repo) ?? 0) < 2) return repo;
-    const n = (seen.get(repo) ?? 0) + 1;
-    seen.set(repo, n);
-    return `${repo} (${n})`;
-  });
-}
-
 /** SwiftBar treats `|` as the start of parameters, so it cannot appear in text. */
 function safe(text: string): string {
   return text.replace(/\|/g, "¦").replace(/\n/g, " ");
@@ -147,10 +118,6 @@ const RECENT_REJECTION_MS = 5 * 60_000;
  * mid-poll, and quietly demoting a session someone is working in is the one
  * failure this must not have.
  */
-function background(s: { attended?: boolean }): boolean {
-  return s.attended === false;
-}
-
 /**
  * VIEW-12 — what a session is doing, on its own row.
  *
@@ -189,26 +156,6 @@ const BADGE: Record<string, { sfimage: string; colour: string; label: string }> 
  * whole menu across the screen and push every elapsed time out of alignment.
  */
 const DETAIL_CHARS = 40;
-
-const STATE_RANK = ["blocked", "error", "tool-running", "thinking", "waiting", "done", "idle"];
-
-export function dominantState(session: StatusSession): string | null {
-  let best: string | null = null;
-  let bestRank = STATE_RANK.length;
-  // The same agents the submenu shows, so the row cannot claim "done" about an
-  // agent that has already aged out of the list beneath it.
-  for (const a of visible(session.agents)) {
-    // A dismissed agent is still blocked, but the human has already seen it and
-    // chose to defer — surfacing it as an alert again would be nagging.
-    const state = a.state === "blocked" && a.acknowledged ? "waiting" : a.state;
-    const rank = STATE_RANK.indexOf(state);
-    if (rank !== -1 && rank < bestRank) {
-      bestRank = rank;
-      best = state;
-    }
-  }
-  return best;
-}
 
 function countWorking(body: StatusBody): number {
   let n = 0;

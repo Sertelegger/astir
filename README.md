@@ -243,6 +243,18 @@ than listing a chore. That also means a session found by SSH polling is never
 classified — a terminal is a local fact — so remote background sessions are only
 recognised when astir is running over there and pushing its roster.
 
+## The overview
+
+`astir view` opens on a list of every session astir knows about — local, silent,
+and on other machines — with whatever is **waiting on you** first,
+unconditionally. Each session shows its agents, what each one was sent to do,
+what it is doing right now, and how long it has been doing it. Click any session
+to open its map; the same page, the same token, no reload.
+
+Sessions astir cannot hear are listed and labelled rather than filtered out. A
+surface that shows only what it can hear looks calmest exactly when it is least
+entitled to.
+
 ## The map
 
 ```bash

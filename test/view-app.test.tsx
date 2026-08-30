@@ -62,6 +62,9 @@ let frames: number;
 beforeEach(() => {
   now = 0;
   frames = 0;
+  // These tests are about the map. The app opens on the overview unless a
+  // session is named, which is itself the deep-link path this exercises.
+  window.history.replaceState(null, "", "/view?session=demo");
   // Run animation frames synchronously so the coalescer flushes within the test.
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
     queueMicrotask(() => cb(0));
@@ -90,7 +93,15 @@ function stubDaemon(blocks: string[]): ReturnType<typeof vi.fn> {
       return new Response(
         JSON.stringify({
           sessions: [
-            { sessionId: "demo", name: "astir-aa", cwd: "/repo", status: "busy", files: { touched: 3 } },
+            {
+              sessionId: "demo",
+              name: "astir-aa",
+              cwd: "/repo",
+              status: "busy",
+              pid: 1,
+              agents: [{ id: "demo", state: "tool-running", agentType: null, activeMs: 0, blockedMs: 0, inStateMs: 4000, acknowledged: false }],
+              files: { touched: 3 },
+            },
           ],
         }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -242,5 +253,147 @@ describe("the assembled view", () => {
     );
     expect(sessionOrder[0], "SC11 — cold live, hottest for the session").toBe("early.ts");
     expect(new Set(sessionOrder)).toEqual(new Set(liveOrder));
+  });
+});
+
+/* ── VIEW-08/09: two sessions, switching between them ────────────────────── */
+
+/** Signals handed to each `/stream` fetch, so a test can prove one was aborted. */
+const streamSignals: Array<{ id: string; signal: AbortSignal }> = [];
+
+/** A daemon with two sessions, each streaming its own distinct file. */
+function stubTwoSessions(): ReturnType<typeof vi.fn> {
+  const repos: Record<string, { cwd: string; file: string; blocked: boolean }> = {
+    alpha: { cwd: "/p/alpha", file: "alpha-only.ts", blocked: false },
+    beta: { cwd: "/p/beta", file: "beta-only.ts", blocked: true },
+  };
+
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith("/state")) {
+      return new Response(
+        JSON.stringify({
+          blockedCount: 1,
+          sessions: Object.entries(repos).map(([id, r]) => ({
+            sessionId: id,
+            name: null,
+            cwd: r.cwd,
+            status: "busy",
+            pid: 1,
+            files: { touched: 1 },
+            agents: [
+              {
+                id,
+                state: r.blocked ? "blocked" : "tool-running",
+                agentType: null,
+                activeMs: 0,
+                blockedMs: 0,
+                inStateMs: 3000,
+                acknowledged: false,
+              },
+            ],
+          })),
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.startsWith("/stream")) {
+      const id = new URL(url, "http://x").searchParams.get("session") ?? "";
+      const entry = repos[id];
+      if (entry === undefined) return new Response("no", { status: 404 });
+      const signal = (init as RequestInit | undefined)?.signal;
+      if (signal != null) streamSignals.push({ id, signal });
+      const repo = map();
+      repo.touch([entry.file]);
+      const snap = { ...snapshotOf(repo, 1), sessionId: id, cwd: entry.cwd };
+      return new Response(sseBody([frame("snapshot", snap, 1)]), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock as unknown as ReturnType<typeof vi.fn>;
+}
+
+describe("the overview, and switching from it", () => {
+  it("opens on the overview when no session was named", async () => {
+    // "Which of these needs me" is the question you have on opening the view;
+    // answering it with one arbitrary session's map answers a different one.
+    window.history.replaceState(null, "", "/view");
+    stubTwoSessions();
+
+    const view = render(<App token={TOKEN} />);
+    await waitFor(() => expect(view.container.querySelectorAll(".session")).toHaveLength(2));
+    expect(view.container.textContent).toContain("1 agent waiting on you");
+    expect(view.container.querySelector(".project")?.textContent, "blocked first").toBe("beta");
+  });
+
+  it("VIEW-08 — switches sessions without a reload or a second token", async () => {
+    // The requirement in full: any session's own panels, without restarting the
+    // view or re-authenticating. Both streams must carry the same bearer token
+    // and the map must actually change to the other repo's files.
+    window.history.replaceState(null, "", "/view");
+    const fetchMock = stubTwoSessions();
+
+    const view = render(<App token={TOKEN} />);
+    await waitFor(() => expect(view.container.querySelectorAll(".session-head")).toHaveLength(2));
+
+    const rows = [...view.container.querySelectorAll<HTMLButtonElement>(".session-head")];
+    const alpha = rows.find((r) => r.textContent?.includes("alpha"));
+    await act(async () => {
+      alpha?.click();
+    });
+    await waitFor(() => expect(view.container.querySelector('[title="alpha-only.ts"]')).not.toBeNull());
+
+    // Back to the overview, then into the other session.
+    const toOverview = [...view.container.querySelectorAll<HTMLButtonElement>(".screens button")][0];
+    await act(async () => {
+      toOverview?.click();
+    });
+    const beta = [...view.container.querySelectorAll<HTMLButtonElement>(".session-head")].find((r) =>
+      r.textContent?.includes("beta"),
+    );
+    await act(async () => {
+      beta?.click();
+    });
+
+    await waitFor(() => expect(view.container.querySelector('[title="beta-only.ts"]')).not.toBeNull());
+    expect(view.container.querySelector('[title="alpha-only.ts"]'), "the old map is gone").toBeNull();
+
+    // No reload happened, and every stream carried the same credential.
+    const streams = fetchMock.mock.calls.filter((c) => String(c[0]).startsWith("/stream"));
+    expect(streams.length).toBeGreaterThanOrEqual(2);
+    for (const call of streams) {
+      expect((call[1] as RequestInit).headers).toMatchObject({ authorization: `Bearer ${TOKEN}` });
+      expect(String(call[0])).not.toContain(TOKEN);
+    }
+  });
+
+  it("does not hold a stream open for a session nobody is looking at", async () => {
+    // Going back to the overview must CLOSE the stream, not merely stop drawing
+    // it. The daemon caps concurrent streams, so a tab that visits four sessions
+    // and returns would otherwise sit on four slots showing none of them.
+    window.history.replaceState(null, "", "/view");
+    streamSignals.length = 0;
+    stubTwoSessions();
+
+    const view = render(<App token={TOKEN} />);
+    await waitFor(() => expect(view.container.querySelectorAll(".session-head")).toHaveLength(2));
+    await act(async () => {
+      view.container.querySelector<HTMLButtonElement>(".session-head")?.click();
+    });
+    await waitFor(() => expect(streamSignals.length).toBeGreaterThan(0));
+
+    const opened = streamSignals.at(-1);
+    expect(opened?.signal.aborted, "still open while being watched").toBe(false);
+
+    await act(async () => {
+      [...view.container.querySelectorAll<HTMLButtonElement>(".screens button")][0]?.click();
+    });
+
+    expect(view.container.querySelector(".map"), "the map is torn down").toBeNull();
+    expect(opened?.signal.aborted, "and so is the connection behind it").toBe(true);
   });
 });

@@ -7,6 +7,8 @@ import {
   nextConnection,
 } from "../../src/status/connection";
 import { applyDelta, type Delta, type Snapshot } from "../../src/status/frames";
+import { type OverviewSession, overview } from "../../src/status/overview";
+import type { StatusBody } from "../../src/status/types";
 import { authHeaders } from "./credentials";
 import { readSse } from "./sse";
 
@@ -127,57 +129,61 @@ export function useSession(token: string, sessionId: string | null): SessionView
   return view;
 }
 
-export interface SessionChoice {
-  sessionId: string;
-  name: string | null;
-  cwd: string;
-  status: string | null;
-  touched: number;
+export interface World {
+  sessions: OverviewSession[];
+  /** Files each session has touched, for choosing a default and labelling. */
+  touched: Map<string, number>;
+  /** `performance.now()` when the newest poll landed, for advancing durations. */
+  receivedAt: number;
+  /** False once a poll has failed — distinct from "nothing is running". */
+  reachable: boolean;
 }
 
-/** The list behind the session picker. VIEW-08's full switcher is still open. */
-export function useSessionList(token: string): SessionChoice[] {
-  const [sessions, setSessions] = useState<SessionChoice[]>([]);
+/**
+ * VIEW-08/09 — every session, polled.
+ *
+ * Polled rather than streamed, deliberately. `/state` is a small bounded
+ * snapshot the menu bar already reads on a timer, and the set of sessions
+ * changes on the scale of seconds — a session starting is a human action. A
+ * second SSE channel would buy latency nobody can perceive and add a second
+ * reconnect path to get wrong. The per-session map, where a delta lands many
+ * times a second, is where streaming actually pays.
+ */
+export function useWorld(token: string, intervalMs = 2000): World {
+  const [world, setWorld] = useState<World>({
+    sessions: [],
+    touched: new Map(),
+    receivedAt: 0,
+    reachable: true,
+  });
 
   useEffect(() => {
     const abort = new AbortController();
     const poll = async (): Promise<void> => {
       try {
-        const res = await fetch("/state", {
-          headers: authHeaders(token),
-          signal: abort.signal,
+        const res = await fetch("/state", { headers: authHeaders(token), signal: abort.signal });
+        if (!res.ok) throw new Error(`daemon replied ${res.status}`);
+        const body = (await res.json()) as StatusBody;
+        setWorld({
+          sessions: overview(body),
+          touched: new Map((body.sessions ?? []).map((s) => [s.sessionId, s.files?.touched ?? 0] as const)),
+          receivedAt: performance.now(),
+          reachable: true,
         });
-        if (!res.ok) return;
-        const body = (await res.json()) as {
-          sessions?: Array<{
-            sessionId: string;
-            name: string | null;
-            cwd: string;
-            status: string | null;
-            files?: { touched: number };
-          }>;
-        };
-        setSessions(
-          (body.sessions ?? []).map((s) => ({
-            sessionId: s.sessionId,
-            name: s.name,
-            cwd: s.cwd,
-            status: s.status,
-            touched: s.files?.touched ?? 0,
-          })),
-        );
       } catch {
-        // The stream is what reports connection trouble; this poll staying quiet
-        // avoids two surfaces arguing about the same fact.
+        if (abort.signal.aborted) return;
+        // Reported rather than swallowed: "no sessions" and "cannot ask" look
+        // identical on screen unless one of them says so.
+        setWorld((w) => ({ ...w, reachable: false }));
       }
     };
     void poll();
-    const timer = setInterval(() => void poll(), 4000);
+    const timer = setInterval(() => void poll(), intervalMs);
     return () => {
       abort.abort();
       clearInterval(timer);
     };
-  }, [token]);
+  }, [token, intervalMs]);
 
-  return sessions;
+  return world;
 }
