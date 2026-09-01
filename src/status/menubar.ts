@@ -406,6 +406,11 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
       );
     }
 
+    // VIEW-03 — straight to THIS session's map, not the overview. `astir view`
+    // takes a session id, so the menu can deep-link rather than making someone
+    // arrive at a list and find the row they just clicked.
+    lines.push(`-- Open the map | ${action(exe, ["view", session.sessionId])}`);
+
     if (blockedHere > 0) {
       lines.push(`-- Dismiss this session | ${action(exe, ["dismiss", session.sessionId])}`);
     }
@@ -487,6 +492,11 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
   }
 
   separator();
+  // Offered only on this path, deliberately: the view is served BY the local
+  // daemon, so when that is unreachable the item would open a browser tab at a
+  // refused connection. The degraded path leaves it out rather than handing
+  // someone an action that cannot work.
+  lines.push(`Open the web view | ${action(exe, ["view"])}`);
   lines.push("Refresh | refresh=true");
   return `${lines.join("\n")}\n`;
 }

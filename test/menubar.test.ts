@@ -669,11 +669,20 @@ describe("clickability under SwiftBar's PATH", () => {
       },
       OPTS,
     );
-    const block = out.split("\n").filter((l) => l.startsWith("-- ") && !l.includes("Forget"));
+    const block = out.split("\n").filter((l) => l.startsWith("-- "));
     expect(block.length).toBeGreaterThan(0);
-    for (const line of block) {
-      expect(line).toContain("param2=focus param3=sid-1");
-    }
+
+    // The invariant is that nothing here is INERT, not that everything focuses.
+    for (const line of block) expect(line, line).toContain("bash=");
+
+    // The informational lines — path, agent state — go where the work is.
+    const informational = block.filter((l) => !/Open the map|Dismiss|Forget/.test(l));
+    expect(informational.length).toBeGreaterThan(0);
+    for (const line of informational) expect(line).toContain("param2=focus param3=sid-1");
+
+    // The named actions go to their own commands.
+    expect(block.find((l) => l.includes("Open the map"))).toContain("param2=view param3=sid-1");
+    expect(block.find((l) => l.includes("Forget"))).toContain("param2=forget param3=sid-1");
   });
 
   it("passes the interpreter on the daemon-unreachable action too", () => {
@@ -1051,5 +1060,58 @@ describe("a remote session appears once, not once per route", () => {
     );
     expect(out).toContain("one");
     expect(out).toContain("two");
+  });
+});
+
+describe("opening the web view from the menu", () => {
+  it("deep-links each session to its own map", () => {
+    // `astir view <id>` takes a session, so the menu goes straight to that map
+    // rather than dropping someone on the overview to find the row they just
+    // clicked.
+    const out = renderMenubar(
+      {
+        ok: true,
+        body: { blockedCount: 0, sessions: [session({ sessionId: "sid-7", agents: [agent("thinking")] })] },
+      },
+      OPTS,
+    );
+    const line = out.split("\n").find((l) => l.includes("Open the map"));
+    expect(line).toBeDefined();
+    expect(line).toContain("param2=view param3=sid-7");
+  });
+
+  it("offers one entry for the view itself", () => {
+    const out = renderMenubar({ ok: true, body: { blockedCount: 0, sessions: [] } }, OPTS);
+    const line = out.split("\n").find((l) => l.startsWith("Open the web view"));
+    expect(line).toBeDefined();
+    expect(line).toContain("param2=view");
+  });
+
+  it("does NOT offer it when the local daemon is down", () => {
+    // The view is served BY that daemon. Offering the item there would open a
+    // browser tab at a refused connection — an action that cannot work is worse
+    // than one that is absent.
+    const out = renderMenubar(
+      { ok: false, reason: "connection refused" },
+      {
+        invocation: ["astir"],
+        remote: {
+          agents: [],
+          sessions: [
+            {
+              host: "box",
+              sessionId: "r1",
+              cwd: "/x/y",
+              name: null,
+              status: "idle",
+              source: "push",
+              lastSeen: 1,
+            },
+          ],
+        },
+      },
+    );
+    expect(out).toContain("No local daemon");
+    expect(out).not.toContain("Open the web view");
   });
 });
