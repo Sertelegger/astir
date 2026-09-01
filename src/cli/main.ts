@@ -396,7 +396,7 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   const lister = createClaudeLister();
   const reconcile = (): void => {
     void lister()
-      .then((list) => registry.reconcile(list))
+      .then((found) => registry.reconcile(found?.sessions ?? null, { complete: found?.complete ?? false }))
       .catch(() => undefined);
   };
   reconcile();

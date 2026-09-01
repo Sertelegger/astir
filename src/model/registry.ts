@@ -218,6 +218,13 @@ export interface IngestResult {
   becameBlocked?: { sessionId: string; agentId: string; kind: string };
 }
 
+/** Keep what an incomplete poll could not re-confirm, prefer what it did see. */
+function mergeSilent(previous: DiscoveredSession[], fresh: DiscoveredSession[]): DiscoveredSession[] {
+  const byId = new Map(previous.map((d) => [d.sessionId, d]));
+  for (const d of fresh) byId.set(d.sessionId, d);
+  return [...byId.values()];
+}
+
 export class Registry {
   private sessions = new Map<string, SessionRecord>();
   /** Insertion-ordered, trimmed from the front — a bounded LRU by arrival. */
@@ -551,8 +558,19 @@ export class Registry {
    * case nothing is pruned — otherwise a missing binary would read as every session
    * having ended.
    */
-  reconcile(discovered: DiscoveredSession[] | null): { enriched: number; pruned: number } {
+  /**
+   * `complete: false` means at least one source could not be listed — see
+   * `DiscoveryResult`. Enrichment still applies, because what did answer is
+   * true; PRUNING does not, because a session missing from an incomplete view
+   * has not been shown to be gone. Defaults to true so a caller with a single
+   * complete source needs to say nothing.
+   */
+  reconcile(
+    discovered: DiscoveredSession[] | null,
+    opts: { complete?: boolean } = {},
+  ): { enriched: number; pruned: number } {
     if (discovered === null) return { enriched: 0, pruned: 0 };
+    const complete = opts.complete ?? true;
     this.discoveryEverWorked = true;
 
     const live = new Set<string>();
@@ -580,15 +598,20 @@ export class Registry {
     }
 
     let pruned = 0;
-    for (const [id, s] of [...this.sessions]) {
-      // Only prune something discovery has previously vouched for. A session we
-      // have events from but discovery has never listed is new, not dead.
-      if (s.everDiscovered && !live.has(id)) {
-        this.sessions.delete(id);
-        pruned++;
+    if (complete) {
+      for (const [id, s] of [...this.sessions]) {
+        // Only prune something discovery has previously vouched for. A session we
+        // have events from but discovery has never listed is new, not dead.
+        if (s.everDiscovered && !live.has(id)) {
+          this.sessions.delete(id);
+          pruned++;
+        }
       }
     }
-    this.silentSessions = silent;
+    // Same reasoning: an incomplete view cannot be used to REPLACE the silent
+    // list, because the profiles that failed contribute none of theirs.
+    if (complete) this.silentSessions = silent;
+    else this.silentSessions = mergeSilent(this.silentSessions, silent);
     return { enriched, pruned };
   }
 

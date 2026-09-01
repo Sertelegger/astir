@@ -129,3 +129,61 @@ describe("Registry.reconcile", () => {
     expect(r.list()).toHaveLength(0);
   });
 });
+
+describe("an incomplete view must not be treated as death", () => {
+  const disc = (id: string, over: Partial<DiscoveredSession> = {}): DiscoveredSession => ({
+    sessionId: id,
+    cwd: `/repo/${id}`,
+    pid: 1,
+    startedAt: null,
+    status: "busy",
+    name: id,
+    ...over,
+  });
+
+  it("enriches from the profiles that DID answer", () => {
+    const r = new Registry({ nowMs: () => 1_000 });
+    r.apply(ev({ sessionId: "s1", agentId: "s1" }), "/repo");
+    r.reconcile([disc("s1", { name: "astir-8c" })], { complete: false });
+
+    expect(r.get("s1")?.name, "partial truth beats none").toBe("astir-8c");
+  });
+
+  it("does NOT prune when a profile could not be listed", () => {
+    // A profile that failed this tick has sessions that are still running.
+    // Treating their absence as death deletes live records — and with two
+    // profiles that is one transient failure away, every tick.
+    const r = new Registry({ nowMs: () => 1_000 });
+    r.apply(ev({ sessionId: "s1", agentId: "s1" }), "/repo");
+    r.reconcile([disc("s1")]);
+    expect(r.list()).toHaveLength(1);
+
+    const res = r.reconcile([], { complete: false });
+    expect(res.pruned).toBe(0);
+    expect(r.list(), "we did not see it; we also did not look everywhere").toHaveLength(1);
+  });
+
+  it("still prunes when the view IS complete", () => {
+    // The guard must not have turned pruning off altogether.
+    const r = new Registry({ nowMs: () => 1_000 });
+    r.apply(ev({ sessionId: "s1", agentId: "s1" }), "/repo");
+    r.reconcile([disc("s1")]);
+    expect(r.reconcile([]).pruned).toBe(1);
+  });
+
+  it("keeps silent sessions a partial poll could not re-confirm", () => {
+    // Replacing the list wholesale would make every silent session from the
+    // failed profile vanish and reappear on alternating ticks.
+    const r = new Registry({ nowMs: () => 1_000 });
+    r.reconcile([disc("quiet-a"), disc("quiet-b")]);
+    expect(r.silent()).toHaveLength(2);
+
+    r.reconcile([disc("quiet-a")], { complete: false });
+    expect(
+      r
+        .silent()
+        .map((d) => d.sessionId)
+        .sort(),
+    ).toEqual(["quiet-a", "quiet-b"]);
+  });
+});

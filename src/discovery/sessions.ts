@@ -9,6 +9,7 @@
 
 import { execFile } from "node:child_process";
 import { createTtyReader, isAttended, type TtyReader } from "./attended.js";
+import { candidateConfigDirs } from "./profiles.js";
 
 export interface DiscoveredSession {
   sessionId: string;
@@ -41,7 +42,20 @@ export interface DiscoveredSession {
  * Collapsing the two would make a missing `claude` binary look like every session
  * having ended.
  */
-export type SessionLister = () => Promise<DiscoveredSession[] | null>;
+export interface DiscoveryResult {
+  sessions: DiscoveredSession[];
+  /**
+   * False when at least one profile could not be listed.
+   *
+   * The caller must NOT prune on an incomplete view: a profile that failed this
+   * tick has sessions that are still running, and treating their absence as
+   * death would delete live records. Enrichment from the profiles that DID
+   * answer is still applied, because partial truth beats none.
+   */
+  complete: boolean;
+}
+
+export type SessionLister = () => Promise<DiscoveryResult | null>;
 
 interface RawAgent {
   sessionId?: unknown;
@@ -83,27 +97,63 @@ export function parseAgentsJson(stdout: string): DiscoveredSession[] | null {
  * invocation, or malformed output all degrade to "I know of no sessions", which
  * the caller treats as "don't prune anything" rather than "everything is dead".
  */
-export function createClaudeLister(timeoutMs = 5_000, ttys: TtyReader = createTtyReader()): SessionLister {
+/** One profile's worth of sessions, or null if that profile could not be listed. */
+function listProfile(configDir: string, timeoutMs: number): Promise<DiscoveredSession[] | null> {
+  return new Promise((resolve) => {
+    execFile(
+      "claude",
+      ["agents", "--json"],
+      {
+        timeout: timeoutMs,
+        maxBuffer: 4 * 1024 * 1024,
+        // The whole point: `claude agents --json` answers for exactly one
+        // profile, so the profile has to be named rather than inherited.
+        env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+      },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        resolve(parseAgentsJson(stdout));
+      },
+    );
+  });
+}
+
+export function createClaudeLister(
+  timeoutMs = 5_000,
+  ttys: TtyReader = createTtyReader(),
+  profiles: () => string[] = candidateConfigDirs,
+): SessionLister {
   return async () => {
-    const listed = await new Promise<DiscoveredSession[] | null>((resolve) => {
-      execFile(
-        "claude",
-        ["agents", "--json"],
-        { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
-        (err, stdout) => {
-          if (err) return resolve(null);
-          resolve(parseAgentsJson(stdout));
-        },
-      );
-    });
-    if (listed === null) return null;
+    const dirs = profiles();
+    const results = await Promise.all(dirs.map((dir) => listProfile(dir, timeoutMs)));
+
+    // Merged by session id. Two profiles never share one, but a profile reached
+    // by two paths (a symlink) would, and listing it twice would double every
+    // row on every surface.
+    const byId = new Map<string, DiscoveredSession>();
+    let complete = true;
+    for (const result of results) {
+      if (result === null) {
+        complete = false;
+        continue;
+      }
+      for (const session of result) byId.set(session.sessionId, session);
+    }
+
+    // Every profile failed: that is "could not determine", not "nothing is
+    // running", and the caller must not act on it at all.
+    if (byId.size === 0 && !complete) return null;
+    const listed = [...byId.values()];
 
     // DMN-11 — one `ps` for the whole table, not one per session. A failure
     // here leaves every session unclassified rather than misclassified.
     const table = await ttys().catch(() => new Map<number, string>());
-    return listed.map((d) => {
-      const attended = isAttended(d.pid, table);
-      return attended === undefined ? d : { ...d, attended };
-    });
+    return {
+      complete,
+      sessions: listed.map((d) => {
+        const attended = isAttended(d.pid, table);
+        return attended === undefined ? d : { ...d, attended };
+      }),
+    };
   };
 }
