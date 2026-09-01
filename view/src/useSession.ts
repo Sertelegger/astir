@@ -36,7 +36,16 @@ const sleep = (ms: number, signal: AbortSignal): Promise<void> =>
  * delta to save a render would corrupt the state, because a delta only means
  * anything applied to its predecessor.
  */
-export function useSession(token: string, sessionId: string | null): SessionView {
+/**
+ * `hostOf` lets the view say WHERE a session it cannot stream actually lives,
+ * turning "not here" into "runs on megabrain-dev". Optional: without it the
+ * message is still honest, just less useful.
+ */
+export function useSession(
+  token: string,
+  sessionId: string | null,
+  hostOf?: (id: string) => string | null,
+): SessionView {
   const [view, setView] = useState<SessionView>({
     snapshot: null,
     receivedAt: 0,
@@ -46,6 +55,8 @@ export function useSession(token: string, sessionId: string | null): SessionView
   // closure, which is how a reconnect ends up applying deltas to the snapshot
   // from before it.
   const base = useRef<Snapshot | null>(null);
+  const lookupHost = useRef(hostOf);
+  lookupHost.current = hostOf;
 
   useEffect(() => {
     if (sessionId === null) return;
@@ -84,6 +95,14 @@ export function useSession(token: string, sessionId: string | null): SessionView
             headers: authHeaders(token),
             signal: abort.signal,
           });
+          // A 404 is not a failure of the connection — the daemon answered, and
+          // it simply does not own this session. Retrying cannot change that,
+          // and calling it "unreachable" blames the daemon for something that
+          // is not wrong with it.
+          if (res.status === 404) {
+            advance({ type: "absent", host: lookupHost.current?.(sessionId) ?? null });
+            return;
+          }
           if (!res.ok || res.body === null) {
             throw new Error(res.status === 401 ? "not authorised" : `daemon replied ${res.status}`);
           }
@@ -124,6 +143,9 @@ export function useSession(token: string, sessionId: string | null): SessionView
       coalescer.stop();
       document.removeEventListener("visibilitychange", onVisible);
     };
+    // `hostOf` is deliberately not a dependency: it is a lookup over data that
+    // changes on every poll, and re-running the effect for it would tear the
+    // stream down and rebuild it every few seconds.
   }, [token, sessionId]);
 
   return view;

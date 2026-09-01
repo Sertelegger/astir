@@ -29,6 +29,14 @@ export function Overview(props: OverviewProps): JSX.Element {
   const blocked = blockedTotal(sessions);
   const elapsed = Math.max(0, props.now - props.receivedAt);
 
+  // DMN-11 — sessions a plugin or script drives, kept out of the way of the ones
+  // a person is in. Listed rather than hidden: a machine quietly running six of
+  // them is worth knowing about. Just not at the top of a view whose question is
+  // "which of these needs me" — the menu bar has always separated them, and the
+  // web view mixing them in was the two surfaces disagreeing.
+  const attended = sessions.filter((s) => s.kind !== "background");
+  const background = sessions.filter((s) => s.kind === "background");
+
   if (!props.reachable) {
     return (
       <div className="overview">
@@ -49,9 +57,12 @@ export function Overview(props: OverviewProps): JSX.Element {
       ) : null}
 
       {sessions.length === 0 && <p className="empty">No sessions running.</p>}
+      {attended.length === 0 && background.length > 0 && (
+        <p className="empty">Nothing you are working in — only background sessions.</p>
+      )}
 
       <ul className="sessions">
-        {sessions.map((s) => (
+        {attended.map((s) => (
           <li key={s.sessionId} className={`session ${s.kind}${s.blocked > 0 ? " blocked" : ""}`}>
             {/* The whole row opens the session. A row that looks like the others
                 but does nothing reads as broken rather than as deliberately
@@ -93,6 +104,28 @@ export function Overview(props: OverviewProps): JSX.Element {
           </li>
         ))}
       </ul>
+      {background.length > 0 && (
+        <details className="background-group">
+          <summary>
+            {background.length} background session{background.length === 1 ? "" : "s"}
+            <span className="muted"> — launched by a plugin or script; nothing here waits on you</span>
+          </summary>
+          <ul className="sessions">
+            {background.map((s) => (
+              <li key={s.sessionId} className="session background">
+                <button type="button" className="session-head" onClick={() => onOpen(s.sessionId)}>
+                  <span className="project">{s.project}</span>
+                  {s.host !== null && <span className="host">{s.host}</span>}
+                  <span className={`state ${s.state ?? "unknown"}`}>{stateLabel(s)}</span>
+                </button>
+                <div className="cwd" title={s.cwd}>
+                  {s.cwd}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }

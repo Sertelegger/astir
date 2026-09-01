@@ -415,3 +415,15 @@ aside h2 {
 
 .state.unknown, .state.unreachable { color: var(--dim); }
 .quiet { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
+
+/*
+ * DMN-11 — background sessions, collapsed.
+ *
+ * Real work, worth knowing about, and not what the overview is for. Collapsed
+ * rather than dimmed-in-place: dimming still costs the reader a scan of every
+ * row to decide which ones matter.
+ */
+.background-group { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.background-group summary { cursor: pointer; color: var(--dim); font-size: 12px; }
+.background-group summary::marker { color: var(--line); }
+.background-group .sessions { margin-top: 8px; }

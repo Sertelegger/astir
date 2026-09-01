@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { defaultNewId, normalizeClaudeHook, type SidecarMeta } from "../adapters/claude/normalize.js";
 import { validateEvent } from "../contract/event.js";
 import type { Registry } from "../model/registry.js";
+import { mergeRemoteSessions } from "../notify/roster.js";
 import { type FocusResult, focusSession } from "../status/focus.js";
 import type { RemoteSession } from "../status/types.js";
 import { observer, StreamState, sseFrame } from "./stream.js";
@@ -69,6 +70,17 @@ export interface DaemonOpts {
    * the latest cache, so a slow host can never delay a /state response.
    */
   remoteSessions?: () => RemoteSession[];
+  /**
+   * DMN-10 — sessions a paired machine PUSHED to the local notifier.
+   *
+   * A separate source from `remoteSessions`, and not redundant with it: the two
+   * routes return different sets, and only the push carries `attended`, because
+   * whether a session has a controlling terminal can only be seen on the machine
+   * running it. Without this the web view could neither see push-only sessions
+   * nor tell a plugin's session from a person's — while the menu bar, which
+   * reads the notifier itself, could do both.
+   */
+  pushedSessions?: () => RemoteSession[];
   nowSeconds?: () => number;
   /** Where the built view lives. Injectable so tests need no build output. */
   viewRoot?: string;
@@ -564,7 +576,10 @@ export class Daemon {
       // emits nothing — so without this the surface reports perfectly wired
       // sessions as "not connected" for as long as they stay quiet.
       daemonStartedAt: this.startedAt,
-      remote: this.opts.remoteSessions?.() ?? [],
+      // Merged by session id, so a machine that both pushes and answers an SSH
+      // poll appears once — see `mergeRemoteSessions`. The push wins on state,
+      // the poll wins on the name the user configured.
+      remote: mergeRemoteSessions(this.opts.pushedSessions?.() ?? [], this.opts.remoteSessions?.() ?? []),
       sessions: this.opts.registry.list().map((s) => ({
         sessionId: s.sessionId,
         provider: s.provider,

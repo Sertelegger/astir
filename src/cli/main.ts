@@ -25,6 +25,7 @@ import { pushRoster, rosterUrlFrom } from "../notify/roster.js";
 import { NotifierServer } from "../notify/server.js";
 import { fetchRemote, fetchStatus } from "../status/fetch.js";
 import { renderMenubar } from "../status/menubar.js";
+import type { RemoteSession } from "../status/types.js";
 import { defaultPairDeps, pair, pairedHosts, sshConfigPath } from "./pair.js";
 import {
   claudeSettingsPath,
@@ -312,10 +313,47 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
     list: createSshLister(),
   });
 
+  // DMN-10 — what OTHER machines have pushed to the local notifier.
+  //
+  // Read on a timer into a cache, so /state never waits on it, exactly like the
+  // SSH poll above. Two sources rather than one because they see different
+  // things: an SSH poll asks the provider what it is running, while a push comes
+  // from a daemon that ingested the hooks — and only the push can carry
+  // `attended`, since a controlling terminal is visible only on the machine
+  // running the session.
+  //
+  // Without this the web view, which reads /state, could not see push-only
+  // sessions or tell a plugin's session from a person's — while the menu bar,
+  // which reads the notifier directly, could do both. One surface contradicting
+  // the other about the same machine is the drift this closes.
+  let pushed: RemoteSession[] = [];
+  const readNotifier = async (): Promise<void> => {
+    if (notifierUrl === null) {
+      pushed = [];
+      return;
+    }
+    try {
+      const res = await fetch(new URL("/state", notifierUrl), {
+        headers: { authorization: `Bearer ${remoteToken}` },
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (!res.ok) return;
+      const body = (await res.json()) as { sessions?: RemoteSession[] };
+      pushed = body.sessions ?? [];
+    } catch {
+      // The tunnel comes and goes; the probe above owns that story. Keeping the
+      // last known list is better than blanking the view on one failed poll.
+    }
+  };
+  void readNotifier();
+  const notifierTick = setInterval(() => void readNotifier(), 5_000);
+  notifierTick.unref();
+
   const daemon = new Daemon({
     token,
     registry,
     remoteSessions: () => remoteDiscovery.list(),
+    pushedSessions: () => pushed,
   });
 
   const bound = await daemon.listen(port);

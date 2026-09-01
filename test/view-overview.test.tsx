@@ -223,3 +223,55 @@ describe("VIEW-08 — a session is a click away", () => {
     expect(rows[1], "alpha is the same node, moved").toBe(alpha);
   });
 });
+
+describe("DMN-11 — background sessions do not mix with the ones you are in", () => {
+  const bg = (id: string, cwd: string) =>
+    session({ sessionId: id, cwd, attended: false, agents: [agent({ state: "idle" })] });
+
+  it("keeps them out of the main list", () => {
+    // The menu bar has always separated these; the web view mixing them in was
+    // the two surfaces disagreeing about the same machine.
+    const view = show({
+      sessions: [
+        session({ sessionId: "mine", cwd: "/p/astir" }),
+        bg("obs1", "/home/dev/.claude-mem/observer-sessions"),
+        bg("obs2", "/home/dev/.claude-mem/observer-sessions"),
+      ],
+    });
+
+    // `li.session` specifically: each session row nests its own <li> per agent,
+    // so a bare "li" count includes those too.
+    const main = [...view.container.querySelectorAll(".sessions")][0];
+    expect(main?.querySelectorAll("li.session")).toHaveLength(1);
+    expect(main?.textContent).toContain("astir");
+  });
+
+  it("still lists them, collapsed, rather than hiding them", () => {
+    // A machine quietly running six of them is worth knowing about.
+    const view = show({
+      sessions: [session({ sessionId: "mine", cwd: "/p/astir" }), bg("obs1", "/x/observer")],
+    });
+    const group = view.container.querySelector(".background-group");
+    expect(group).not.toBeNull();
+    expect(group?.textContent).toContain("1 background session");
+    expect(group?.querySelectorAll("li.session")).toHaveLength(1);
+  });
+
+  it("gets the plural right", () => {
+    const view = show({ sessions: [bg("a", "/x/a"), bg("b", "/x/b")] });
+    expect(view.container.querySelector(".background-group")?.textContent).toContain(
+      "2 background sessions",
+    );
+  });
+
+  it("says so when there is nothing BUT background sessions", () => {
+    // Otherwise the page reads as "no sessions" while listing two.
+    const view = show({ sessions: [bg("a", "/x/a")] });
+    expect(view.container.textContent).toContain("only background sessions");
+  });
+
+  it("does not render the group when there are none", () => {
+    const view = show({ sessions: [session({ sessionId: "mine", cwd: "/p/astir" })] });
+    expect(view.container.querySelector(".background-group")).toBeNull();
+  });
+});

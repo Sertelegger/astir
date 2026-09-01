@@ -22,12 +22,23 @@ export type Connection =
   /** The session finished. Terminal: nothing will arrive, and that is correct. */
   | { state: "ended" }
   /** Contact lost. The session is probably still running; we stopped being told. */
-  | { state: "unreachable"; attempt: number; retryInMs: number; detail: string };
+  | { state: "unreachable"; attempt: number; retryInMs: number; detail: string }
+  /**
+   * The daemon answered, and does not have this session.
+   *
+   * Distinct from `unreachable` and terminal for the same reason `ended` is:
+   * retrying cannot help. A session belongs to the daemon that ingested its
+   * hooks, so asking a different one produces a 404 forever — and reporting
+   * that as "daemon unreachable" blames the daemon for something that is not
+   * wrong with it, which is the dishonesty this whole type exists to avoid.
+   */
+  | { state: "absent"; host: string | null };
 
 export type ConnectionEvent =
   | { type: "open"; at: number }
   | { type: "end" }
   | { type: "lost"; detail: string }
+  | { type: "absent"; host: string | null }
   | { type: "retry" };
 
 /** First retry is nearly immediate; a daemon restart should not cost a reload. */
@@ -48,15 +59,17 @@ export function backoffMs(attempt: number): number {
 export const initialConnection: Connection = { state: "connecting", attempt: 1 };
 
 export function nextConnection(current: Connection, event: ConnectionEvent): Connection {
-  // Terminal. A late error from a socket closing after the end frame must not
-  // resurrect the stream and start it retrying a session that is over.
-  if (current.state === "ended") return current;
+  // Terminal states. A late error from a socket closing afterwards must not
+  // resurrect the stream and start it retrying something that cannot succeed.
+  if (current.state === "ended" || current.state === "absent") return current;
 
   switch (event.type) {
     case "open":
       return { state: "live", since: event.at };
     case "end":
       return { state: "ended" };
+    case "absent":
+      return { state: "absent", host: event.host };
     case "lost": {
       // Attempts count from the last SUCCESSFUL connection, so a stream that has
       // been live for hours retries promptly rather than inheriting the backoff
@@ -88,5 +101,9 @@ export function describeConnection(c: Connection): string {
       return "Session ended";
     case "unreachable":
       return `Daemon unreachable — retrying in ${Math.round(c.retryInMs / 100) / 10}s`;
+    case "absent":
+      return c.host === null
+        ? "This daemon does not have that session"
+        : `That session runs on ${c.host}, not here`;
   }
 }

@@ -455,3 +455,78 @@ describe("a change of tool reaches the view", () => {
     expect(snap.agents.find((a) => a.id === "s1")?.description).toBeNull();
   });
 });
+
+/* ── DMN-10: /state carries what the notifier was pushed, too ─────────────── */
+
+const remoteSession = (over: Partial<import("../src/status/types.js").RemoteSession> = {}) => ({
+  host: "megabrain-dev",
+  sessionId: "r1",
+  cwd: "/home/dev/repos/astir",
+  name: null,
+  status: "busy",
+  source: "ssh" as const,
+  lastSeen: 1,
+  ...over,
+});
+
+async function serveWithRemotes(
+  pushed: ReturnType<typeof remoteSession>[],
+  polled: ReturnType<typeof remoteSession>[],
+): Promise<number> {
+  const daemon = new Daemon({
+    token: TOKEN,
+    registry: new Registry({ nowMs: () => 1_000 }),
+    viewRoot: "/nonexistent-view-root",
+    remoteSessions: () => polled,
+    pushedSessions: () => pushed,
+  });
+  const port = await daemon.listen(0);
+  open.push(() => daemon.close());
+  return port;
+}
+
+const stateOf = async (port: number) =>
+  (await (
+    await fetch(`http://127.0.0.1:${port}/state`, { headers: { authorization: `Bearer ${TOKEN}` } })
+  ).json()) as { remote?: Array<{ sessionId: string; host: string; attended?: boolean }> };
+
+describe("/state merges both remote routes", () => {
+  it("includes a session only the PUSH knows about", () => {
+    // The bug this fixes: the web view reads /state, which carried only the SSH
+    // poll. Sessions the poll cannot see — and the poll and the push return
+    // different sets — were visible in the menu bar and missing from the view.
+    return serveWithRemotes([remoteSession({ sessionId: "push-only", source: "push" })], []).then(
+      async (port) => {
+        const body = await stateOf(port);
+        expect(body.remote?.map((r) => r.sessionId)).toContain("push-only");
+      },
+    );
+  });
+
+  it("includes a session only the SSH POLL knows about", async () => {
+    const port = await serveWithRemotes([], [remoteSession({ sessionId: "poll-only" })]);
+    expect((await stateOf(port)).remote?.map((r) => r.sessionId)).toContain("poll-only");
+  });
+
+  it("lists a session both routes report exactly once", async () => {
+    const port = await serveWithRemotes(
+      [remoteSession({ sessionId: "both", host: "claude-dev-geeklish", source: "push" })],
+      [remoteSession({ sessionId: "both", host: "megabrain-dev" })],
+    );
+    const body = await stateOf(port);
+    expect(body.remote).toHaveLength(1);
+    expect(body.remote?.[0]?.host, "the configured alias wins on name").toBe("megabrain-dev");
+  });
+
+  it("carries `attended`, which ONLY the push route can know", async () => {
+    // A controlling terminal is visible only on the machine running the session,
+    // so `claude agents --json` cannot report it — it says "interactive" for
+    // observer sessions too. Without the push, the view cannot tell a plugin's
+    // session from a person's.
+    const port = await serveWithRemotes(
+      [remoteSession({ sessionId: "bot", source: "push", attended: false })],
+      [],
+    );
+    expect((await stateOf(port)).remote?.[0]?.attended).toBe(false);
+  });
+});

@@ -192,3 +192,28 @@ describe("VIEW-03 — hidden documents do not render", () => {
     expect(h.rendered).toEqual([]);
   });
 });
+
+describe("VIEW-02 — a session this daemon does not own", () => {
+  it("is its own state, not `unreachable`", () => {
+    // The daemon answered. It just does not have that session — which is what a
+    // remote session looks like from here. Reporting it as "daemon unreachable"
+    // blames the daemon for something that is not wrong with it.
+    const c = drive(initialConnection, { type: "absent", host: "megabrain-dev" });
+    expect(c.state).toBe("absent");
+    expect(describeConnection(c)).toContain("megabrain-dev");
+    expect(describeConnection(c).toLowerCase()).not.toContain("unreachable");
+  });
+
+  it("does not retry, because retrying cannot help", () => {
+    // A session belongs to the daemon that ingested its hooks; asking a
+    // different one produces a 404 forever.
+    const absent = drive(initialConnection, { type: "absent", host: null });
+    expect(drive(absent, { type: "lost", detail: "x" })).toBe(absent);
+    expect(drive(absent, { type: "retry" })).toBe(absent);
+    expect(drive(absent, { type: "open", at: 1 })).toBe(absent);
+  });
+
+  it("still says something useful when the host is unknown", () => {
+    expect(describeConnection({ state: "absent", host: null })).toContain("does not have");
+  });
+});

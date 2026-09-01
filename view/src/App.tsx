@@ -42,7 +42,13 @@ export function App({ token }: { token: string }): JSX.Element {
   // the same token, one stream torn down and another opened. Passing null while
   // on the overview closes the stream rather than holding a session open behind
   // a screen nobody is looking at.
-  const { snapshot, receivedAt, connection } = useSession(token, screen === "map" ? chosen : null);
+  const { snapshot, receivedAt, connection } = useSession(
+    token,
+    screen === "map" ? chosen : null,
+    // So a session this daemon does not own reports WHERE it runs, rather than
+    // just that it is missing.
+    (id) => world.sessions.find((s) => s.sessionId === id)?.host ?? null,
+  );
   const files = useMemo(() => snapshot?.files ?? [], [snapshot]);
   const elapsed = mode === "live" && snapshot !== null ? Math.max(0, now - receivedAt) : 0;
   const blocked = blockedTotal(world.sessions);
