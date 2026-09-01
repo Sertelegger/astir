@@ -888,3 +888,98 @@ describe("PSH-12 — other machines", () => {
     expect(out).not.toContain("---\n---");
   });
 });
+
+describe("a dead local daemon does not hide the other machines", () => {
+  const down = { ok: false as const, reason: "connection refused on 127.0.0.1:47000" };
+
+  it("still shows sessions the notifier knows about", () => {
+    // The case pairing exists for: development moved to another machine and the
+    // daemon here was stopped. The notifier is a separate process on a separate
+    // port, so its roster outlives the daemon — and used to be discarded.
+    const out = renderMenubar(down, {
+      invocation: ["astir"],
+      remote: {
+        agents: [],
+        sessions: [
+          {
+            host: "megabrain-dev",
+            sessionId: "r1",
+            cwd: "/home/dev/repos/astir",
+            name: null,
+            status: "busy",
+            source: "push",
+            lastSeen: 1,
+          },
+          {
+            host: "megabrain-dev",
+            sessionId: "r2",
+            cwd: "/home/dev/repos/tzun",
+            name: null,
+            status: "idle",
+            source: "push",
+            lastSeen: 1,
+          },
+        ],
+      },
+    });
+
+    expect(out).toContain("megabrain-dev");
+    expect(out).toContain("astir");
+    expect(out).toContain("tzun");
+    expect(out).toContain("No local daemon");
+  });
+
+  it("still counts a blocked agent on another machine in the badge", () => {
+    // Blocked is blocked whether or not anything runs on this machine.
+    const out = renderMenubar(down, {
+      invocation: ["astir"],
+      now: 10_000,
+      remote: {
+        agents: [
+          {
+            host: "megabrain-dev",
+            sessionId: "r1",
+            repo: "astir",
+            reason: "permission_prompt",
+            since: 0,
+            acknowledged: false,
+          },
+        ],
+        sessions: [],
+      },
+    });
+    expect(out.split("\n")[0]).toContain("bell.badge.fill");
+    expect(out.split("\n")[0]).toMatch(/^1 \|/);
+  });
+
+  it("still offers to start the local daemon", () => {
+    // Degraded is not the same as fine; the way out stays one click away.
+    const out = renderMenubar(down, {
+      invocation: ["astir"],
+      remote: {
+        agents: [],
+        sessions: [
+          {
+            host: "box",
+            sessionId: "r1",
+            cwd: "/x/y",
+            name: null,
+            status: null,
+            source: "push",
+            lastSeen: 1,
+          },
+        ],
+      },
+    });
+    expect(out).toContain("Start the daemon");
+    expect(out).toContain("connection refused");
+  });
+
+  it("falls back to the plain warning when there is genuinely nothing", () => {
+    // No local daemon AND no remote data really is just broken.
+    const out = renderMenubar(down, { invocation: ["astir"] });
+    expect(out.split("\n")[0]).toContain("exclamationmark.triangle");
+    expect(out).toContain("Start the daemon");
+    expect(out).not.toContain("Other machines");
+  });
+});

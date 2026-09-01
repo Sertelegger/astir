@@ -188,6 +188,83 @@ function timeText(agent: StatusAgent): string {
   return turn - agent.inStateMs >= 1_000 ? `${here}  ·  ${humanDuration(turn)} this turn` : here;
 }
 
+/**
+ * DMN-09/DMN-10 — everything running elsewhere.
+ *
+ * Extracted so it can be rendered when the LOCAL daemon is unreachable too.
+ * It used to live inline after an early return that fired in exactly that case,
+ * which meant the one situation pairing exists for — work moved to another
+ * machine, local daemon stopped — was the situation where the menu bar threw
+ * away the remote sessions it already had and showed only a warning triangle.
+ */
+function remoteSection(
+  lines: string[],
+  remote: RemoteEntry[],
+  elsewhere: RemoteSession[],
+  now: number,
+  exe: string[],
+  separator: () => void,
+): void {
+  // DMN-09/DMN-10 — everything running elsewhere, from whichever route knows
+  // about it. A machine that both pushes a roster and answers an SSH poll
+  // reports each session twice, so they are merged before anything is drawn.
+  // A session with a blocked agent is already rendered below with its reason and
+  // its dismiss action; listing it again as an ordinary session would be the
+  // duplicate-row problem in a new place.
+  const blockedIds = new Set(remote.map((r) => r.sessionId));
+  const quietElsewhere = elsewhere.filter((s) => !blockedIds.has(s.sessionId) && !background(s));
+
+  if (remote.length > 0 || quietElsewhere.length > 0) {
+    separator();
+    lines.push(`Other machines | color=${COLOUR.dim}`);
+    for (const entry of remote) {
+      if (entry.stale === true) {
+        // Losing the tunnel does not mean the agent stopped waiting — it means we
+        // stopped being told. Saying so is the whole point; quietly dropping the
+        // row would look identical to "everything is fine".
+        const lastHeard =
+          entry.lastSeen === undefined
+            ? ""
+            : `  ·  last heard ${humanDuration(Math.max(0, now - entry.lastSeen))} ago`;
+        lines.push(`${safe(entry.host)}  ⚠ unreachable | color=${COLOUR.danger}`);
+        lines.push(`-- ${safe(entry.repo)}${lastHeard} | color=${COLOUR.dim} font=Menlo`);
+        lines.push(`-- Reconnect:  ssh -R 47001:127.0.0.1:47001 ${safe(entry.host)} | color=${COLOUR.dim}`);
+        lines.push(`-- Forget | ${action(exe, ["forget", entry.sessionId])} color=${COLOUR.dim}`);
+        continue;
+      }
+
+      const marker = entry.acknowledged ? "" : " ⏳";
+      const colour = entry.acknowledged ? COLOUR.dim : COLOUR.alert;
+      lines.push(`${safe(entry.host)} · ${safe(entry.repo)}${marker} | color=${colour}`);
+      const suffix = entry.acknowledged ? "  (dismissed)" : "";
+      lines.push(
+        `-- ${safe(reasonText(entry.reason))}  ·  waiting ${humanDuration(Math.max(0, now - entry.since))}${suffix}` +
+          ` | color=${COLOUR.detail} font=Menlo`,
+      );
+      // No focus action: there is no window on this machine to raise.
+      lines.push(`-- Dismiss | ${action(exe, ["dismiss", entry.sessionId])}`);
+    }
+
+    const quietTitlesRemote = sessionLabels(quietElsewhere);
+    for (const [i, s] of quietElsewhere.entries()) {
+      // Nothing is waiting on you here, so this is information, not an alert —
+      // and there is no window on this machine to raise, so no click either.
+      const label = `${safe(quietTitlesRemote[i] ?? "")}  ·  ${safe(s.host)}`;
+      if (s.stale === true) {
+        lines.push(`${label}  ⚠ unreachable | color=${COLOUR.danger}`);
+        lines.push(`-- ${safe(s.cwd)} | color=${COLOUR.dim} font=Menlo`);
+        lines.push(`-- Contact lost — it is probably still running | color=${COLOUR.dim}`);
+        continue;
+      }
+      lines.push(`${label} | color=${COLOUR.dim}`);
+      const via = s.source === "push" ? "reported by its daemon" : "seen over ssh";
+      const slug = s.name == null ? "" : `  ·  ${safe(s.name)}`;
+      lines.push(`-- ${safe(s.cwd)}${slug} | color=${COLOUR.dim} font=Menlo`);
+      lines.push(`-- ${safe(s.status ?? "running")}  ·  ${via} | color=${COLOUR.detail} font=Menlo`);
+    }
+  }
+}
+
 export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
   const lines: string[] = [];
   /** SwiftBar renders consecutive separators as a visible double rule. */
@@ -203,15 +280,47 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
   const remoteUnreachable = remote.filter((r) => r.stale === true).length;
 
   if (!result.ok) {
-    // Deliberately distinct from "idle": the daemon being unreachable is
-    // information, and rendering it as calm would be a lie.
-    lines.push(`astir ⚠ | sfimage=exclamationmark.triangle color=${COLOUR.dim}`);
-    lines.push("---");
-    lines.push(`${safe(result.reason)} | color=${COLOUR.dim}`);
-    // terminal=true here on purpose: starting the daemon should show its output.
+    // The local daemon is unreachable — but that does NOT mean we know nothing.
+    // A paired machine pushes its roster to the notifier, which is a separate
+    // process on a separate port, so its data survives the daemon dying.
+    //
+    // Throwing it away here was the old behaviour, and it broke the one case
+    // pairing exists for: move development to another machine, stop the daemon
+    // on this one, and the menu bar went blind — a warning triangle sitting on
+    // top of a notifier that knew about four live sessions.
+    const strandedRemote = opts.remote?.agents ?? [];
+    const strandedSessions = opts.remote?.sessions ?? [];
     const [command = "", ...rest] = exe;
     const params = [...rest, "daemon"].map((value, i) => `param${i + 1}=${value}`);
-    lines.push(`Start the daemon | bash=${command} ${params.join(" ")} terminal=true`);
+    const startDaemon = `Start the daemon | bash=${command} ${params.join(" ")} terminal=true`;
+
+    if (strandedRemote.length === 0 && strandedSessions.length === 0) {
+      // Nothing anywhere. Deliberately distinct from "idle": the daemon being
+      // unreachable is information, and rendering it as calm would be a lie.
+      lines.push(`astir ⚠ | sfimage=exclamationmark.triangle color=${COLOUR.dim}`);
+      lines.push("---");
+      lines.push(`${safe(result.reason)} | color=${COLOUR.dim}`);
+      // terminal=true on purpose: starting the daemon should show its output.
+      lines.push(startDaemon);
+      lines.push("Refresh | refresh=true");
+      return `${lines.join("\n")}\n`;
+    }
+
+    // Degraded, and it says so. The badge still counts what is waiting on you,
+    // because a blocked agent on another machine is blocked whether or not
+    // anything is running here.
+    const strandedBlocked = strandedRemote.filter((r) => !r.acknowledged && r.stale !== true).length;
+    if (strandedBlocked > 0) {
+      lines.push(`${strandedBlocked} | sfimage=bell.badge.fill color=${COLOUR.alert} font=Menlo`);
+    } else {
+      lines.push(`| sfimage=externaldrive.badge.questionmark color=${COLOUR.dim}`);
+    }
+    lines.push("---");
+    lines.push(`No local daemon — showing other machines only | color=${COLOUR.dim}`);
+    lines.push(`-- ${safe(result.reason)} | color=${COLOUR.dim}`);
+    lines.push(startDaemon);
+    remoteSection(lines, strandedRemote, strandedSessions, now, exe, separator);
+    separator();
     lines.push("Refresh | refresh=true");
     return `${lines.join("\n")}\n`;
   }
@@ -352,65 +461,8 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     }
   }
 
-  // DMN-09/DMN-10 — everything running elsewhere, from whichever route knows
-  // about it. A machine that both pushes a roster and answers an SSH poll
-  // reports each session twice, so they are merged before anything is drawn.
   const elsewhere = mergeRemoteSessions(opts.remote?.sessions ?? [], body.remote ?? []);
-  // A session with a blocked agent is already rendered below with its reason and
-  // its dismiss action; listing it again as an ordinary session would be the
-  // duplicate-row problem in a new place.
-  const blockedIds = new Set(remote.map((r) => r.sessionId));
-  const quietElsewhere = elsewhere.filter((s) => !blockedIds.has(s.sessionId) && !background(s));
-
-  if (remote.length > 0 || quietElsewhere.length > 0) {
-    separator();
-    lines.push(`Other machines | color=${COLOUR.dim}`);
-    for (const entry of remote) {
-      if (entry.stale === true) {
-        // Losing the tunnel does not mean the agent stopped waiting — it means we
-        // stopped being told. Saying so is the whole point; quietly dropping the
-        // row would look identical to "everything is fine".
-        const lastHeard =
-          entry.lastSeen === undefined
-            ? ""
-            : `  ·  last heard ${humanDuration(Math.max(0, now - entry.lastSeen))} ago`;
-        lines.push(`${safe(entry.host)}  ⚠ unreachable | color=${COLOUR.danger}`);
-        lines.push(`-- ${safe(entry.repo)}${lastHeard} | color=${COLOUR.dim} font=Menlo`);
-        lines.push(`-- Reconnect:  ssh -R 47001:127.0.0.1:47001 ${safe(entry.host)} | color=${COLOUR.dim}`);
-        lines.push(`-- Forget | ${action(exe, ["forget", entry.sessionId])} color=${COLOUR.dim}`);
-        continue;
-      }
-
-      const marker = entry.acknowledged ? "" : " ⏳";
-      const colour = entry.acknowledged ? COLOUR.dim : COLOUR.alert;
-      lines.push(`${safe(entry.host)} · ${safe(entry.repo)}${marker} | color=${colour}`);
-      const suffix = entry.acknowledged ? "  (dismissed)" : "";
-      lines.push(
-        `-- ${safe(reasonText(entry.reason))}  ·  waiting ${humanDuration(Math.max(0, now - entry.since))}${suffix}` +
-          ` | color=${COLOUR.detail} font=Menlo`,
-      );
-      // No focus action: there is no window on this machine to raise.
-      lines.push(`-- Dismiss | ${action(exe, ["dismiss", entry.sessionId])}`);
-    }
-
-    const quietTitlesRemote = sessionLabels(quietElsewhere);
-    for (const [i, s] of quietElsewhere.entries()) {
-      // Nothing is waiting on you here, so this is information, not an alert —
-      // and there is no window on this machine to raise, so no click either.
-      const label = `${safe(quietTitlesRemote[i] ?? "")}  ·  ${safe(s.host)}`;
-      if (s.stale === true) {
-        lines.push(`${label}  ⚠ unreachable | color=${COLOUR.danger}`);
-        lines.push(`-- ${safe(s.cwd)} | color=${COLOUR.dim} font=Menlo`);
-        lines.push(`-- Contact lost — it is probably still running | color=${COLOUR.dim}`);
-        continue;
-      }
-      lines.push(`${label} | color=${COLOUR.dim}`);
-      const via = s.source === "push" ? "reported by its daemon" : "seen over ssh";
-      const slug = s.name == null ? "" : `  ·  ${safe(s.name)}`;
-      lines.push(`-- ${safe(s.cwd)}${slug} | color=${COLOUR.dim} font=Menlo`);
-      lines.push(`-- ${safe(s.status ?? "running")}  ·  ${via} | color=${COLOUR.detail} font=Menlo`);
-    }
-  }
+  remoteSection(lines, remote, elsewhere, now, exe, separator);
 
   // DMN-11 — sessions a program launched, kept out of the way of the ones you
   // are working in. Listed rather than hidden: they are real work and a machine
