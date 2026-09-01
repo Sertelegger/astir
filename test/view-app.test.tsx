@@ -397,3 +397,141 @@ describe("the overview, and switching from it", () => {
     expect(opened?.signal.aborted, "and so is the connection behind it").toBe(true);
   });
 });
+
+/* ── VIEW-01: panels in the assembled app ────────────────────────────────── */
+
+const panelIds = (view: ReturnType<typeof render>): string[] =>
+  [...view.container.querySelectorAll(".region .panel")].map(
+    (p) => [...p.classList].find((c) => c.startsWith("panel-"))?.replace("panel-", "") ?? "?",
+  );
+
+const regionOfPanel = (view: ReturnType<typeof render>, id: string): string | undefined => {
+  const panel = view.container.querySelector(`.panel-${id}`);
+  const region = panel?.closest(".region");
+  return [...(region?.classList ?? [])].find((c) => c.startsWith("region-"))?.replace("region-", "");
+};
+
+const press = async (view: ReturnType<typeof render>, label: string) => {
+  const button = view.container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`);
+  expect(button, label).not.toBeNull();
+  await act(async () => {
+    button?.click();
+  });
+};
+
+describe("VIEW-01 — panels are arrangeable in the real app", () => {
+  it("renders every panel from the arrangement", async () => {
+    window.localStorage.clear();
+    window.history.replaceState(null, "", "/view?session=demo");
+    const repo = map();
+    repo.touch(["a.ts"]);
+    stubDaemon([frame("snapshot", snapshotOf(repo, 1), 1)]);
+
+    const view = render(<App token={TOKEN} />);
+    await waitFor(() => expect(view.container.querySelector(".panel-map")).not.toBeNull());
+    expect(panelIds(view).sort()).toEqual(["agents", "files", "legend", "map"]);
+  });
+
+  it("moves the map out of `main` — the panel the layout used to be built around", async () => {
+    window.localStorage.clear();
+    window.history.replaceState(null, "", "/view?session=demo");
+    const repo = map();
+    repo.touch(["a.ts"]);
+    stubDaemon([frame("snapshot", snapshotOf(repo, 1), 1)]);
+
+    const view = render(<App token={TOKEN} />);
+    await waitFor(() => expect(view.container.querySelector(".panel-map")).not.toBeNull());
+    expect(regionOfPanel(view, "map")).toBe("main");
+
+    await press(view, "Move Repo map to the side region");
+
+    expect(regionOfPanel(view, "map")).toBe("side");
+    // `main` held only the map, so it is gone entirely rather than left as an
+    // empty column the layout still reserves space for.
+    expect(view.container.querySelector(".region-main")).toBeNull();
+  });
+
+  it("hides the map and keeps everything else working", async () => {
+    window.localStorage.clear();
+    window.history.replaceState(null, "", "/view?session=demo");
+    const repo = map();
+    repo.touch(["kept.ts"]);
+    stubDaemon([frame("snapshot", snapshotOf(repo, 1), 1)]);
+
+    const view = render(<App token={TOKEN} />);
+    await waitFor(() => expect(view.container.querySelector(".panel-map")).not.toBeNull());
+
+    await press(view, "Hide Repo map");
+
+    expect(view.container.querySelector(".panel-map")).toBeNull();
+    expect(view.container.querySelector(".panel-files"), "the rest survive").not.toBeNull();
+    expect(view.container.querySelector('[title="kept.ts"]'), "and still render").not.toBeNull();
+    expect(view.container.textContent).toContain("Hidden:");
+  });
+
+  it("brings a hidden panel back", async () => {
+    window.localStorage.clear();
+    window.history.replaceState(null, "", "/view?session=demo");
+    const repo = map();
+    repo.touch(["a.ts"]);
+    stubDaemon([frame("snapshot", snapshotOf(repo, 1), 1)]);
+
+    const view = render(<App token={TOKEN} />);
+    await waitFor(() => expect(view.container.querySelector(".panel-map")).not.toBeNull());
+    await press(view, "Hide Repo map");
+
+    const restore = [...view.container.querySelectorAll<HTMLButtonElement>(".hidden-panels button")];
+    await act(async () => {
+      restore[0]?.click();
+    });
+    expect(view.container.querySelector(".panel-map")).not.toBeNull();
+  });
+
+  it("VIEW-08 — switching sessions preserves EACH project's arrangement", async () => {
+    // The clause VIEW-08 could not satisfy until panels existed. The two
+    // sessions are in different projects, which is the grain the layout is
+    // keyed by.
+    window.localStorage.clear();
+    window.history.replaceState(null, "", "/view");
+    stubTwoSessions();
+
+    const view = render(<App token={TOKEN} />);
+    await waitFor(() => expect(view.container.querySelectorAll(".session-head")).toHaveLength(2));
+
+    const openSession = async (name: string) => {
+      const row = [...view.container.querySelectorAll<HTMLButtonElement>(".session-head")].find((r) =>
+        r.textContent?.includes(name),
+      );
+      await act(async () => {
+        row?.click();
+      });
+      await waitFor(() => expect(view.container.querySelector(".panel-map")).not.toBeNull());
+    };
+    const toOverview = async () => {
+      await act(async () => {
+        [...view.container.querySelectorAll<HTMLButtonElement>(".screens button")][0]?.click();
+      });
+    };
+
+    // Rearrange alpha only.
+    await openSession("alpha");
+    await press(view, "Hide Repo map");
+    expect(view.container.querySelector(".panel-map")).toBeNull();
+
+    // beta is untouched.
+    await toOverview();
+    await openSession("beta");
+    expect(view.container.querySelector(".panel-map"), "beta keeps the default").not.toBeNull();
+
+    // …and alpha still remembers.
+    await toOverview();
+    const alphaRow = [...view.container.querySelectorAll<HTMLButtonElement>(".session-head")].find(
+      (r) => r.textContent?.includes("alpha"),
+    );
+    await act(async () => {
+      alphaRow?.click();
+    });
+    await waitFor(() => expect(view.container.querySelector(".region")).not.toBeNull());
+    expect(view.container.querySelector(".panel-map"), "alpha stays rearranged").toBeNull();
+  });
+});

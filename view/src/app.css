@@ -74,29 +74,120 @@ header {
 
 main { display: flex; flex: 1 1 auto; min-height: 0; }
 
-.panel { flex: 1 1 auto; position: relative; min-width: 0; background: #08080b; }
-.panel.placeholder { display: grid; place-items: center; color: var(--dim); }
-
-aside {
-  flex: 0 0 320px;
-  border-left: 1px solid var(--line);
+/*
+ * VIEW-01 — regions are containers, not roles.
+ *
+ * Neither is "the big one": `flex-grow` is set inline from the weights of
+ * whatever panels the arrangement puts in them, so moving the map across moves
+ * the space with it. A region holding nothing is not rendered at all.
+ */
+.region {
   display: flex;
   flex-direction: column;
-  min-height: 0;      /* or a tall child stretches the column instead of scrolling */
-  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  flex-basis: 0;
+}
+.region-side { border-left: 1px solid var(--line); }
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  border-bottom: 1px solid var(--line);
+}
+.panel:last-child { border-bottom: 0; }
+/* The legend is the one panel whose content has a natural height; letting it
+   stretch would leave a band of empty space under a gradient. */
+.panel-legend { flex: 0 0 auto; }
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid #1c1c24;
+}
+.panel-head h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  margin: 0;
+}
+
+/* Visible on hover/focus, but never hidden from keyboards or screen readers. */
+.panel-controls { margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity 120ms; }
+.panel:hover .panel-controls, .panel-controls:focus-within { opacity: 1; }
+.panel-controls button {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--dim);
+  font: inherit;
+  line-height: 1;
+  padding: 2px 5px;
+  cursor: pointer;
+}
+.panel-controls button:hover:not(:disabled) { color: var(--text); border-color: var(--line); }
+.panel-controls button:disabled { opacity: 0.3; cursor: default; }
+.panel-controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.panel-body { flex: 1 1 auto; min-height: 0; overflow: auto; position: relative; }
+.panel-map .panel-body { overflow: hidden; }
+.panel-sub { font-size: 11px; color: var(--dim); margin: 0 0 6px; }
+
+.map { position: absolute; inset: 0; background: #08080b; }
+
+.panel.placeholder {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  color: var(--dim);
+  border-bottom: 0;
 }
 
 /*
- * Three independently scrolling regions rather than one long column.
- *
- * The legend is what makes the colours mean anything and the ranked list is the
- * map's keyboard-reachable equivalent (VIEW-07); neither may be pushed out of
- * sight by a session that happens to have spawned a lot of agents.
+ * The way back from hiding. Always visible while anything is hidden, rather
+ * than behind a menu: a layout you cannot obviously undo is one people will not
+ * risk rearranging in the first place.
  */
-aside > section { padding: 12px; min-height: 0; }
-aside > .rail { flex: 0 1 auto; max-height: 32%; overflow-y: auto; }
-aside > .grow { flex: 1 1 auto; overflow-y: auto; border-top: 1px solid var(--line); }
-aside > .foot { flex: 0 0 auto; border-top: 1px solid var(--line); }
+.hidden-panels {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+.hidden-panels button {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 9px;
+  cursor: pointer;
+}
+.hidden-panels button:hover { border-color: var(--accent); }
+.hidden-panels button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hidden-panels .reset { margin-left: auto; color: var(--dim); border-color: transparent; }
+
+/*
+ * Each panel scrolls on its own (`.panel-body`), which is what the fixed
+ * three-section sidebar used to provide — a session with many agents must not
+ * push the legend and the ranked list out of sight. That property now comes
+ * from the panel chrome, so every panel has it wherever it is placed.
+ */
+.panel-body > * { padding: 12px; }
+.panel-map .panel-body > * { padding: 0; }
 
 aside h2 {
   font-size: 11px;

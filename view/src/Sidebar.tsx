@@ -57,7 +57,9 @@ export function Hottest(props: HottestProps): JSX.Element {
 
   return (
     <div className="hottest">
-      <h2>{props.mode === "live" ? "Hottest now" : "Most touched"}</h2>
+      {/* Not a heading — the panel chrome supplies that. This says which
+          RANKING is being shown, which the panel title cannot. */}
+      <p className="panel-sub">{props.mode === "live" ? "Hottest now" : "Most touched"}</p>
       {ranked.length === 0 ? (
         <p className="empty">No files touched yet.</p>
       ) : (
@@ -148,7 +150,6 @@ export function Agents({ agents, receivedAt, now }: AgentsProps): JSX.Element {
 
   return (
     <div className="agents">
-      <h2>Agents</h2>
       {live.length === 0 ? (
         <p className="empty">Nothing running.</p>
       ) : (

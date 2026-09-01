@@ -9,3 +9,12 @@ dist/
 # `docs/` matches a directory, and this path is a SYMLINK, which git treats as
 # neither — so the link itself would show up as untracked and be committable.
 docs
+
+# Local environment. `.envrc` carries a GitHub token here (direnv exports it so
+# git's credential helper can authenticate pushes), and this repository is
+# PUBLIC — so an unignored copy is one `git add -A` away from publishing a
+# credential. It was never committed; this is what keeps it that way.
+.envrc
+.env
+.env.*
+!.env.example

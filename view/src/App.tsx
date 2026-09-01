@@ -2,10 +2,13 @@ import { type JSX, useEffect, useMemo, useState } from "react";
 import { describeConnection } from "../../src/status/connection";
 import type { MapMode } from "../../src/status/frames";
 import { blockedTotal } from "../../src/status/overview";
+import { allHidden, type PanelId, panelsIn, type Region, weightOf } from "../../src/status/panels";
 import { MapPanel } from "./MapPanel";
 import { Overview } from "./Overview";
+import { HiddenPanels, Panel } from "./Panel";
 import { Agents, Honesty, Hottest, Legend } from "./Sidebar";
 import { useNow } from "./useNow";
+import { usePanels } from "./usePanels";
 import { useSession, useWorld } from "./useSession";
 
 /** Which question the view is answering right now. */
@@ -44,6 +47,47 @@ export function App({ token }: { token: string }): JSX.Element {
   const elapsed = mode === "live" && snapshot !== null ? Math.max(0, now - receivedAt) : 0;
   const blocked = blockedTotal(world.sessions);
   const here = world.sessions.find((s) => s.sessionId === chosen);
+  // VIEW-01 — the layout follows the PROJECT, which outlives any one session.
+  // `here?.cwd` is known from the poll before the first frame arrives, so the
+  // saved arrangement is in place rather than flashing the default first.
+  const panels = usePanels(here?.cwd ?? snapshot?.cwd ?? null);
+
+  /**
+   * What each panel shows. The ONLY place a panel id is named — and it answers
+   * "what goes inside", never "where does it go" or "how much room does it
+   * get". Those come from the arrangement, which is what keeps the map a peer.
+   */
+  const content = (id: PanelId): JSX.Element | null => {
+    if (snapshot === null) return null;
+    switch (id) {
+      case "map":
+        return (
+          <MapPanel
+            files={files}
+            decay={snapshot.decay}
+            mode={mode}
+            receivedAt={receivedAt}
+            selected={selected}
+            onSelect={setSelected}
+          />
+        );
+      case "agents":
+        return <Agents agents={snapshot.agents} receivedAt={receivedAt} now={now} />;
+      case "files":
+        return (
+          <Hottest
+            files={files}
+            decay={snapshot.decay}
+            mode={mode}
+            elapsed={elapsed}
+            selected={selected}
+            onSelect={setSelected}
+          />
+        );
+      case "legend":
+        return <Legend mode={mode} />;
+    }
+  };
 
   const open = (sessionId: string): void => {
     setChosen(sessionId);
@@ -122,51 +166,56 @@ export function App({ token }: { token: string }): JSX.Element {
       ) : (
         <>
           {snapshot !== null && <Honesty counters={snapshot.counters} />}
-          <main>
-            {snapshot === null ? (
-              <div className="panel placeholder">
-                {connection.state === "unreachable"
-                  ? "Cannot reach the astir daemon."
-                  : "Waiting for the first frame…"}
-              </div>
-            ) : (
-              <MapPanel
-                files={files}
-                decay={snapshot.decay}
-                mode={mode}
-                receivedAt={receivedAt}
-                selected={selected}
-                onSelect={setSelected}
-              />
-            )}
+          <HiddenPanels
+            hidden={panels.arrangement.hidden}
+            onShow={(id) => panels.hide(id, false)}
+            onReset={panels.reset}
+          />
 
-            {/* Each region scrolls on its own. With one scroll for the whole
-                sidebar, a session with many agents pushed the legend and the
-                hottest-files list off the bottom — the two things the map is
-                unreadable without. */}
-            <aside>
-              <section className="rail">
-                <Agents agents={snapshot?.agents ?? []} receivedAt={receivedAt} now={now} />
-              </section>
-
-              <section className="grow">
-                {snapshot !== null && (
-                  <Hottest
-                    files={files}
-                    decay={snapshot.decay}
-                    mode={mode}
-                    elapsed={elapsed}
-                    selected={selected}
-                    onSelect={setSelected}
-                  />
-                )}
-              </section>
-
-              <section className="foot">
-                <Legend mode={mode} />
-              </section>
-            </aside>
-          </main>
+          {snapshot === null ? (
+            <div className="panel placeholder">
+              {connection.state === "unreachable"
+                ? "Cannot reach the astir daemon."
+                : "Waiting for the first frame…"}
+            </div>
+          ) : allHidden(panels.arrangement) ? (
+            <div className="panel placeholder">
+              Every panel is hidden. Restore one above, or reset the layout.
+            </div>
+          ) : (
+            /* VIEW-01 — the layout IS the arrangement. Nothing below asks which
+               panel it is looking at; regions are sized from the weights of
+               whatever they happen to contain, so moving the map to the side
+               moves the space with it. */
+            <main>
+              {(["main", "side"] as Region[]).map((region) => {
+                const inRegion = panelsIn(panels.arrangement, region);
+                if (inRegion.length === 0) return null;
+                return (
+                  <div
+                    key={region}
+                    className={`region region-${region}`}
+                    style={{ flexGrow: Math.max(1, weightOf(panels.arrangement, region)) }}
+                  >
+                    {inRegion.map((id, index) => (
+                      <Panel
+                        key={id}
+                        id={id}
+                        region={region}
+                        index={index}
+                        count={inRegion.length}
+                        onMove={(panel, to) => panels.move(panel, to)}
+                        onNudge={panels.nudge}
+                        onHide={(panel) => panels.hide(panel, true)}
+                      >
+                        {content(id)}
+                      </Panel>
+                    ))}
+                  </div>
+                );
+              })}
+            </main>
+          )}
         </>
       )}
     </div>

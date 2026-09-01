@@ -146,7 +146,7 @@ export function MapPanel(props: MapPanelProps): JSX.Element {
   };
 
   return (
-    <div className="panel map" ref={wrap}>
+    <div className="map" ref={wrap}>
       <canvas
         ref={canvas}
         style={{ width: "100%", height: "100%", display: "block" }}

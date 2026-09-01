@@ -62,14 +62,18 @@ live repo map served by the daemon itself.
 - [x] Live ⇄ session toggle over identical geometry (VIEW-10/SC11) — `layout()`
       does not take heat as an argument, so the geometry *cannot* vary with the
       mode.
-- [ ] User-arrangeable, hideable panels with the arrangement persisted (VIEW-01)
+- [x] User-arrangeable, hideable panels with the arrangement persisted (VIEW-01)
+      — layout is DATA, not structure: the map is an entry in a list that can be
+      sent to the side or hidden, and no code path asks whether a panel happens
+      to be the map. Persisted per PROJECT, because a session id is minted per
+      run and a layout keyed by one is written and never read again.
 - [x] Cross-session overview, blocked agents first (VIEW-09) — every agent on
       every session and machine, worst first. Sessions astir cannot hear are
       listed and labelled rather than filtered out; a view that shows only what
       it can hear looks calmest exactly when it is least entitled to.
 - [x] Session switcher (VIEW-08) — click any session to open its map, without a
-      reload or a second token. Panel arrangement is not preserved yet because
-      there are no arrangeable panels; that lands with VIEW-01.
+      reload or a second token. Its "preserves each one's panel arrangement"
+      clause is now satisfied too, since VIEW-01 landed.
 - [ ] Click-to-open a file in the host editor (VIEW-05)
 
 ## Milestone 4 — depth
