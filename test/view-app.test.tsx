@@ -8,11 +8,18 @@
  * nothing. Here the real `App` drives the real `useSession`, the real SSE
  * parser and the real reducer, over a stubbed socket.
  */
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, configure, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildSnapshot, diffSnapshots, type Snapshot } from "../src/status/frames.js";
 import { RepoMap } from "../src/model/map.js";
 import { App } from "../view/src/App.js";
+
+// Testing-library's 1000ms default is a guess about machine speed, and CI
+// runners are several times slower than a dev box — the Windows leg failed a
+// `waitFor` at ~1000ms for work that takes ~50ms here. Raising it does not mask
+// a genuine failure (that still fails, just later); it stops a slow scheduler
+// being reported as a broken assertion.
+configure({ asyncUtilTimeout: 5_000 });
 
 const TOKEN = "t".repeat(48);
 
@@ -317,6 +324,40 @@ function stubTwoSessions(): ReturnType<typeof vi.fn> {
   return fetchMock as unknown as ReturnType<typeof vi.fn>;
 }
 
+/**
+ * Click a session row, having first WAITED for the overview to render it.
+ *
+ * The bug this replaces: the row was queried synchronously right after the
+ * click that returned to the overview. When React had not re-rendered yet the
+ * lookup found nothing, `row?.click()` silently did nothing, and the *next*
+ * `waitFor` timed out a second later reporting "expected null not to be null"
+ * — an error about a map that never loaded, for a click that never happened.
+ *
+ * Windows CI hit it; a faster runner did not. Waiting for the precondition
+ * removes the race, and asserting the row was found turns any remaining
+ * surprise into an immediate, named failure instead of a timeout.
+ */
+async function openSession(view: ReturnType<typeof render>, project: string): Promise<void> {
+  await waitFor(() =>
+    expect(view.container.querySelectorAll(".session-head").length).toBeGreaterThan(0),
+  );
+  const row = [...view.container.querySelectorAll<HTMLButtonElement>(".session-head")].find((r) =>
+    r.textContent?.includes(project),
+  );
+  expect(row, `a session row for "${project}" on the overview`).toBeDefined();
+  await act(async () => {
+    row?.click();
+  });
+}
+
+async function backToOverview(view: ReturnType<typeof render>): Promise<void> {
+  const button = [...view.container.querySelectorAll<HTMLButtonElement>(".screens button")][0];
+  expect(button, "the Overview button").toBeDefined();
+  await act(async () => {
+    button?.click();
+  });
+}
+
 describe("the overview, and switching from it", () => {
   it("opens on the overview when no session was named", async () => {
     // "Which of these needs me" is the question you have on opening the view;
@@ -340,24 +381,12 @@ describe("the overview, and switching from it", () => {
     const view = render(<App token={TOKEN} />);
     await waitFor(() => expect(view.container.querySelectorAll(".session-head")).toHaveLength(2));
 
-    const rows = [...view.container.querySelectorAll<HTMLButtonElement>(".session-head")];
-    const alpha = rows.find((r) => r.textContent?.includes("alpha"));
-    await act(async () => {
-      alpha?.click();
-    });
+    await openSession(view, "alpha");
     await waitFor(() => expect(view.container.querySelector('[title="alpha-only.ts"]')).not.toBeNull());
 
     // Back to the overview, then into the other session.
-    const toOverview = [...view.container.querySelectorAll<HTMLButtonElement>(".screens button")][0];
-    await act(async () => {
-      toOverview?.click();
-    });
-    const beta = [...view.container.querySelectorAll<HTMLButtonElement>(".session-head")].find((r) =>
-      r.textContent?.includes("beta"),
-    );
-    await act(async () => {
-      beta?.click();
-    });
+    await backToOverview(view);
+    await openSession(view, "beta");
 
     await waitFor(() => expect(view.container.querySelector('[title="beta-only.ts"]')).not.toBeNull());
     expect(view.container.querySelector('[title="alpha-only.ts"]'), "the old map is gone").toBeNull();
@@ -498,39 +527,21 @@ describe("VIEW-01 — panels are arrangeable in the real app", () => {
     const view = render(<App token={TOKEN} />);
     await waitFor(() => expect(view.container.querySelectorAll(".session-head")).toHaveLength(2));
 
-    const openSession = async (name: string) => {
-      const row = [...view.container.querySelectorAll<HTMLButtonElement>(".session-head")].find((r) =>
-        r.textContent?.includes(name),
-      );
-      await act(async () => {
-        row?.click();
-      });
-      await waitFor(() => expect(view.container.querySelector(".panel-map")).not.toBeNull());
-    };
-    const toOverview = async () => {
-      await act(async () => {
-        [...view.container.querySelectorAll<HTMLButtonElement>(".screens button")][0]?.click();
-      });
-    };
-
     // Rearrange alpha only.
-    await openSession("alpha");
+    await openSession(view, "alpha");
+    await waitFor(() => expect(view.container.querySelector(".panel-map")).not.toBeNull());
     await press(view, "Hide Repo map");
     expect(view.container.querySelector(".panel-map")).toBeNull();
 
     // beta is untouched.
-    await toOverview();
-    await openSession("beta");
-    expect(view.container.querySelector(".panel-map"), "beta keeps the default").not.toBeNull();
+    await backToOverview(view);
+    await openSession(view, "beta");
+    await waitFor(() => expect(view.container.querySelector(".panel-map")).not.toBeNull());
 
-    // …and alpha still remembers.
-    await toOverview();
-    const alphaRow = [...view.container.querySelectorAll<HTMLButtonElement>(".session-head")].find(
-      (r) => r.textContent?.includes("alpha"),
-    );
-    await act(async () => {
-      alphaRow?.click();
-    });
+    // …and alpha still remembers. Waits on `.region` rather than `.panel-map`,
+    // because the map is exactly what should NOT be there.
+    await backToOverview(view);
+    await openSession(view, "alpha");
     await waitFor(() => expect(view.container.querySelector(".region")).not.toBeNull());
     expect(view.container.querySelector(".panel-map"), "alpha stays rearranged").toBeNull();
   });
