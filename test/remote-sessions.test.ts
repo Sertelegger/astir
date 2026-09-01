@@ -265,8 +265,50 @@ describe("merging the two routes", () => {
     expect(merged.map((x) => x.sessionId).sort()).toEqual(["polled", "pushed"]);
   });
 
-  it("does not merge the same session id across different hosts", () => {
-    const merged = mergeRemoteSessions([], [s({ host: "a" }), s({ host: "b" })]);
+  it("merges the same session even when the two routes name the machine differently", () => {
+    // The duplicate-row bug, reported from real use: the menu bar listed every
+    // remote session twice — once as `megabrain-dev` (the ssh alias the SSH
+    // poll used) and once as `claude-dev-geeklish` (the hostname the container
+    // puts in its own roster). Same session, two labels, so a host-qualified
+    // key never matched.
+    //
+    // A session id is a UUID, so the same id under two host strings always
+    // means one machine wearing two names — never two machines.
+    const merged = mergeRemoteSessions(
+      [s({ sessionId: "one", host: "claude-dev-geeklish", source: "push", status: "busy" })],
+      [s({ sessionId: "one", host: "megabrain-dev", status: "idle" })],
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.status, "the push wins on state").toBe("busy");
+    expect(merged[0]?.source).toBe("push");
+    expect(merged[0]?.host, "but the alias the user configured wins on name").toBe("megabrain-dev");
+  });
+
+  it("keeps the machine's own name when only the push knows about it", () => {
+    // Nothing polled it, so its hostname is the only name there is.
+    const merged = mergeRemoteSessions(
+      [s({ sessionId: "one", host: "claude-dev-geeklish", source: "push" })],
+      [],
+    );
+    expect(merged[0]?.host).toBe("claude-dev-geeklish");
+  });
+
+  it("collapses one machine watched under two aliases", () => {
+    // `astir watch megabrain-dev` and `astir watch 192.168.111.16` are the same
+    // box; its sessions must not appear twice for that either.
+    const merged = mergeRemoteSessions(
+      [],
+      [s({ sessionId: "one", host: "megabrain-dev" }), s({ sessionId: "one", host: "192.168.111.16" })],
+    );
+    expect(merged).toHaveLength(1);
+  });
+
+  it("still keeps genuinely different sessions apart", () => {
+    const merged = mergeRemoteSessions(
+      [],
+      [s({ sessionId: "one", host: "a" }), s({ sessionId: "two", host: "b" })],
+    );
     expect(merged).toHaveLength(2);
   });
 });

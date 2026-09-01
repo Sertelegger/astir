@@ -983,3 +983,73 @@ describe("a dead local daemon does not hide the other machines", () => {
     expect(out).not.toContain("Other machines");
   });
 });
+
+describe("a remote session appears once, not once per route", () => {
+  it("does not list the same session under both its alias and its hostname", () => {
+    // Reported from real use: every megabrain-dev session showed twice in the
+    // menu bar — once from the Mac's SSH poll (alias) and once from the
+    // container's roster push (hostname).
+    const shared = {
+      sessionId: "s-one",
+      cwd: "/home/dev/repos/astir",
+      name: "astir-aa",
+      lastSeen: 1,
+    };
+    const out = renderMenubar(
+      {
+        ok: true,
+        body: {
+          blockedCount: 0,
+          sessions: [],
+          remote: [{ ...shared, host: "megabrain-dev", status: "idle", source: "ssh" }],
+        },
+      },
+      {
+        invocation: ["astir"],
+        remote: {
+          agents: [],
+          sessions: [{ ...shared, host: "claude-dev-geeklish", status: "busy", source: "push" }],
+        },
+      },
+    );
+
+    const rows = out.split("\n").filter((l) => l.includes("astir") && !l.startsWith("--"));
+    expect(rows.filter((l) => l.includes("·")).length, out).toBe(1);
+    expect(out).toContain("megabrain-dev");
+    expect(out).not.toContain("claude-dev-geeklish");
+  });
+
+  it("still lists two genuinely different remote sessions", () => {
+    const out = renderMenubar(
+      { ok: true, body: { blockedCount: 0, sessions: [], remote: [] } },
+      {
+        invocation: ["astir"],
+        remote: {
+          agents: [],
+          sessions: [
+            {
+              host: "box",
+              sessionId: "a",
+              cwd: "/x/one",
+              name: null,
+              status: "idle",
+              source: "push",
+              lastSeen: 1,
+            },
+            {
+              host: "box",
+              sessionId: "b",
+              cwd: "/x/two",
+              name: null,
+              status: "idle",
+              source: "push",
+              lastSeen: 1,
+            },
+          ],
+        },
+      },
+    );
+    expect(out).toContain("one");
+    expect(out).toContain("two");
+  });
+});

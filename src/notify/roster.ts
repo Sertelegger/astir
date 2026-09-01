@@ -122,11 +122,19 @@ export class RosterStore {
  * whatever discovery happened to report a moment ago.
  */
 export function mergeRemoteSessions(pushed: RemoteSession[], polled: RemoteSession[]): RemoteSession[] {
-  const byKey = new Map<string, RemoteSession>();
-  const key = (s: RemoteSession): string => `${s.host} ${s.sessionId}`;
-  for (const s of polled) byKey.set(key(s), s);
-  for (const s of pushed) byKey.set(key(s), s);
-  return [...byKey.values()];
+  const byId = new Map<string, RemoteSession>();
+  for (const s of polled) byId.set(s.sessionId, s);
+  for (const s of pushed) {
+    const alreadyPolled = byId.get(s.sessionId);
+    // The push wins on STATE — it comes from the daemon actually watching the
+    // session — but the poll wins on NAME. The two routes label the same
+    // machine differently: a poll carries the ssh alias the user configured
+    // (`megabrain-dev`), a push carries whatever the box calls itself
+    // (`claude-dev-geeklish`). The alias is the name they chose and the one
+    // `astir watch` takes; the hostname was assigned to it.
+    byId.set(s.sessionId, alreadyPolled === undefined ? s : { ...s, host: alreadyPolled.host });
+  }
+  return [...byId.values()];
 }
 
 /** The notifier advertises `.../notify`; its roster route sits beside it. */
