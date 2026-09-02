@@ -467,7 +467,7 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
 }
 
 /**
- * #5 — a machine-readable view, and the data source the menu-bar item consumes.
+ * #3 — a machine-readable view, and the data source the menu-bar item consumes.
  * Kept as a plain command deliberately: if the tray approach changes, the same
  * output still feeds a shell prompt, a statusline, or a different implementation.
  */
