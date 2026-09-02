@@ -115,7 +115,7 @@ export interface Delta {
   name?: string | null;
   agents?: {
     upsert?: AgentFrame[];
-    /** #13 — a frame that cannot express removal leaves ghosts on the map. */
+    /** #11 — a frame that cannot express removal leaves ghosts on the map. */
     remove?: string[];
   };
   /** Files are grow-only: a touched file never stops having been touched. */

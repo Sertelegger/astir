@@ -110,7 +110,7 @@ function toFrame(a: StatusAgent) {
   };
 }
 
-describe("#13 — deltas can express removal", () => {
+describe("#11 — deltas can express removal", () => {
   it("removes an agent that is gone", () => {
     const two = snap({ agents: [toFrame(agent()), toFrame(agent({ id: "a2" }))] });
     const one = snap({ seq: 2, agents: [toFrame(agent())] });

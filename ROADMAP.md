@@ -19,7 +19,7 @@ The rebuild is driven by a rewritten spec (kept locally) and this order:
 
 ## Milestone 2 — you find out without looking
 
-- [x] macOS menu-bar item: working / thinking / **blocked** / idle, badged with the blocked count (via SwiftBar — see #21 for the native replacement)
+- [x] macOS menu-bar item: working / thinking / **blocked** / idle, badged with the blocked count (via SwiftBar — see #17 for the native replacement)
 - [x] Cross-boundary delivery — a session behind SSH, tmux, WSL or a container reaches the workstation
 - [x] Per-state notification lifetimes (transient states decay; "needs input" persists)
 - [x] Multi-session awareness: which session needs you, not just that one does
@@ -85,7 +85,7 @@ live repo map served by the daemon itself.
 ## Known gaps
 
 - A daemon restart blinds astir to every running session until it next acts
-  ([#32](https://github.com/Sertelegger/astir/issues/32)). The *reporting* is
+  ([#18](https://github.com/Sertelegger/astir/issues/18)). The *reporting* is
   honest — a session older than the daemon says so rather than claiming its
   hooks are unwired — but the hole is described, not filled, and `astir
   autostart`'s `KeepAlive` makes restarts more frequent. Fixing it means
@@ -94,7 +94,7 @@ live repo map served by the daemon itself.
 
 ## Later, deliberately deferred
 
-- A native macOS menu-bar app to replace the SwiftBar plugin (#21). The current
+- A native macOS menu-bar app to replace the SwiftBar plugin (#17). The current
   surface works and is proven, but requires installing a third-party host app —
   and, more importantly, an unsigned Node process cannot own a macOS permission
   identity: TCC attributes one to the `node` binary, which is both too broad and
