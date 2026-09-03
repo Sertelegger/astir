@@ -82,6 +82,14 @@ describe("the CVD simulation is real, not a pass-through", () => {
     const red = { r: 220, g: 40, b: 40 };
     expect(deltaE(red, simulate(red, "protanopia"))).toBeGreaterThan(20);
     expect(deltaE(red, simulate(red, "deuteranopia"))).toBeGreaterThan(10);
+
+    // Tritanopia needs its own swatch rather than a third line on `red`: it is
+    // the blue-yellow axis, and red barely moves under it (ΔE 11.9), which is
+    // presumably why this arm was missing. Blue moves by 77. Without this the
+    // tritanopia column of every check above is satisfied by an identity
+    // matrix, while the README and the roadmap both claim it is asserted here.
+    const blue = { r: 40, g: 80, b: 220 };
+    expect(deltaE(blue, simulate(blue, "tritanopia"))).toBeGreaterThan(20);
   });
 
   it("leaves greys almost untouched, as dichromacy does", () => {
