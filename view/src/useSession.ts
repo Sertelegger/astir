@@ -108,6 +108,9 @@ export function useSession(
           }
           advance({ type: "open", at: Date.now() });
 
+          // Set when a `seq` gap means this connection's base can no longer be
+          // trusted; reconnecting is the repair, not an error to report.
+          let resync = false;
           for await (const message of readSse(res.body, abort.signal)) {
             if (message.event === "end") {
               advance({ type: "end" });
@@ -118,11 +121,31 @@ export function useSession(
               continue;
             }
             if (message.event === "delta" && base.current !== null) {
+              const delta = JSON.parse(message.data) as Delta;
+              // VIEW-02 — `seq` counts frames actually SENT, so consecutive
+              // ones differ by exactly 1 and a jump means a frame was lost.
+              // Applying the next delta anyway would merge it into a base that
+              // never saw the missing one, and the map would then be wrong in a
+              // way that never repairs itself: files are grow-only, so nothing
+              // later removes a tile that should not be there, and the error is
+              // invisible because a stale tile looks exactly like a real one.
+              //
+              // Re-opening is the whole repair. The daemon's opening message is
+              // always a snapshot, so the cost is one reconnect and the result
+              // is exact. Deliberately NOT routed through the catch below:
+              // nothing is wrong with the connection, and reporting it as lost
+              // would put a false error in front of the user.
+              if (delta.seq !== base.current.seq + 1) {
+                base.current = null;
+                resync = true;
+                break;
+              }
               // `applyDelta` itself drops a frame whose session id does not
               // match, so a crossed stream cannot silently merge two repos.
-              publish(applyDelta(base.current, JSON.parse(message.data) as Delta));
+              publish(applyDelta(base.current, delta));
             }
           }
+          if (resync) continue;
           // The body ended without an `end` event: the daemon went away rather
           // than the session finishing. Those mean different things.
           throw new Error("stream closed");

@@ -47,6 +47,21 @@ const STREAM_HEARTBEAT_MS = 15_000;
  */
 const MAX_STREAMS = 16;
 
+/**
+ * Bytes allowed to queue for one /stream before the client is dropped.
+ *
+ * `res.write()` buffers in the daemon's memory whatever the socket has not
+ * accepted yet, and returns false rather than throwing — so a client that has
+ * stopped reading but not closed (a suspended laptop, a paused tab, a stalled
+ * tunnel) is invisible to the error path and grows this without bound. The
+ * ceiling has to clear a snapshot comfortably, since a large repo's opening
+ * frame is the biggest single write there is, while still being small enough
+ * that sixteen stalled clients cannot matter. Dropping is safe: the next
+ * connection opens with a snapshot, so a dropped client loses nothing but the
+ * gap it was already failing to read.
+ */
+const MAX_STREAM_BUFFER_BYTES = 1024 * 1024;
+
 export interface DaemonOpts {
   token: string;
   registry: Registry;
@@ -86,6 +101,16 @@ export interface DaemonOpts {
   viewRoot?: string;
   /** Injectable so the stream's tick rate is not a test's wall-clock cost. */
   streamTickMs?: number;
+  /**
+   * How many bytes are queued for a client and not yet accepted by its socket.
+   *
+   * Injectable because the condition cannot be produced on demand: a client
+   * that stops reading does not create backpressure until the kernel's own
+   * buffer fills, so a test would have to move megabytes and still race. This
+   * seam replaces only the measurement — the threshold, the drop and the
+   * counter are the production ones.
+   */
+  streamBufferedBytes?: (res: ServerResponse) => number;
 }
 
 /** CAP-05 route 1 — read `<session>/subagents/agent-<id>.meta.json`. */
@@ -128,6 +153,7 @@ export class Daemon {
   private readonly nowSeconds: () => number;
   private readonly viewRoot: string;
   private readonly streamTickMs: number;
+  private readonly streamBufferedBytes: (res: ServerResponse) => number;
   /** OBS-01 — every counter here is incremented by a real code path. */
   private counters = {
     ingested: 0,
@@ -155,6 +181,8 @@ export class Daemon {
     framesSent: 0,
     /** Connections refused at MAX_STREAMS. Non-zero means something is leaking. */
     streamsRefused: 0,
+    /** Streams dropped for not draining. Distinct from a client that closed. */
+    streamsDropped: 0,
   };
   /** Teardown for each live /stream, so shutdown is not blocked by one. */
   private readonly openStreams = new Set<() => void>();
@@ -178,6 +206,7 @@ export class Daemon {
     this.nowSeconds = opts.nowSeconds ?? (() => Date.now() / 1000);
     this.viewRoot = opts.viewRoot ?? viewRootFor(import.meta.url);
     this.streamTickMs = opts.streamTickMs ?? STREAM_TICK_MS;
+    this.streamBufferedBytes = opts.streamBufferedBytes ?? ((r) => r.writableLength);
     this.server = createServer((req, res) => {
       // DMN-04 — no inbound request may terminate the process.
       this.route(req, res).catch((err: unknown) => {
@@ -427,6 +456,15 @@ export class Daemon {
 
     const push = (): void => {
       if (closed) return;
+      // A client that has stopped reading without closing never reaches the
+      // catch below — `write` buffers for it instead. Checking before the
+      // write rather than after gives it a full tick to drain a large
+      // snapshot, and refuses to pile onto a buffer already over the line.
+      if (this.streamBufferedBytes(res) > MAX_STREAM_BUFFER_BYTES) {
+        this.counters.streamsDropped++;
+        stop();
+        return;
+      }
       const message = state.next(observe());
       if (message === null) return;
       // A client that has gone away without the socket noticing yet makes this

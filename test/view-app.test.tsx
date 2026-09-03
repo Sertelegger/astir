@@ -141,6 +141,134 @@ describe("the assembled view", () => {
     expect(view.container.querySelectorAll(".hottest .row")).toHaveLength(3);
   });
 
+  it("re-opens on a `seq` gap rather than merging onto a base that never saw the missing frame", async () => {
+    // #11 — `seq` counts frames actually SENT, so a jump means one was lost.
+    // Applying the next delta anyway is worse than it sounds: files are
+    // grow-only, so nothing later removes a tile merged from a gapped delta,
+    // and a stale tile is indistinguishable from a real one. The map would be
+    // quietly wrong for the rest of the session.
+    const repo = map();
+    repo.touch(["src/a.ts"]);
+    const opening = snapshotOf(repo, 1);
+
+    // A delta labelled seq 3 when the base is at 1: frame 2 never arrived.
+    const gapped = {
+      kind: "delta",
+      v: opening.v,
+      sessionId: "demo",
+      seq: 3,
+      files: { upsert: [{ path: "src/ghost.ts", total: 1, heat: 1, ageMs: 0 }] },
+    };
+
+    // What the daemon serves on the reconnect: a fresh snapshot, no ghost.
+    const repo2 = map();
+    repo2.touch(["src/a.ts", "src/real.ts"]);
+    const resynced = snapshotOf(repo2, 9);
+
+    let streamCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/state")) {
+        return new Response(
+          JSON.stringify({
+            sessions: [
+              {
+                sessionId: "demo",
+                name: "astir-aa",
+                cwd: "/repo",
+                status: "busy",
+                pid: 1,
+                agents: [],
+                files: { touched: 2 },
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.startsWith("/stream")) {
+        streamCalls++;
+        const blocks =
+          streamCalls === 1
+            ? [frame("snapshot", opening, 1), frame("delta", gapped, 3)]
+            : [frame("snapshot", resynced, 9)];
+        return new Response(sseBody(blocks), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const view = render(<App token={TOKEN} />);
+
+    // The gap forces a second connection...
+    await waitFor(() => expect(streamCalls).toBeGreaterThanOrEqual(2));
+    // ...and the resynced snapshot is what renders.
+    await waitFor(() => {
+      expect(view.container.querySelector('[title="src/real.ts"]')).not.toBeNull();
+    });
+    // The ghost from the gapped delta was never merged.
+    expect(view.container.querySelector('[title="src/ghost.ts"]')).toBeNull();
+  });
+
+  it("VIEW-05 — clicking a file copies its ABSOLUTE path and says so", async () => {
+    // The map shows relative paths because that is what makes it readable, but
+    // a relative path pasted anywhere resolves against the wrong directory —
+    // which is the one thing it must not do when the point is to reach a file
+    // in a repo you may not be sitting in.
+    const repo = map();
+    repo.touch(["src/a.ts"]);
+    stubDaemon([frame("snapshot", snapshotOf(repo, 1), 1)]);
+
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+    const view = render(<App token={TOKEN} />);
+    await waitFor(() => expect(view.container.querySelector(".hottest .row")).not.toBeNull());
+
+    const row = view.container.querySelector(".hottest .row") as HTMLButtonElement;
+    await act(async () => {
+      row.click();
+    });
+
+    expect(writeText).toHaveBeenCalledWith("/repo/src/a.ts");
+    await waitFor(() => expect(view.container.textContent).toContain("Copied"));
+    expect(view.container.querySelector(".copied")?.textContent).toContain("/repo/src/a.ts");
+  });
+
+  it("VIEW-05 — a clipboard the browser REFUSED is not reported as a copy", async () => {
+    // The clipboard needs a permission a page can be denied. Reporting the
+    // refusal as success leaves the path nowhere at all, and the user believing
+    // it is on their clipboard — so the fallback shows the path to copy by hand.
+    const repo = map();
+    repo.touch(["src/a.ts"]);
+    stubDaemon([frame("snapshot", snapshotOf(repo, 1), 1)]);
+
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: vi.fn(async () => {
+          throw new Error("denied");
+        }),
+      },
+      configurable: true,
+    });
+
+    const view = render(<App token={TOKEN} />);
+    await waitFor(() => expect(view.container.querySelector(".hottest .row")).not.toBeNull());
+
+    const row = view.container.querySelector(".hottest .row") as HTMLButtonElement;
+    await act(async () => {
+      row.click();
+    });
+
+    await waitFor(() => expect(view.container.querySelector(".copied.failed")).not.toBeNull());
+    expect(view.container.textContent).toContain("Could not copy");
+    // The path is still shown, or the refusal would leave it unreachable.
+    expect(view.container.querySelector(".copied")?.textContent).toContain("/repo/src/a.ts");
+  });
+
   it("sends the bearer token on the stream, not in the URL", async () => {
     // The whole reason the page takes its token from a fragment. A token in the
     // query string lands in every log the request passes through.

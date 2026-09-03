@@ -72,6 +72,20 @@ header {
 .honesty.warn { background: #3a2411; border-bottom-color: #6b4318; color: #ffce8f; }
 .honesty.note { background: #16161d; color: var(--dim); }
 
+/* VIEW-05 — confirmation that a click put a path on the clipboard. Shares the
+   honesty bar's slot deliberately: both report something that just happened
+   rather than something that is true. */
+.copied {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--dim);
+  background: #16161d;
+  border-bottom: 1px solid #23232d;
+}
+.copied code { color: var(--fg); font-family: inherit; }
+.copied.failed { background: #3a2411; border-bottom-color: #6b4318; color: #ffce8f; }
+
 main { display: flex; flex: 1 1 auto; min-height: 0; }
 
 /*

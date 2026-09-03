@@ -3,6 +3,7 @@ import { describeConnection } from "../../src/status/connection";
 import type { MapMode } from "../../src/status/frames";
 import { blockedTotal } from "../../src/status/overview";
 import { allHidden, type PanelId, panelsIn, type Region, weightOf } from "../../src/status/panels";
+import { absolutePathOf } from "../../src/status/paths";
 import { MapPanel } from "./MapPanel";
 import { Overview } from "./Overview";
 import { HiddenPanels, Panel } from "./Panel";
@@ -24,6 +25,12 @@ export function App({ token }: { token: string }): JSX.Element {
   const [screen, setScreen] = useState<Screen>(asked === null ? "overview" : "map");
   const [mode, setMode] = useState<MapMode>("live");
   const [selected, setSelected] = useState<string | null>(null);
+  // VIEW-05 — what a click just did with a path, shown briefly. A copy nobody
+  // can see is indistinguishable from a dead click, and a copy the browser
+  // REFUSED must not be reported as one that worked: the clipboard needs a
+  // permission that a page can be denied, and the path is then still only on
+  // screen. Showing it is what makes that recoverable.
+  const [copied, setCopied] = useState<{ path: string; ok: boolean } | null>(null);
   // Ticks once a second so every duration on screen advances between frames —
   // neither the stream nor the poll fires just because a clock moved.
   const now = useNow();
@@ -58,6 +65,39 @@ export function App({ token }: { token: string }): JSX.Element {
   // saved arrangement is in place rather than flashing the default first.
   const panels = usePanels(here?.cwd ?? snapshot?.cwd ?? null);
 
+  // The confirmation is transient by design: it reports an action, not a state,
+  // and one that stayed put would start reading as "this file is selected".
+  useEffect(() => {
+    if (copied === null) return;
+    const t = setTimeout(() => setCopied(null), 3_000);
+    return () => clearTimeout(t);
+  }, [copied]);
+
+  /**
+   * VIEW-05 — clicking a file.
+   *
+   * The spec's first clause hands the path to a host that owns an editor; that
+   * host is the VSCode webview, and `astir view` is an ordinary browser tab. So
+   * the clause that applies here is the second: copy the path and confirm.
+   *
+   * Selecting as well, because the click already meant "this one" — cross
+   * highlighting the map and the ranked list is what tells you WHICH file you
+   * just copied when the two disagree about ordering.
+   */
+  const copyPath = (path: string): void => {
+    setSelected(path);
+    const absolute = absolutePathOf(snapshot?.cwd ?? "", path);
+    const clipboard = navigator.clipboard;
+    if (clipboard === undefined) {
+      setCopied({ path: absolute, ok: false });
+      return;
+    }
+    void clipboard.writeText(absolute).then(
+      () => setCopied({ path: absolute, ok: true }),
+      () => setCopied({ path: absolute, ok: false }),
+    );
+  };
+
   /**
    * What each panel shows. The ONLY place a panel id is named — and it answers
    * "what goes inside", never "where does it go" or "how much room does it
@@ -74,7 +114,7 @@ export function App({ token }: { token: string }): JSX.Element {
             mode={mode}
             receivedAt={receivedAt}
             selected={selected}
-            onSelect={setSelected}
+            onSelect={copyPath}
           />
         );
       case "agents":
@@ -87,7 +127,7 @@ export function App({ token }: { token: string }): JSX.Element {
             mode={mode}
             elapsed={elapsed}
             selected={selected}
-            onSelect={setSelected}
+            onSelect={copyPath}
           />
         );
       case "legend":
@@ -171,6 +211,12 @@ export function App({ token }: { token: string }): JSX.Element {
         />
       ) : (
         <>
+          {copied !== null && (
+            <p className={copied.ok ? "copied" : "copied failed"} role="status">
+              {copied.ok ? "Copied " : "Could not copy — select and copy: "}
+              <code>{copied.path}</code>
+            </p>
+          )}
           {snapshot !== null && <Honesty counters={snapshot.counters} />}
           <HiddenPanels
             hidden={panels.arrangement.hidden}
