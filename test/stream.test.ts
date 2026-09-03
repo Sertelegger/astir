@@ -150,12 +150,17 @@ afterEach(async () => {
   for (const close of open.splice(0)) await close();
 });
 
-async function serve(registry: Registry, streamTickMs = 10): Promise<number> {
+async function serve(
+  registry: Registry,
+  streamTickMs = 10,
+  streamBufferedBytes?: () => number,
+): Promise<number> {
   const daemon = new Daemon({
     token: TOKEN,
     registry,
     streamTickMs,
     viewRoot: "/nonexistent-view-root",
+    ...(streamBufferedBytes === undefined ? {} : { streamBufferedBytes }),
   });
   const port = await daemon.listen(0);
   open.push(() => daemon.close());
@@ -260,6 +265,37 @@ describe("GET /stream", () => {
     expect(got.events.map((e) => e.kind)).toEqual(["snapshot", "delta"]);
     const delta = got.events[1]?.data as unknown as Delta | undefined;
     expect(delta?.files?.upsert.map((f) => f.path)).toEqual(["src/live.ts"]);
+  });
+
+  it("drops a client that stops draining, rather than buffering for it forever", async () => {
+    // #11 — the failure `write`'s error path cannot see. A suspended laptop or
+    // a stalled tunnel leaves the socket open and simply stops reading, so
+    // nothing throws and nothing closes; the daemon just accumulates.
+    //
+    // Only the MEASUREMENT is faked. A client that stops reading does not
+    // create backpressure until the kernel's own buffer fills, so producing
+    // this for real would mean moving megabytes and still racing. The
+    // threshold, the drop and the counter are production code.
+    let stalled = false;
+    const registry = registryWithSession();
+    const port = await serve(registry, 10, () => (stalled ? 2 * 1024 * 1024 : 0));
+    const res = await stream(port, "s1");
+    const got = read(res, 1);
+    await got.done;
+
+    // A healthy client is not dropped, however long it stays connected.
+    await new Promise((r) => setTimeout(r, 60));
+    expect((await counters(port)).streamsOpen).toBe(1);
+    expect((await counters(port)).streamsDropped).toBe(0);
+
+    // Now it stops draining while leaving the socket open.
+    stalled = true;
+    await new Promise((r) => setTimeout(r, 60));
+
+    const after = await counters(port);
+    expect(after.streamsDropped).toBe(1);
+    expect(after.streamsOpen).toBe(0);
+    got.cancel();
   });
 
   it("releases the connection slot when the client goes away", async () => {
