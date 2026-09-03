@@ -5,7 +5,7 @@ Know when an AI coding agent is blocked on you — and where in your repo it's w
 *astir* — awake, in motion, stirring. Which is the question: **is anything astir,
 and does any of it need me?**
 
-> **Status: early.** The daemon receives live events from real Claude Code sessions, raises notifications, and drives a macOS menu bar — including sessions on other machines. The repo *map* and web view aren't built yet. See [ROADMAP.md](ROADMAP.md).
+> **Status: early.** The daemon receives live events from real Claude Code sessions, raises notifications, and drives a macOS menu bar — including sessions on other machines. `astir view` opens the web view: a live repo map, a cross-session overview, and panels you arrange. See [ROADMAP.md](ROADMAP.md).
 >
 > An earlier version of this project existed and had never actually run — its hook entrypoint exported a `main()` that nothing called, so no event ever reached it, and 214 passing tests never noticed. That version's design also normalized heat colour against the *current maximum*, which is invariant under decay, so its map could never cool. Both defects were in the design, not just the code. This is the rebuild.
 
