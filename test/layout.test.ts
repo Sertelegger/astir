@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { type DecayParams, type FileFrame, shades } from "../src/status/frames.js";
 import { layout, type Rect, type Sized } from "../src/status/layout.js";
 
 const AREA: Rect = { x: 0, y: 0, w: 800, h: 600 };
@@ -69,12 +70,32 @@ describe("tiles do not overlap and stay inside their area", () => {
 });
 
 describe("VIEW-10 — geometry cannot depend on the mode", () => {
-  it("does not accept heat at all, so it cannot vary with it", () => {
-    // Enforced by the signature rather than by discipline: `layout` sees paths
-    // and totals, both of which mean the same thing in either mode. This test
-    // documents the property; the compiler is what guarantees it.
-    const files = [f("early.ts", 20), f("late.ts", 1)];
-    expect(layout(files, AREA)).toEqual(layout([...files], AREA));
+  it("gives equal totals equal tiles, whatever their heat", () => {
+    // `layout` sees paths and totals; heat is not a parameter, and the
+    // signature is the real guard. This pins the observable consequence,
+    // because the compiler only refuses a *new* parameter — nothing stops
+    // someone folding heat into the tile weight through the `Sized` it already
+    // gets. Then the map reflows every time it cools, which is the failure
+    // VIEW-10/SC11 exists to prevent.
+    const decay: DecayParams = { halfLifeMs: 60_000, referenceHeat: 2, idleFloor: 0.05 };
+    // The same totals reached two ways, per the distinction FileFrame.heat
+    // documents: twenty touches in a minute carries far more heat than twenty
+    // spread across an hour. Totals are equal, so the tiles must be equal.
+    const bursty: FileFrame[] = [
+      { path: "early.ts", total: 20, heat: 9, ageMs: 0 },
+      { path: "late.ts", total: 1, heat: 1, ageMs: 0 },
+    ];
+    const spread: FileFrame[] = [
+      { path: "early.ts", total: 20, heat: 1.2, ageMs: 0 },
+      { path: "late.ts", total: 1, heat: 0.9, ageMs: 0 },
+    ];
+
+    // If the shading did not actually move, the geometry check below would
+    // pass for the wrong reason.
+    const intensities = (fs: FileFrame[]) => shades(fs, "live", 0, decay).map((s) => s.intensity);
+    expect(intensities(spread)).not.toEqual(intensities(bursty));
+
+    expect(layout(spread, AREA).tiles).toEqual(layout(bursty, AREA).tiles);
   });
 
   it("is stable when nothing has been touched since the last frame", () => {
