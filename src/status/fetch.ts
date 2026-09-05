@@ -49,6 +49,14 @@ export interface RemoteAgentView {
 export async function fetchRemote(
   port: number,
   timeoutMs = 3_000,
+  /**
+   * This machine's name, for deciding what came from here. Injectable so a test
+   * never has to derive a fixture from the real hostname — building one by
+   * appending to `hostname()` produces a DIFFERENT host on Linux and the SAME
+   * one on macOS, where the name carries a `.local` suffix and the comparison
+   * is on the first label.
+   */
+  selfHost: string = hostname(),
 ): Promise<{ agents: RemoteAgentView[]; sessions: RemoteSession[] } | null> {
   const token = process.env.ASTIR_NOTIFY_TOKEN ?? process.env.ASTIR_TOKEN ?? readTokenIfPresent();
   if (token === null) return null;
@@ -73,10 +81,9 @@ export async function fetchRemote(
     // Both halves, not just sessions: a doorbell carries an origin host too and
     // is not origin-checked on the way in, so the blocked-agent list reflects
     // by the same route.
-    const self = hostname();
     return {
-      agents: (body.agents ?? []).filter((a) => !sameHost(a.host, self)),
-      sessions: (body.sessions ?? []).filter((s) => !sameHost(s.host, self)),
+      agents: (body.agents ?? []).filter((a) => !sameHost(a.host, selfHost)),
+      sessions: (body.sessions ?? []).filter((s) => !sameHost(s.host, selfHost)),
     };
   } catch {
     return null;
