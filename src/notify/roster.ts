@@ -18,6 +18,7 @@
  */
 
 import type { RemoteSession } from "../status/types.js";
+import { sameHost } from "./envelope.js";
 
 /** A roster is a handful of small records; anything larger is a bug. */
 export const MAX_ROSTER_SESSIONS = 200;
@@ -135,6 +136,31 @@ export function mergeRemoteSessions(pushed: RemoteSession[], polled: RemoteSessi
     byId.set(s.sessionId, alreadyPolled === undefined ? s : { ...s, host: alreadyPolled.host });
   }
   return [...byId.values()];
+}
+
+/**
+ * DMN-10, read side — drop the sessions this machine pushed itself.
+ *
+ * The notifier already refuses a roster whose origin is its own host, and that
+ * check is correct, but it only protects a notifier from the daemon beside it.
+ * It cannot protect a daemon from a notifier, and over `ssh -R` that is exactly
+ * the shape: a daemon forwards its roster to a notifier on another machine —
+ * which accepts it, rightly, because from there it IS remote — and then polls
+ * that same notifier on 127.0.0.1 and reads its own sessions back. Every local
+ * session then appears a second time under "Other machines", attributed to the
+ * very box displaying it.
+ *
+ * Only the pushing machine sees this. A notifier's own daemon polls a roster
+ * that never contained its sessions, so its view is right and the fault looks
+ * like it belongs to the other end.
+ *
+ * Compared on the first label, and case-insensitively, because the two ends do
+ * not agree on how a host is spelled: `hostname()` may return a FQDN on one and
+ * a short name on the other, and a comparison that misses is invisible — it
+ * fails open, restoring precisely the duplication this exists to remove.
+ */
+export function dropSelfSessions(sessions: readonly RemoteSession[], selfHost: string): RemoteSession[] {
+  return sessions.filter((s) => !sameHost(s.host, selfHost));
 }
 
 /** The notifier advertises `.../notify`; its roster route sits beside it. */

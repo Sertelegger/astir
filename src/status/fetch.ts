@@ -1,6 +1,8 @@
 /** Shared daemon query for the `status` and `menubar` surfaces. */
 
+import { hostname } from "node:os";
 import { readTokenIfPresent } from "../config/paths.js";
+import { sameHost } from "../notify/envelope.js";
 import type { RemoteSession, StatusBody, StatusResult } from "./types.js";
 
 /**
@@ -60,7 +62,22 @@ export async function fetchRemote(
     const body = (await res.json()) as { agents?: RemoteAgentView[]; sessions?: RemoteSession[] };
     // DMN-10 — `sessions` is absent from an older notifier, which is not an
     // error: it simply has nothing but doorbells to report.
-    return { agents: body.agents ?? [], sessions: body.sessions ?? [] };
+    //
+    // Anything this machine sent is dropped on the way back in. The notifier
+    // refuses a roster from its own host, but that only protects a notifier
+    // from the daemon beside it — and over `ssh -R` the notifier is on ANOTHER
+    // machine, where our roster is legitimately remote and is stored. Polling
+    // it on 127.0.0.1 then returns our own sessions, and every local one is
+    // listed a second time under "Other machines" on the box displaying it.
+    //
+    // Both halves, not just sessions: a doorbell carries an origin host too and
+    // is not origin-checked on the way in, so the blocked-agent list reflects
+    // by the same route.
+    const self = hostname();
+    return {
+      agents: (body.agents ?? []).filter((a) => !sameHost(a.host, self)),
+      sessions: (body.sessions ?? []).filter((s) => !sameHost(s.host, self)),
+    };
   } catch {
     return null;
   }

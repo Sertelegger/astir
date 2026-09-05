@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { pairedHosts } from "../src/cli/pair.js";
 import { FORGET_AFTER_MS, RemoteDiscovery, STALE_AFTER_MS, sshArgs } from "../src/discovery/remote.js";
-import { mergeRemoteSessions, RosterStore, rosterUrlFrom, validateRoster } from "../src/notify/roster.js";
+import {
+  dropSelfSessions,
+  mergeRemoteSessions,
+  RosterStore,
+  rosterUrlFrom,
+  validateRoster,
+} from "../src/notify/roster.js";
 import { NotifierServer } from "../src/notify/server.js";
 import type { RemoteSession } from "../src/status/types.js";
 
@@ -236,6 +242,56 @@ describe("roster store (DMN-10)", () => {
         .map((s) => s.host)
         .sort(),
     ).toEqual(["h1", "h2"]);
+  });
+});
+
+describe("a daemon must not read its own roster back", () => {
+  const s = (over: Partial<RemoteSession>): RemoteSession => ({
+    host: "devbox",
+    sessionId: "a",
+    cwd: "/x",
+    name: null,
+    status: null,
+    source: "push",
+    lastSeen: 0,
+    ...over,
+  });
+
+  it("drops the sessions this machine pushed itself", () => {
+    // Reported from real use: every local session appeared a SECOND time under
+    // "Other machines", attributed to the very box displaying it. The notifier
+    // was on a Mac reached through `ssh -R`, so it accepted this container's
+    // roster correctly — and then the container polled that same notifier on
+    // 127.0.0.1 and read its own sessions back.
+    const roster = [s({ sessionId: "mine", host: "claude-dev-geeklish" })];
+    expect(dropSelfSessions(roster, "claude-dev-geeklish")).toEqual([]);
+  });
+
+  it("keeps sessions that are genuinely somewhere else", () => {
+    const roster = [
+      s({ sessionId: "mine", host: "claude-dev-geeklish" }),
+      s({ sessionId: "theirs", host: "macbook" }),
+    ];
+    expect(dropSelfSessions(roster, "claude-dev-geeklish").map((x) => x.sessionId)).toEqual(["theirs"]);
+  });
+
+  it("matches on the first label, so a FQDN on one end still counts as self", () => {
+    // The two ends do not agree on how a host is spelled — `hostname()` returns
+    // a FQDN on some machines and a short name on others. A comparison that
+    // misses here fails OPEN, restoring the exact duplication this prevents,
+    // and nothing would report it.
+    expect(dropSelfSessions([s({ host: "devbox.local" })], "devbox")).toEqual([]);
+    expect(dropSelfSessions([s({ host: "devbox" })], "devbox.lan.example.com")).toEqual([]);
+  });
+
+  it("ignores case, which hostnames do not preserve reliably", () => {
+    expect(dropSelfSessions([s({ host: "DevBox" })], "devbox")).toEqual([]);
+  });
+
+  it("does not mistake a different host that merely shares a prefix", () => {
+    // `devbox-2` is not `devbox`. Matching on a prefix rather than the whole
+    // first label would silently hide a real machine's sessions.
+    expect(dropSelfSessions([s({ host: "devbox-2" })], "devbox")).toHaveLength(1);
   });
 });
 
