@@ -84,6 +84,20 @@ export function shortHost(name: string): string {
   return name.split(".")[0] || name;
 }
 
+/**
+ * Whether two host strings name the same machine.
+ *
+ * Compared on the first label and case-insensitively, because the two ends do
+ * not agree on how a host is spelled: `hostname()` returns a FQDN on some
+ * machines and a short name on others, and DNS does not preserve case. Every
+ * caller here is deciding "is this us?", where a comparison that MISSES fails
+ * open — it reports our own machine as someone else's — and nothing announces
+ * that it happened.
+ */
+export function sameHost(a: string, b: string): boolean {
+  return shortHost(a).toLowerCase() === shortHost(b).toLowerCase();
+}
+
 export function buildEnvelope(input: BuildEnvelopeInput): NotifyEnvelope {
   const repo = basename(input.cwd) || "unknown";
   const host = shortHost(input.host ?? hostname());

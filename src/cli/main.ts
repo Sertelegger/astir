@@ -21,7 +21,7 @@ import { buildEnvelope } from "../notify/envelope.js";
 import { NotifyLoop } from "../notify/loop.js";
 import { backendFromNotifier, createNotifier, createNotifierBackend } from "../notify/notify.js";
 import { NotifyPolicy } from "../notify/policy.js";
-import { pushRoster, rosterUrlFrom } from "../notify/roster.js";
+import { dropSelfSessions, pushRoster, rosterUrlFrom } from "../notify/roster.js";
 import { NotifierServer } from "../notify/server.js";
 import { fetchRemote, fetchStatus } from "../status/fetch.js";
 import { renderMenubar } from "../status/menubar.js";
@@ -339,7 +339,10 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
       });
       if (!res.ok) return;
       const body = (await res.json()) as { sessions?: RemoteSession[] };
-      pushed = body.sessions ?? [];
+      // Drop what this machine pushed itself. The notifier may well be on
+      // another box, reached through `ssh -R` on 127.0.0.1, in which case it
+      // holds our roster legitimately — and hands it straight back.
+      pushed = dropSelfSessions(body.sessions ?? [], hostname());
     } catch {
       // The tunnel comes and goes; the probe above owns that story. Keeping the
       // last known list is better than blanking the view on one failed poll.

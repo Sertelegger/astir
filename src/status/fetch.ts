@@ -1,6 +1,8 @@
 /** Shared daemon query for the `status` and `menubar` surfaces. */
 
+import { hostname } from "node:os";
 import { readTokenIfPresent } from "../config/paths.js";
+import { sameHost } from "../notify/envelope.js";
 import type { RemoteSession, StatusBody, StatusResult } from "./types.js";
 
 /**
@@ -47,6 +49,14 @@ export interface RemoteAgentView {
 export async function fetchRemote(
   port: number,
   timeoutMs = 3_000,
+  /**
+   * This machine's name, for deciding what came from here. Injectable so a test
+   * never has to derive a fixture from the real hostname — building one by
+   * appending to `hostname()` produces a DIFFERENT host on Linux and the SAME
+   * one on macOS, where the name carries a `.local` suffix and the comparison
+   * is on the first label.
+   */
+  selfHost: string = hostname(),
 ): Promise<{ agents: RemoteAgentView[]; sessions: RemoteSession[] } | null> {
   const token = process.env.ASTIR_NOTIFY_TOKEN ?? process.env.ASTIR_TOKEN ?? readTokenIfPresent();
   if (token === null) return null;
@@ -60,7 +70,21 @@ export async function fetchRemote(
     const body = (await res.json()) as { agents?: RemoteAgentView[]; sessions?: RemoteSession[] };
     // DMN-10 — `sessions` is absent from an older notifier, which is not an
     // error: it simply has nothing but doorbells to report.
-    return { agents: body.agents ?? [], sessions: body.sessions ?? [] };
+    //
+    // Anything this machine sent is dropped on the way back in. The notifier
+    // refuses a roster from its own host, but that only protects a notifier
+    // from the daemon beside it — and over `ssh -R` the notifier is on ANOTHER
+    // machine, where our roster is legitimately remote and is stored. Polling
+    // it on 127.0.0.1 then returns our own sessions, and every local one is
+    // listed a second time under "Other machines" on the box displaying it.
+    //
+    // Both halves, not just sessions: a doorbell carries an origin host too and
+    // is not origin-checked on the way in, so the blocked-agent list reflects
+    // by the same route.
+    return {
+      agents: (body.agents ?? []).filter((a) => !sameHost(a.host, selfHost)),
+      sessions: (body.sessions ?? []).filter((s) => !sameHost(s.host, selfHost)),
+    };
   } catch {
     return null;
   }
