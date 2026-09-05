@@ -396,7 +396,10 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
 
   // DMN-05 — fold provider discovery in periodically. Enrichment and pruning only;
   // never a gate on ingest.
-  const lister = createClaudeLister();
+  // `known` decides which id survives when two profiles describe one process:
+  // a record exists here only once a hook has arrived under that id, so this is
+  // "the id the running session identifies itself as".
+  const lister = createClaudeLister({ known: (id) => registry.get(id) !== undefined });
   const reconcile = (): void => {
     void lister()
       .then((found) => registry.reconcile(found?.sessions ?? null, { complete: found?.complete ?? false }))
