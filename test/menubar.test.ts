@@ -784,6 +784,66 @@ describe("sessions on other machines (DMN-09/DMN-10)", () => {
     expect(out).toContain("seen over ssh");
   });
 
+  it("VIEW-12 — a working remote session does not look like an idle one", () => {
+    // Reported from real use: every remote row was grey, so "everything over
+    // there is quiet" and "everything over there is busy" rendered identically
+    // and the only honest reading left was that nothing was getting through.
+    const busy = renderMenubar(
+      { ok: true, body: { blockedCount: 0, sessions: [] } },
+      { ...OPTS, remote: { agents: [], sessions: [remoteSession({ status: "busy" })] } },
+    );
+    const idle = renderMenubar(
+      { ok: true, body: { blockedCount: 0, sessions: [] } },
+      { ...OPTS, remote: { agents: [], sessions: [remoteSession({ status: "idle" })] } },
+    );
+
+    const rowOf = (out: string) => out.split("\n").find((l) => l.includes("claude-sesh-mover")) ?? "";
+    expect(rowOf(busy)).not.toEqual(rowOf(idle));
+    expect(rowOf(busy)).toContain("working");
+    expect(rowOf(idle)).toContain("idle");
+  });
+
+  it("carries a WORD and an ICON, never colour alone", () => {
+    // VIEW-07. Colour alone fails for the ~8% of men with a colour vision
+    // deficiency, and disappears entirely in a screenshot or a monochrome menu
+    // bar. Either channel must survive the loss of the other.
+    const out = renderMenubar(
+      { ok: true, body: { blockedCount: 0, sessions: [] } },
+      { ...OPTS, remote: { agents: [], sessions: [remoteSession({ status: "busy" })] } },
+    );
+    const row = out.split("\n").find((l) => l.includes("claude-sesh-mover")) ?? "";
+    expect(row).toContain("working");
+    expect(row).toContain("sfimage=");
+    expect(row).toContain("sfcolor=");
+  });
+
+  it("does not guess a badge for a status it does not know", () => {
+    // Asserting calm about a machine whose state this one does not understand
+    // is the single error this surface must not make. The word still shows,
+    // just not as a badge.
+    const out = renderMenubar(
+      { ok: true, body: { blockedCount: 0, sessions: [] } },
+      { ...OPTS, remote: { agents: [], sessions: [remoteSession({ status: "compacting" })] } },
+    );
+    const row = out.split("\n").find((l) => l.includes("claude-sesh-mover")) ?? "";
+    expect(row).not.toContain("sfimage=");
+    expect(out).toContain("compacting");
+  });
+
+  it("still marks an unreachable remote session as unreachable, not as a state", () => {
+    // Contact lost outranks whatever it was last seen doing: we no longer know.
+    const out = renderMenubar(
+      { ok: true, body: { blockedCount: 0, sessions: [] } },
+      {
+        ...OPTS,
+        remote: { agents: [], sessions: [remoteSession({ status: "busy", stale: true })] },
+      },
+    );
+    const row = out.split("\n").find((l) => l.includes("claude-sesh-mover")) ?? "";
+    expect(row).toContain("unreachable");
+    expect(row).not.toContain("working");
+  });
+
   it("says which route knew about it", () => {
     const out = renderMenubar(
       { ok: true, body: { blockedCount: 0, sessions: [] } },

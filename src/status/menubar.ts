@@ -130,6 +130,35 @@ const RECENT_REJECTION_MS = 5 * 60_000;
  * monochrome menu bar; a word alone is slower to scan than a shape. Together
  * each is a fallback for the other (VIEW-07).
  */
+/**
+ * VIEW-12 for a machine that is not this one.
+ *
+ * A remote session carries the provider's word for the whole SESSION, not an
+ * agent state, so it does not key into `BADGE` — `busy` is not an agent state
+ * and `tool-running` is never a session status.
+ *
+ * The point is that a row which is working must not look like a row that is
+ * idle. Both were dim, so "everything over there is quiet" and "everything over
+ * there is busy" rendered identically, and the only honest reading left was
+ * that nothing was getting through.
+ *
+ * Icon AND word, like `BADGE` and for the same reasons: colour alone fails for
+ * the ~8% of men with a colour vision deficiency and disappears in a screenshot
+ * or a monochrome menu bar (VIEW-07).
+ *
+ * An unrecognised status deliberately gets NO badge rather than a default one.
+ * Guessing here would eventually assert calm about a machine whose state this
+ * one does not understand, which is the single error this surface must not make.
+ */
+const REMOTE_BADGE: Record<string, { sfimage: string; colour: string; label: string }> = {
+  busy: { sfimage: "hammer.fill", colour: COLOUR.busy, label: "working" },
+  thinking: { sfimage: "circle.fill", colour: COLOUR.busy, label: "thinking" },
+  "tool-running": { sfimage: "hammer.fill", colour: COLOUR.busy, label: "running" },
+  waiting: { sfimage: "pause.circle.fill", colour: COLOUR.dim, label: "waiting" },
+  idle: { sfimage: "circle", colour: COLOUR.dim, label: "idle" },
+  done: { sfimage: "checkmark.circle", colour: COLOUR.dim, label: "done" },
+};
+
 const BADGE: Record<string, { sfimage: string; colour: string; label: string }> = {
   blocked: { sfimage: "bell.badge.fill", colour: COLOUR.alert, label: "waiting on you" },
   error: { sfimage: "exclamationmark.triangle.fill", colour: COLOUR.danger, label: "error" },
@@ -256,11 +285,21 @@ function remoteSection(
         lines.push(`-- Contact lost — it is probably still running | color=${COLOUR.dim}`);
         continue;
       }
-      lines.push(`${label} | color=${COLOUR.dim}`);
+      // The row text stays dim: nothing here is waiting on you, and there is no
+      // window on this machine to raise. What changes is that the STATE is now
+      // on the row rather than only in the line beneath it, so "working" and
+      // "idle" are distinguishable at a glance instead of both reading as grey.
+      const badge = s.status === null ? undefined : REMOTE_BADGE[s.status];
+      const shown = badge === undefined ? "" : `  ·  ${badge.label}`;
+      const icon = badge === undefined ? "" : ` sfimage=${badge.sfimage} sfcolor=${badge.colour}`;
+      lines.push(`${label}${shown} | color=${COLOUR.dim}${icon}`);
       const via = s.source === "push" ? "reported by its daemon" : "seen over ssh";
       const slug = s.name == null ? "" : `  ·  ${safe(s.name)}`;
       lines.push(`-- ${safe(s.cwd)}${slug} | color=${COLOUR.dim} font=Menlo`);
-      lines.push(`-- ${safe(s.status ?? "running")}  ·  ${via} | color=${COLOUR.detail} font=Menlo`);
+      // The status is repeated here ONLY when the row could not show it — an
+      // unrecognised word still belongs on screen, just not as a badge.
+      const detail = badge === undefined ? `${safe(s.status ?? "running")}  ·  ${via}` : via;
+      lines.push(`-- ${detail} | color=${COLOUR.detail} font=Menlo`);
     }
   }
 }
