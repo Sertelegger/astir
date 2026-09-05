@@ -118,18 +118,79 @@ function listProfile(configDir: string, timeoutMs: number): Promise<DiscoveredSe
   });
 }
 
-export function createClaudeLister(
-  timeoutMs = 5_000,
-  ttys: TtyReader = createTtyReader(),
-  profiles: () => string[] = candidateConfigDirs,
-): SessionLister {
+/**
+ * Collapse records that describe the SAME PROCESS.
+ *
+ * A pid identifies one, and two live sessions cannot share it — so where two
+ * session ids do, they are one session that two profiles each named for
+ * themselves. Each profile keeps its own registry and mints its own id, so
+ * merging by id cannot see it: the ids never collide.
+ *
+ * Left alone it doubles every row on every surface, and a machine watching
+ * remotely sees the pair arrive by different routes and therefore under
+ * different host labels — an ssh alias for one and a hostname for the other —
+ * which reads as one session running on two machines.
+ *
+ * WHICH record survives matters, because hooks POST under exactly one of the
+ * ids and enrichment must land on that one, or the surviving row never updates.
+ * The id the daemon has already heard from wins. Failing that the earlier
+ * profile does, which is `$CLAUDE_CONFIG_DIR`'s: `candidateConfigDirs` orders
+ * it first and the caller preserves that order.
+ */
+export function collapseByPid(
+  sessions: readonly DiscoveredSession[],
+  known: (sessionId: string) => boolean,
+): DiscoveredSession[] {
+  const indexByPid = new Map<number, number>();
+  const out: DiscoveredSession[] = [];
+  for (const session of sessions) {
+    if (session.pid === null) {
+      // No pid is no evidence. Merging on its absence would fuse two genuine
+      // sessions into one row, which is a worse failure than showing an extra.
+      out.push(session);
+      continue;
+    }
+    const at = indexByPid.get(session.pid);
+    if (at === undefined) {
+      indexByPid.set(session.pid, out.length);
+      out.push(session);
+      continue;
+    }
+    const incumbent = out[at];
+    if (incumbent !== undefined && known(session.sessionId) && !known(incumbent.sessionId)) {
+      out[at] = session;
+    }
+  }
+  return out;
+}
+
+export interface ClaudeListerOpts {
+  timeoutMs?: number;
+  ttys?: TtyReader;
+  profiles?: () => string[];
+  /**
+   * Whether the daemon has actually received events for a session id.
+   *
+   * Used to pick a winner when two profiles describe one process — see the
+   * collapse below. Defaults to "heard from none", which falls back to profile
+   * order and is the right answer before any hook has arrived.
+   */
+  known?: (sessionId: string) => boolean;
+}
+
+export function createClaudeLister(opts: ClaudeListerOpts = {}): SessionLister {
+  const timeoutMs = opts.timeoutMs ?? 5_000;
+  const ttys = opts.ttys ?? createTtyReader();
+  const profiles = opts.profiles ?? candidateConfigDirs;
+  const known = opts.known ?? (() => false);
   return async () => {
     const dirs = profiles();
     const results = await Promise.all(dirs.map((dir) => listProfile(dir, timeoutMs)));
 
-    // Merged by session id. Two profiles never share one, but a profile reached
-    // by two paths (a symlink) would, and listing it twice would double every
-    // row on every surface.
+    // Merged by session id, which catches a profile reached by two paths (a
+    // symlink). It does NOT catch the same process seen through two profiles:
+    // each keeps its own registry and mints its own id, so the ids never
+    // collide. That is what the pid collapse below is for.
     const byId = new Map<string, DiscoveredSession>();
     let complete = true;
     for (const result of results) {
@@ -143,7 +204,8 @@ export function createClaudeLister(
     // Every profile failed: that is "could not determine", not "nothing is
     // running", and the caller must not act on it at all.
     if (byId.size === 0 && !complete) return null;
-    const listed = [...byId.values()];
+
+    const listed = collapseByPid([...byId.values()], known);
 
     // DMN-11 — one `ps` for the whole table, not one per session. A failure
     // here leaves every session unclassified rather than misclassified.
