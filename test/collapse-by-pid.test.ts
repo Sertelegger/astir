@@ -64,6 +64,78 @@ describe("one process is one session, whatever each profile calls it", () => {
     expect(got.map((s) => s.sessionId)).toEqual(["first"]);
   });
 
+  it("prefers the more active view when two profiles disagree about one process", () => {
+    // Measured on a real machine: for pid 1592449, `~/.claude` said `idle` and
+    // `~/.claude-nv` said `busy` — the same `claude --continue`. Profile order
+    // picked `idle`, so astir reported a working session as quiet.
+    //
+    // Activity is evidence and its absence is not: a stale registry reports
+    // what it last knew and cannot invent work. So the busier view wins.
+    const got = collapseByPid(
+      [
+        d({ sessionId: "stale", pid: 1592449, status: "idle" }),
+        d({ sessionId: "live", pid: 1592449, status: "busy" }),
+      ],
+      heardNothing,
+    );
+    expect(got.map((s) => s.sessionId)).toEqual(["live"]);
+    expect(got[0]?.status).toBe("busy");
+  });
+
+  it("does not let a calmer view displace a busier incumbent", () => {
+    // The same rule from the other side, which order alone would get wrong.
+    const got = collapseByPid(
+      [d({ sessionId: "live", pid: 7, status: "busy" }), d({ sessionId: "stale", pid: 7, status: "idle" })],
+      heardNothing,
+    );
+    expect(got.map((s) => s.sessionId)).toEqual(["live"]);
+  });
+
+  it("treats a status it does not recognise as louder than idle, not quieter", () => {
+    // We do not know what the word means, and astir must never look calmer than
+    // it is entitled to — so an unfamiliar status must not be assumed quiet.
+    const got = collapseByPid(
+      [
+        d({ sessionId: "idle", pid: 7, status: "idle" }),
+        d({ sessionId: "odd", pid: 7, status: "compacting" }),
+      ],
+      heardNothing,
+    );
+    expect(got.map((s) => s.sessionId)).toEqual(["odd"]);
+  });
+
+  it("ranks an unknown status below a definitely-working one", () => {
+    const got = collapseByPid(
+      [
+        d({ sessionId: "odd", pid: 7, status: "compacting" }),
+        d({ sessionId: "busy", pid: 7, status: "busy" }),
+      ],
+      heardNothing,
+    );
+    expect(got.map((s) => s.sessionId)).toEqual(["busy"]);
+  });
+
+  it("prefers any status at all over none", () => {
+    const got = collapseByPid(
+      [d({ sessionId: "blank", pid: 7, status: null }), d({ sessionId: "idle", pid: 7, status: "idle" })],
+      heardNothing,
+    );
+    expect(got.map((s) => s.sessionId)).toEqual(["idle"]);
+  });
+
+  it("still lets heard-from beat a livelier record that nothing reports to", () => {
+    // Deliberate: a heard-from record showing a calmer state corrects itself on
+    // the very next event, while a livelier record no hook targets never does.
+    const got = collapseByPid(
+      [
+        d({ sessionId: "quiet-but-live", pid: 7, status: "idle" }),
+        d({ sessionId: "busy-but-deaf", pid: 7, status: "busy" }),
+      ],
+      (id) => id === "quiet-but-live",
+    );
+    expect(got.map((s) => s.sessionId)).toEqual(["quiet-but-live"]);
+  });
+
   it("never merges on a missing pid", () => {
     // No pid is no evidence. Fusing two genuine sessions into one row is a
     // worse failure than showing an extra, so absence must not be a key.
