@@ -110,6 +110,41 @@ describe("VIEW-09 — it does not hide what it cannot see", () => {
     expect(text).toContain("Not connected");
   });
 
+  it("shows what the provider says a silent session is doing", () => {
+    // "unknown" was hardcoded for every silent row, so a working session and a
+    // finished one read the same. Astir has the provider's word; it was thrown
+    // away at the /state projection.
+    const view = show({ silent: [{ sessionId: "q", cwd: "/p/quiet", name: null, status: "busy" }] });
+    const text = view.container.textContent ?? "";
+    expect(text).toContain("busy");
+    // And still says it has heard nothing — both facts, not one for the other.
+    expect(text).toContain("Not connected");
+  });
+
+  it("keeps saying unknown when the provider said nothing", () => {
+    const view = show({ silent: [{ sessionId: "q", cwd: "/p/quiet", name: null }] });
+    expect(view.container.textContent ?? "").toContain("unknown");
+  });
+
+  it("does not tell you to restart a session that predates the daemon", () => {
+    // The carve-out the menu bar has had since it was written and nothing else
+    // did: a restart forgets everything, so a SessionStart this daemon never
+    // received is evidence of nothing about that session's hooks.
+    const view = show({
+      daemonStartedAt: 5_000,
+      silent: [{ sessionId: "old", cwd: "/p/quiet", name: null, startedAt: 1_000 }],
+    });
+    expect(view.container.textContent ?? "").toContain("already running when astir started");
+  });
+
+  it("says nothing of the sort for a session that started after it", () => {
+    const view = show({
+      daemonStartedAt: 1_000,
+      silent: [{ sessionId: "new", cwd: "/p/quiet", name: null, startedAt: 5_000 }],
+    });
+    expect(view.container.textContent ?? "").not.toContain("already running when astir started");
+  });
+
   it("marks a remote session we have lost contact with", () => {
     const view = show({
       remote: [

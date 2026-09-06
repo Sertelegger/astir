@@ -493,9 +493,17 @@ async function runStatus(flags: Args["flags"]): Promise<void> {
     return;
   }
 
-  if (body.sessions.length === 0) {
+  const silent = body.silent ?? [];
+  if (body.sessions.length === 0 && silent.length === 0) {
     process.stdout.write("no live sessions\n");
     return;
+  }
+  if (body.sessions.length === 0) {
+    // "No live sessions" while the provider reports several running is the
+    // dishonesty every other surface was fixed for: it reports astir's reach as
+    // though it were the world. The rows below say what is running and that we
+    // have not heard from it, which are different facts.
+    process.stdout.write("no sessions have reached astir\n\n");
   }
   const secs = (ms: number): string => `${Math.round(ms / 1000)}s`;
   for (const s of body.sessions) {
@@ -526,6 +534,31 @@ async function runStatus(flags: Args["flags"]): Promise<void> {
       }
     }
   }
+  // Sessions the provider reports running that have sent astir nothing. Listed,
+  // not hidden: a surface that shows only what it can hear looks calmest exactly
+  // when it is least entitled to. Each says what the provider says it is doing
+  // AND that we have not heard from it — two different facts, both true.
+  if (silent.length > 0) {
+    if (body.sessions.length > 0) process.stdout.write("\n");
+    process.stdout.write(`not reaching astir (${silent.length}):\n`);
+    for (const s of silent) {
+      const label = s.name ?? s.sessionId.slice(0, 8);
+      const doing = s.status ? `  [${s.status}]` : "";
+      process.stdout.write(`  ${label}  ${s.cwd}${doing}\n`);
+      // The one case where "restart it" is the WRONG advice: a session older
+      // than the daemon never had a SessionStart to send, so its silence is
+      // evidence of nothing. The menu bar has drawn this distinction since it
+      // was written and nothing else did.
+      const predatesDaemon =
+        body.daemonStartedAt !== undefined && s.startedAt != null && s.startedAt < body.daemonStartedAt;
+      process.stdout.write(
+        predatesDaemon
+          ? "    started before astir was listening — it will appear as soon as it acts\n"
+          : "    hooks bind at session start, so restart it to be seen\n",
+      );
+    }
+  }
+
   if (body.blockedCount > 0) {
     process.stdout.write(`\n${body.blockedCount} agent(s) waiting on you\n`);
   }
@@ -643,7 +676,12 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
   const status = await fetchStatus(port);
   if (status.ok) {
     const agents = status.body.sessions.reduce((n, s) => n + s.agents.length, 0);
-    out(`  daemon          ok — ${status.body.sessions.length} session(s), ${agents} agent(s)`);
+    const unheard = (status.body.silent ?? []).length;
+    // Counting only what reached us reports "0 session(s)" straight after a
+    // restart with several running — the diagnosis tool being the least honest
+    // surface is precisely backwards.
+    const alsoRunning = unheard > 0 ? `, ${unheard} running but unheard` : "";
+    out(`  daemon          ok — ${status.body.sessions.length} session(s), ${agents} agent(s)${alsoRunning}`);
     out(`  blocked now     ${status.body.blockedCount}`);
 
     // DMN-08 — name the silent sessions astir can actually explain.
@@ -778,8 +816,9 @@ function runAllowSandbox(args: Args): void {
   if (!state.enabled) {
     process.stdout.write(
       `${target} is not sandboxed — nothing to allow.\n` +
-        "If its sessions are still silent, they were probably started before the\n" +
-        "astir plugin; hooks bind at session start, so restart them.\n",
+        "If its sessions are still silent, check `astir status`: one that started\n" +
+        "before the daemon has simply not acted yet and needs no restart, while\n" +
+        "one started before the plugin does.\n",
     );
     return;
   }

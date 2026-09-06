@@ -305,6 +305,12 @@ aside h2 {
 .state.error { color: #ff8a8a; border-color: #6b2020; }
 .state.done, .state.idle { color: var(--dim); }
 .state.thinking, .state.tool-running { color: #7fd98a; border-color: #2c5333; }
+/* The PROVIDER's vocabulary, which a silent session is labelled with. Distinct
+   from the MOD-04 agent states above and deliberately sharing their colours:
+   the same green means the same thing to a reader whichever word produced it.
+   Without these a `busy` chip renders unstyled, which reads as a bug. */
+.state.busy { color: #7fd98a; border-color: #2c5333; }
+.state.waiting { color: var(--dim); }
 
 .tooltip {
   position: absolute;

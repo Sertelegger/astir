@@ -603,6 +603,10 @@ export class Daemon {
         // unfocusable — the one thing you can still usefully do with a session
         // astir cannot hear is go and look at it.
         pid: d.pid,
+        // Same reasoning as `pid`: discovery knows it and only this projection
+        // dropped it. #35 made the pid collapse prefer the busier of two
+        // disagreeing profile views, and the status it chose died right here.
+        status: d.status,
         startedAt: d.startedAt,
         ...(d.attended === undefined ? {} : { attended: d.attended }),
       })),

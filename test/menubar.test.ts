@@ -298,6 +298,40 @@ describe("why a session is silent", () => {
       { ...OPTS, now: 1_000_000 },
     );
 
+  it("says what the provider says a silent session is doing", () => {
+    // A silent session is one astir has heard nothing FROM, not one it knows
+    // nothing about — discovery has the provider's own word and the /state
+    // projection used to drop it. Reporting only "not connected" stated astir's
+    // reach as though it were the session's state.
+    const out = silentBody({}, { status: "busy" });
+    const row = out.split("\n").find((l) => l.includes("y-aa") || l.includes("y  ·")) ?? "";
+    expect(row).toContain("working");
+    expect(row).toContain("sfimage=");
+  });
+
+  it("still says it has heard nothing, alongside what the provider says", () => {
+    // Both facts, not one replacing the other: "the provider says busy" and
+    // "astir has received nothing from it" are separately true and separately
+    // worth knowing — the second is why there is no agent detail below.
+    const out = silentBody({}, { status: "busy" });
+    expect(out).toContain("not connected");
+  });
+
+  it("gives an unrecognised status no badge rather than a guessed one", () => {
+    // Same asymmetry the remote rows use. Assuming an unfamiliar word is quiet
+    // is the one error this surface must not make.
+    const out = silentBody({}, { status: "compacting" });
+    const row = out.split("\n").find((l) => l.includes("not connected")) ?? "";
+    expect(row).not.toContain("sfimage=");
+  });
+
+  it("shows no state when the provider offered none", () => {
+    const out = silentBody({}, {});
+    const row = out.split("\n").find((l) => l.includes("not connected")) ?? "";
+    expect(row).not.toContain("sfimage=");
+    expect(row).toContain("not connected");
+  });
+
   it("lists silent sessions BELOW the ones we can hear, not above them", () => {
     // A warning banner above the live view made the thing you actually wanted
     // to see the second thing on screen.

@@ -476,7 +476,18 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     // useful thing left, and a row that looks like the others but does nothing
     // reads as broken rather than as deliberately inert.
     const goThere = action(exe, ["focus", s.sessionId]);
-    lines.push(`${safe(quietTitles[i] ?? "")}  ·  not connected | color=${COLOUR.dim} ${goThere}`);
+    // What the PROVIDER says it is doing, which is a different question from
+    // whether astir has heard from it — and one we have an answer to. Saying
+    // only "not connected" reported astir's reach as though it were the
+    // session's state, so a working session and a finished one looked the same.
+    // The same badge the remote rows use, for the same reason and by the same
+    // rule: an unrecognised status gets none rather than a guessed one.
+    const badge = s.status == null ? undefined : REMOTE_BADGE[s.status];
+    const doing = badge === undefined ? "" : `  ·  ${badge.label}`;
+    const icon = badge === undefined ? "" : ` sfimage=${badge.sfimage} sfcolor=${badge.colour}`;
+    lines.push(
+      `${safe(quietTitles[i] ?? "")}${doing}  ·  not connected | color=${COLOUR.dim}${icon} ${goThere}`,
+    );
     lines.push(`-- ${safe(s.cwd)}${slug} | color=${COLOUR.dim} font=Menlo ${goThere}`);
 
     // A session older than the daemon cannot have had its `SessionStart`

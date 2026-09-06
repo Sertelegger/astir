@@ -99,7 +99,14 @@ export function Overview(props: OverviewProps): JSX.Element {
 
             {/* Why there is nothing more to say, rather than an empty gap that
                 looks like "nothing is happening". */}
-            {s.kind === "silent" && <p className="quiet">Not connected — astir has heard nothing from it.</p>}
+            {s.kind === "silent" && (
+              <p className="quiet">
+                Not connected — astir has heard nothing from it.
+                {s.predatesDaemon
+                  ? " It was already running when astir started, so that says nothing about its hooks — it will appear as soon as it does anything."
+                  : ""}
+              </p>
+            )}
             {s.stale && <p className="quiet">Contact lost — it is probably still running.</p>}
           </li>
         ))}
@@ -132,6 +139,10 @@ export function Overview(props: OverviewProps): JSX.Element {
 
 function stateLabel(s: OverviewSession): string {
   if (s.stale) return "unreachable";
-  if (s.kind === "silent") return "unknown";
+  // A silent session is one astir has heard nothing FROM, which is not the same
+  // as one it knows nothing about — discovery carries the provider's own word
+  // for what it is doing. "unknown" stays for the case where there genuinely is
+  // no word, because filling that in would be the guessed calm this must avoid.
+  if (s.kind === "silent") return s.state ?? "unknown";
   return s.state ?? "idle";
 }
