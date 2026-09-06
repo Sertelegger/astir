@@ -119,6 +119,35 @@ function listProfile(configDir: string, timeoutMs: number): Promise<DiscoveredSe
 }
 
 /**
+ * How much evidence a status carries that work is actually happening.
+ *
+ * Used only to break a tie between two views of ONE process. The asymmetry is
+ * the point: **activity is evidence, and its absence is not.** A profile whose
+ * registry has gone stale reports what it last knew — it cannot invent work
+ * that is not happening — so where two views disagree, the more active one is
+ * the one with something behind it.
+ *
+ * A status this does not recognise ranks ABOVE the calm ones rather than below.
+ * We do not know what it means, and astir's rule throughout is that it must
+ * never look calmer than it is entitled to; assuming an unfamiliar word is
+ * quiet would be exactly that.
+ */
+const ACTIVITY: Record<string, number> = {
+  busy: 3,
+  "tool-running": 3,
+  thinking: 3,
+  waiting: 2,
+  idle: 1,
+  done: 1,
+};
+
+/** Unknown-but-present sits above calm; absent sits below everything. */
+function activityOf(status: string | null): number {
+  if (status === null) return 0;
+  return ACTIVITY[status] ?? 2;
+}
+
+/**
  * Collapse records that describe the SAME PROCESS.
  *
  * A pid identifies one, and two live sessions cannot share it — so where two
@@ -157,11 +186,43 @@ export function collapseByPid(
       continue;
     }
     const incumbent = out[at];
-    if (incumbent !== undefined && known(session.sessionId) && !known(incumbent.sessionId)) {
+    if (incumbent !== undefined && wins(session, incumbent, known)) {
       out[at] = session;
     }
   }
   return out;
+}
+
+/**
+ * Whether `candidate` should replace `incumbent` as the row for their process.
+ *
+ * Two rules, in order.
+ *
+ * **Heard-from wins.** Hooks POST under exactly one of the ids, so enrichment
+ * lands on that one; keep the other and the surviving row is fed by events that
+ * never arrive and freezes. This outranks activity deliberately — a heard-from
+ * record showing a calmer state corrects itself on the next event, while a
+ * livelier record nothing reports to never does.
+ *
+ * **Then the more active view.** Profile order was the old tie-break and it has
+ * nothing to do with which view is current: on a real machine `~/.claude` said
+ * a process was `idle` while `~/.claude-nv` said `busy`, and order picked the
+ * calmer answer by coin flip. Preferring activity is not a guess — a stale
+ * registry cannot report work that is not happening.
+ *
+ * Equal on both leaves the incumbent, which keeps the earlier profile's id and,
+ * more importantly, keeps the answer stable: a row whose id flipped between
+ * polls would take every action bound to it along.
+ */
+function wins(
+  candidate: DiscoveredSession,
+  incumbent: DiscoveredSession,
+  known: (sessionId: string) => boolean,
+): boolean {
+  const candidateHeard = known(candidate.sessionId);
+  const incumbentHeard = known(incumbent.sessionId);
+  if (candidateHeard !== incumbentHeard) return candidateHeard;
+  return activityOf(candidate.status) > activityOf(incumbent.status);
 }
 
 export interface ClaudeListerOpts {
