@@ -93,6 +93,20 @@ export interface SilentSession {
    */
   startedAt?: number | null;
   /**
+   * What the provider says this session is doing.
+   *
+   * Discovery has always known it — a silent session is one astir has heard
+   * nothing FROM, not one it knows nothing about. Dropping it here was the
+   * difference between two answers to the same question: the roster push sends
+   * it, so this machine's silent session already showed a state badge in
+   * another machine's menu bar while showing none in its own.
+   *
+   * Not a substitute for having heard from the session. "The provider says
+   * busy" and "we have received nothing" are both true, and the surfaces say
+   * both — one is the session's state, the other is astir's own reach.
+   */
+  status?: string | null;
+  /**
    * DMN-08 — this project runs sandboxed and has not allowed the daemon's host,
    * so its hooks are refused by the egress proxy before they reach us. Filled in
    * by the surface from the project's own settings: the daemon cannot know,

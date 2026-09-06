@@ -17,7 +17,10 @@ const open: Harness[] = [];
  * A daemon with one discovered-but-silent session, and focus stubbed so nothing
  * touches the real window manager.
  */
-async function harness(result: FocusResult = { ok: true, detail: "focused Thing.app" }): Promise<Harness> {
+async function harness(
+  result: FocusResult = { ok: true, detail: "focused Thing.app" },
+  status: string | null = null,
+): Promise<Harness> {
   const registry = new Registry({ nowMs: () => 1_000 });
   registry.reconcile([
     {
@@ -25,7 +28,7 @@ async function harness(result: FocusResult = { ok: true, detail: "focused Thing.
       cwd: "/x/seenthat",
       name: "seenthat-be",
       pid: 4242,
-      status: null,
+      status,
       startedAt: null,
     },
   ]);
@@ -102,5 +105,43 @@ describe("PSH-11 — focus is performed by the daemon", () => {
     const res = await post(h.port, "/focus?session=quiet-1", "wrong-token");
     expect(res.status).toBe(401);
     expect(h.focused).toEqual([]);
+  });
+});
+
+describe("/state carries what a silent session needs to be diagnosed", () => {
+  // Nothing asserted this projection, which is how `status` came to be dropped
+  // from it while every other field survived. Deleting `silent` or any of its
+  // fields left the whole suite green, and the daemon is the only place these
+  // reach a surface from.
+  it("lists the silent session with the fields its surfaces read", async () => {
+    const h = await harness(undefined, "busy");
+    const res = await fetch(`http://127.0.0.1:${h.port}/state`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    const body = (await res.json()) as {
+      silent?: Array<Record<string, unknown>>;
+      daemonStartedAt?: number;
+    };
+
+    expect(body.silent?.[0]?.sessionId).toBe("quiet-1");
+    // The one that was missing. #35 makes the pid collapse prefer the busier of
+    // two disagreeing profile views, and the status it picks died right here.
+    expect(body.silent?.[0]?.status).toBe("busy");
+    // `pid` so it can still be focused; `startedAt` so a surface can tell "its
+    // hooks are unwired" from "it started before astir was listening".
+    expect(body.silent?.[0]?.pid).toBe(4242);
+    expect(body.silent?.[0]).toHaveProperty("startedAt");
+    // The other half of that comparison. Without it every silent session gets
+    // the restart-it advice, including the ones for which it is wrong.
+    expect(typeof body.daemonStartedAt).toBe("number");
+  });
+
+  it("passes a null status through as null rather than inventing one", async () => {
+    const h = await harness(undefined, null);
+    const res = await fetch(`http://127.0.0.1:${h.port}/state`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    const body = (await res.json()) as { silent?: Array<Record<string, unknown>> };
+    expect(body.silent?.[0]?.status).toBeNull();
   });
 });

@@ -114,10 +114,67 @@ describe("VIEW-09 — sessions astir cannot hear are still shown", () => {
     expect(rows[1]?.kind).toBe("silent");
   });
 
-  it("says it does not know a silent session's state, rather than guessing calm", () => {
+  it("leaves a silent session's state null when the provider said nothing", () => {
+    // The absent case, which must stay absent. Filling it with "idle" would be
+    // the guessed calm this section exists to prevent.
     const rows = overview(body({ silent: [{ sessionId: "q", cwd: "/p/b", name: null }] }));
     expect(rows[0]?.state).toBeNull();
     expect(rows[0]?.agents).toEqual([]);
+  });
+
+  it("carries what the provider DOES say about a silent session", () => {
+    // A silent session is one astir has heard nothing FROM — not one it knows
+    // nothing about. Discovery reports the provider's own word and the /state
+    // projection used to drop it, so a working session and a finished one were
+    // rendered identically as "unknown".
+    const rows = overview(body({ silent: [{ sessionId: "q", cwd: "/p/b", name: null, status: "busy" }] }));
+    expect(rows[0]?.state).toBe("busy");
+    // Still silent: knowing what it is doing is not the same as having heard
+    // from it, and the surface must keep saying both.
+    expect(rows[0]?.kind).toBe("silent");
+    expect(rows[0]?.agents).toEqual([]);
+  });
+
+  it("marks a session that was already running when the daemon started", () => {
+    // Its silence is evidence of nothing — a restart forgets everything, so the
+    // SessionStart it never sent says nothing about whether its hooks work.
+    // Telling that user to restart it is the one piece of advice that is wrong.
+    const rows = overview(
+      body({
+        daemonStartedAt: 5_000,
+        silent: [{ sessionId: "old", cwd: "/p/b", name: null, startedAt: 1_000 }],
+      }),
+    );
+    expect(rows[0]?.predatesDaemon).toBe(true);
+  });
+
+  it("does not claim that for a session that started AFTER the daemon", () => {
+    // This one really has never sent anything it should have sent.
+    const rows = overview(
+      body({
+        daemonStartedAt: 1_000,
+        silent: [{ sessionId: "new", cwd: "/p/b", name: null, startedAt: 5_000 }],
+      }),
+    );
+    expect(rows[0]?.predatesDaemon).toBe(false);
+  });
+
+  it("does not guess when either timestamp is missing", () => {
+    // Without both, the comparison has no meaning — and the fallback advice
+    // ("restart it") is the safe one only because it is also the common one.
+    const noStart = overview(
+      body({ daemonStartedAt: 5_000, silent: [{ sessionId: "q", cwd: "/p", name: null }] }),
+    );
+    expect(noStart[0]?.predatesDaemon).toBe(false);
+    const noDaemon = overview(body({ silent: [{ sessionId: "q", cwd: "/p", name: null, startedAt: 1 }] }));
+    expect(noDaemon[0]?.predatesDaemon).toBe(false);
+  });
+
+  it("never claims it for a live session, which has been heard from", () => {
+    const rows = overview(
+      body({ daemonStartedAt: 5_000, sessions: [session({ sessionId: "live", cwd: "/p/a" })] }),
+    );
+    expect(rows[0]?.predatesDaemon).toBe(false);
   });
 
   it("keeps a remote session, and marks one we have lost contact with", () => {

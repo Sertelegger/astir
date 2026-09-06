@@ -112,6 +112,20 @@ export interface OverviewSession {
   agents: StatusAgent[];
   /** Contact lost. Probably still running; we stopped being told. */
   stale: boolean;
+  /**
+   * The session was already running when this daemon started.
+   *
+   * Its silence is therefore evidence of nothing: the daemon keeps state in
+   * memory and a restart forgets everything, so a `SessionStart` it never
+   * received says nothing about whether its hooks work. Telling that user to
+   * restart the session — the advice every other silent case gets — sends them
+   * to restart something that is working and will reappear the moment it acts.
+   *
+   * The menu bar has drawn this distinction since it was written; nothing else
+   * did, so the same session was diagnosed two different ways depending on
+   * which surface you looked at.
+   */
+  predatesDaemon: boolean;
 }
 
 const KIND_RANK: Record<SessionKind, number> = { live: 0, silent: 1, remote: 2, background: 3 };
@@ -174,6 +188,9 @@ export function overview(body: StatusBody): OverviewSession[] {
       cwd: s.cwd,
       name: s.name,
       kind: background(s) ? "background" : "live",
+      // Never relevant for a live session: we have heard from it, so its
+      // silence is not a thing needing explanation.
+      predatesDaemon: false,
       host: null,
       state: dominantState({ agents: s.agents ?? [] }),
       blocked: unacknowledgedBlocked(s.agents ?? []),
@@ -190,12 +207,17 @@ export function overview(body: StatusBody): OverviewSession[] {
       name: s.name,
       kind: background(s) ? "background" : "silent",
       host: null,
-      // Null rather than "idle": we do not know, and guessing calm is the lie
-      // DMN-07 exists to prevent.
-      state: null,
+      // What the provider says, when it says anything. This is not a guess and
+      // not a substitute for having heard from the session: "the provider says
+      // busy" and "astir has received nothing" are both true, and the view
+      // shows both. Null stays null — an absent status is still unknown, and
+      // filling it with "idle" would be the guessed calm this must not report.
+      state: s.status ?? null,
       blocked: 0,
       agents: [],
       stale: false,
+      predatesDaemon:
+        body.daemonStartedAt !== undefined && s.startedAt != null && s.startedAt < body.daemonStartedAt,
     });
   }
 
@@ -205,6 +227,10 @@ export function overview(body: StatusBody): OverviewSession[] {
       project: labels[i++] ?? s.sessionId.slice(0, 8),
       cwd: s.cwd,
       name: s.name,
+      // A remote session is governed by ITS daemon's lifetime, not this one's.
+      // Comparing it against our `daemonStartedAt` would be an answer to a
+      // question about the wrong machine.
+      predatesDaemon: false,
       kind: background(s) ? "background" : "remote",
       host: s.host,
       state: s.status,
