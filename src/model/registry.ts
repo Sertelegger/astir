@@ -241,9 +241,26 @@ export class Registry {
    * about our own setup, not about the session, and pruning on it would delete
    * live sessions on any machine without `claude` on PATH.
    */
-  private discoveryEverWorked = false;
+  /**
+   * Providers whose discovery has answered at least once.
+   *
+   * Per provider, not global: the undiscovered-session sweep uses this to
+   * decide that a record discovery has never vouched for is dead. One global
+   * flag means Claude's discovery working makes astir willing to reap CODEX
+   * sessions it has never been able to see — and a blocked Codex session emits
+   * nothing, so its `lastEventTs` stalls and the sweep is exactly what reaches
+   * it first.
+   */
+  private discoveryEverWorked = new Set<Provider>();
   /** Discovered sessions we have never received an event from — see `silent()`. */
-  private silentSessions: DiscoveredSession[] = [];
+  /**
+   * Silent sessions, by the provider that reported them.
+   *
+   * A flat list could only be REPLACED wholesale, and a complete answer from
+   * one provider says nothing about another's — so replacing on it dropped
+   * every silent session belonging to anyone else.
+   */
+  private silentByProvider = new Map<Provider, DiscoveredSession[]>();
 
   constructor(opts: RegistryOpts) {
     this.nowMs = opts.nowMs;
@@ -349,15 +366,24 @@ export class Registry {
   }
 
   /**
-   * `silentSessions` is a snapshot taken at each discovery poll, so between
+   * The silent list is a snapshot taken at each discovery poll, so between
    * polls a session that has just started speaking is in BOTH lists — the menu
    * bar then shows the same repo twice, once live and once "not connected".
    * Retiring it here rather than waiting for the next reconcile closes that
    * window at the moment the evidence arrives.
+   *
+   * Swept across every provider: the session just spoke, so whichever list it
+   * is in is now wrong, and we do not need to know which one that was.
    */
   private heard(sessionId: string): void {
-    if (this.silentSessions.length === 0) return;
-    this.silentSessions = this.silentSessions.filter((d) => d.sessionId !== sessionId);
+    for (const [provider, list] of this.silentByProvider) {
+      if (list.some((d) => d.sessionId === sessionId)) {
+        this.silentByProvider.set(
+          provider,
+          list.filter((d) => d.sessionId !== sessionId),
+        );
+      }
+    }
   }
 
   apply(event: AstirEvent, cwd: string): IngestResult {
@@ -440,7 +466,11 @@ export class Registry {
       // false so `reconcile` refuses to touch it. Gated on discovery having
       // worked at least once, so a machine with no `claude` on PATH does not
       // silently delete every live session it knows about.
-      if (this.discoveryEverWorked && !s.everDiscovered && now - s.lastEventTs >= this.undiscoveredTtlMs) {
+      if (
+        this.discoveryEverWorked.has(s.provider) &&
+        !s.everDiscovered &&
+        now - s.lastEventTs >= this.undiscoveredTtlMs
+      ) {
         this.sessions.delete(id);
         continue;
       }
@@ -565,13 +595,23 @@ export class Registry {
    * has not been shown to be gone. Defaults to true so a caller with a single
    * complete source needs to say nothing.
    */
+  /**
+   * Fold one PROVIDER's discovery into the registry.
+   *
+   * `provider` is explicit and required rather than derived from `discovered`,
+   * because the one input this exists to handle — an empty array, meaning "that
+   * provider is running nothing" — is precisely the one a provider cannot be
+   * derived from. Getting it from the data would work until the moment it
+   * matters and then delete every session of the other provider.
+   */
   reconcile(
     discovered: DiscoveredSession[] | null,
-    opts: { complete?: boolean } = {},
+    opts: { complete?: boolean; provider?: Provider } = {},
   ): { enriched: number; pruned: number } {
     if (discovered === null) return { enriched: 0, pruned: 0 };
     const complete = opts.complete ?? true;
-    this.discoveryEverWorked = true;
+    const provider: Provider = opts.provider ?? "claude";
+    this.discoveryEverWorked.add(provider);
 
     const live = new Set<string>();
     let enriched = 0;
@@ -602,16 +642,24 @@ export class Registry {
       for (const [id, s] of [...this.sessions]) {
         // Only prune something discovery has previously vouched for. A session we
         // have events from but discovery has never listed is new, not dead.
-        if (s.everDiscovered && !live.has(id)) {
+        //
+        // And only within the provider that just reported. Claude's lister
+        // knows nothing about Codex's sessions, so their absence from its
+        // answer is not evidence of anything — pruning on it deletes live
+        // sessions of the other provider on every tick, with a green suite.
+        if (s.provider === provider && s.everDiscovered && !live.has(id)) {
           this.sessions.delete(id);
           pruned++;
         }
       }
     }
-    // Same reasoning: an incomplete view cannot be used to REPLACE the silent
-    // list, because the profiles that failed contribute none of theirs.
-    if (complete) this.silentSessions = silent;
-    else this.silentSessions = mergeSilent(this.silentSessions, silent);
+    // Same reasoning twice over: an incomplete view cannot REPLACE the silent
+    // list because the profiles that failed contribute none of theirs — and
+    // neither can a complete view from ONE provider, because the other
+    // provider's silent sessions are not in it either. What this provider just
+    // reported replaces what it reported last time; everyone else's survives.
+    const previous = this.silentByProvider.get(provider) ?? [];
+    this.silentByProvider.set(provider, complete ? silent : mergeSilent(previous, silent));
     return { enriched, pruned };
   }
 
@@ -624,7 +672,7 @@ export class Registry {
    * mid-session.
    */
   silent(): DiscoveredSession[] {
-    return [...this.silentSessions];
+    return [...this.silentByProvider.values()].flat();
   }
 
   private ensureAgent(session: SessionRecord, event: AstirEvent): AgentRecord {

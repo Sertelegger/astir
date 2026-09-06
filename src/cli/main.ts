@@ -402,7 +402,12 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   const lister = createClaudeLister({ known: (id) => registry.get(id) !== undefined });
   const reconcile = (): void => {
     void lister()
-      .then((found) => registry.reconcile(found?.sessions ?? null, { complete: found?.complete ?? false }))
+      .then((found) =>
+        registry.reconcile(found?.sessions ?? null, {
+          complete: found?.complete ?? false,
+          provider: "claude",
+        }),
+      )
       .catch(() => undefined);
   };
   reconcile();

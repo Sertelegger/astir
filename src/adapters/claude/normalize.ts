@@ -1,10 +1,21 @@
-/** CAP-02/03/05 — Claude Code hook payload → §10.1 event. The only Claude-specific code. */
+/**
+ * CAP-02/03/05 — Claude Code hook payload → §10.1 event.
+ *
+ * The only place Claude's WIRE FORMAT is understood. It is not the only file
+ * that mentions Claude — discovery shells out to `claude agents --json`, the
+ * installer writes Claude's settings, and the sidecar reader knows its layout —
+ * so the older claim that this was "the only Claude-specific code" set a
+ * misleading expectation for anyone adding a second provider.
+ */
 
 import { randomUUID } from "node:crypto";
+import type { NormalizeDeps, NormalizeResult } from "../types.js";
+
+export type { NormalizeDeps, NormalizeResult, SidecarMeta } from "../types.js";
+
 import { homedir } from "node:os";
 import { isAbsolute, posix, relative, resolve, sep } from "node:path";
 import {
-  type AstirEvent,
   CONTRACT_VERSION,
   type Kind,
   type NotificationKind,
@@ -82,22 +93,6 @@ export function toRepoRelative(cwd: string, raw: string, realpath: (p: string) =
   return rel.split(sep).join(posix.sep);
 }
 
-export interface NormalizeDeps {
-  now: () => number;
-  newId: () => string;
-  realpath: (p: string) => string;
-  /** CAP-05 route 1: read the subagent sidecar, or null when absent. */
-  readSidecar: (sessionId: string, agentId: string) => SidecarMeta | null;
-}
-
-export interface SidecarMeta {
-  agentType?: string;
-  description?: string;
-  toolUseId?: string;
-  spawnDepth?: number;
-  parentAgentId?: string;
-}
-
 /**
  * CAP-05 — deterministic parentage.
  *
@@ -122,22 +117,21 @@ export function resolveParent(
   return { parentAgentId: null, parentSource: "inferred" };
 }
 
-export interface NormalizeResult {
-  event: AstirEvent | null;
-  /**
-   * OBS-01/VIEW-06 — paths rejected by CAP-04 (outside the repo, unresolvable).
-   * Dropping silently is how a monitoring tool ends up lying by omission, so the
-   * count travels with the result and the caller is expected to surface it.
-   */
-  droppedPaths: number;
-}
-
 export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): NormalizeResult {
   let droppedPaths = 0;
-  const nothing = (): NormalizeResult => ({ event: null, droppedPaths });
+  // Read before anything can fail. `session_id` and `cwd` are Claude's field
+  // names, and the daemon used to reach into the raw payload for both — which
+  // made its "provider-agnostic" tail depend on one provider's wire format.
+  // They travel with the result now: a gap can still be attributed to a session
+  // whose payload never became a valid event, which is precisely the case where
+  // losing the attribution turns a per-session count into a daemon-wide one.
+  const raw = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : null;
+  const claimedSessionId = typeof raw?.session_id === "string" ? raw.session_id : null;
+  const cwd = typeof raw?.cwd === "string" ? raw.cwd : "";
+  const nothing = (): NormalizeResult => ({ event: null, droppedPaths, claimedSessionId, cwd });
 
-  if (typeof payload !== "object" || payload === null) return nothing();
-  const p = payload as Record<string, unknown>;
+  if (raw === null) return nothing();
+  const p = raw;
 
   const sessionId = p.session_id;
   const hookName = p.hook_event_name;
@@ -146,7 +140,6 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
   const kind = KIND_BY_HOOK[hookName];
   if (kind === undefined) return nothing(); // deliberately unmapped, e.g. PreCompact
 
-  const cwd = typeof p.cwd === "string" ? p.cwd : "";
   const agentIdField = typeof p.agent_id === "string" ? p.agent_id : null;
   const agentId = agentIdField ?? sessionId; // main agent's id IS the session id
   const agentType = typeof p.agent_type === "string" ? p.agent_type : null;
@@ -207,6 +200,8 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
 
   return {
     droppedPaths,
+    claimedSessionId,
+    cwd,
     event: {
       v: CONTRACT_VERSION,
       eventId: deps.newId(),
