@@ -316,6 +316,30 @@ describe("GET /stream", () => {
   });
 });
 
+describe("a provider is a normalizer plus a route", () => {
+  it("still ingests on the provider route it ships", async () => {
+    const port = await serve(new Registry({ nowMs: () => 1_000 }));
+    const res = await fetch(`http://127.0.0.1:${port}/hook/claude`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ session_id: "s9", hook_event_name: "SessionStart", cwd: "/repo" }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("404s a provider it does not speak, rather than pretending to accept it", async () => {
+    // NG5 limits v1.x to Claude Code and Codex. An unknown segment is a bad
+    // path, and answering 200 would tell an installer its hooks were wired.
+    const port = await serve(new Registry({ nowMs: () => 1_000 }));
+    const res = await fetch(`http://127.0.0.1:${port}/hook/gemini`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ session_id: "s9", hook_event_name: "SessionStart" }),
+    });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe("GET /view", () => {
   it("says the view is not built rather than 404ing like a bad URL", async () => {
     // Two very different problems; a bare 404 conflates them and sends someone
