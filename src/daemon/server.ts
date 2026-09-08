@@ -634,6 +634,9 @@ export class Daemon {
         status: s.status,
         pid: s.pid,
         ...(s.attended === undefined ? {} : { attended: s.attended }),
+        // Only when true: an ordinary session should not carry a false flag on
+        // every poll, and the surfaces read it as "say something extra".
+        ...(s.restored === true ? { restored: true } : {}),
         // MOD-01/MOD-08 — bounded on purpose; see FileSummary.
         ...(s.map.size === 0
           ? {}

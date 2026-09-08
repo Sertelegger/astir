@@ -145,6 +145,9 @@ describe("the SessionStart daemon starter (DMN-12)", () => {
       encoding: "utf8",
       env: {
         HOME: homedir(),
+        // This daemon runs against the REAL home for its token; it must not
+        // also overwrite the real crash-recovery snapshot.
+        ASTIR_NO_PERSIST: "1",
         PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
         CLAUDE_PLUGIN_ROOT: "/nonexistent/astir",
         // Do not start a daemon from the test run.
@@ -182,7 +185,11 @@ describe("built daemon artifact", () => {
       // it (a CI tool cache, a version manager). Everything the *shell* would
       // add — version-manager shims, the npm global bin — is scrubbed, which is
       // what the wrapper has to survive.
-      env: { HOME: homedir(), PATH: `/usr/bin:/bin:/usr/sbin:/sbin:${dirname(process.execPath)}` },
+      env: {
+        HOME: homedir(),
+        ASTIR_NO_PERSIST: "1",
+        PATH: `/usr/bin:/bin:/usr/sbin:/sbin:${dirname(process.execPath)}`,
+      },
       timeout: 30_000,
     });
     expect(out, "the wrapper must locate astir without help from the shell").not.toContain(
