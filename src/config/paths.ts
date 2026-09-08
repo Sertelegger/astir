@@ -37,6 +37,14 @@ export function writeSecret(path: string, contents: string, opts: { requireDir?:
  * The daemon's bearer token, stable across restarts so a hook configuration
  * written once keeps working. Created on first use.
  */
+/**
+ * DMN-06 — the crash-recovery snapshot. Beside the token, and written the same
+ * way: atomic and 0600, because it names the repos someone is working in.
+ */
+export function snapshotPath(home: string = homedir()): string {
+  return join(astirDir(home), "state.json");
+}
+
 export function readOrCreateToken(home: string = homedir()): string {
   const dir = astirDir(home);
   const path = tokenPath(home);

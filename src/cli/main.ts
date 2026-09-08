@@ -8,13 +8,22 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addWatchedHost, hostsPath, readWatchedHosts, removeWatchedHost } from "../config/hosts.js";
-import { astirDir, DEFAULT_PORT, readOrCreateToken, readTokenIfPresent, tokenPath } from "../config/paths.js";
+import {
+  astirDir,
+  DEFAULT_PORT,
+  readOrCreateToken,
+  readTokenIfPresent,
+  snapshotPath,
+  tokenPath,
+  writeSecret,
+} from "../config/paths.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
 import { installService, serviceInstalled, servicePath, uninstallService } from "../config/service.js";
 import { Daemon } from "../daemon/server.js";
 import { createSshLister, RemoteDiscovery } from "../discovery/remote.js";
 import { createClaudeLister } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
+import { parseSnapshot } from "../model/snapshot.js";
 import { detectNotifier } from "../notify/detect.js";
 import { Dispatcher, localTarget, remoteTarget } from "../notify/dispatch.js";
 import { buildEnvelope } from "../notify/envelope.js";
@@ -257,6 +266,22 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
 
   const registry = new Registry({ nowMs: () => Date.now() });
 
+  // DMN-06 — agent state from the previous daemon, if there was one.
+  //
+  // Staged, not loaded: nothing here reaches a surface until discovery confirms
+  // the session is still running with the same pid and start time. Until then
+  // it renders exactly as any other session astir has not heard from.
+  //
+  // Every failure has the same right answer — carry on with nothing. A daemon
+  // that will not start because its recovery file is corrupt has turned a
+  // convenience into an outage.
+  try {
+    const saved = parseSnapshot(JSON.parse(readFileSync(snapshotPath(), "utf8")));
+    if (saved !== null) registry.stageRestore(saved);
+  } catch {
+    // No file, unreadable, or not JSON. All the same: start empty.
+  }
+
   // PSH-06 — delivery paths. Local is the floor; a remote notifier is added when
   // configured, so a session behind SSH or in a container can reach the human.
   const backend = createNotifierBackend();
@@ -457,12 +482,38 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   }, 30_000);
   progressionTick.unref();
 
+  // DMN-06/DMN-07 — atomic, 0600, same writer as the token. Sharing the
+  // progression cadence rather than adding a timer: 30s bounds how much of the
+  // active/blocked accounting a crash can cost, and the file is small because
+  // it holds agent state and no map.
+  // Opt-out, matching ASTIR_NO_AUTOSTART. The artifact test spawns the real
+  // binary against the real HOME — it needs the real token — so without this,
+  // running the suite overwrites the user's recovery file with sessions from a
+  // test daemon. They would be refused on load (no pid, no startedAt), but the
+  // state they replaced is gone, which is a poor trade for a test run.
+  const persistDisabled = process.env.ASTIR_NO_PERSIST === "1";
+  const persist = (): void => {
+    if (persistDisabled) return;
+    try {
+      writeSecret(snapshotPath(), JSON.stringify(registry.snapshot()));
+    } catch {
+      // Losing the snapshot costs a future restart some state. Losing the
+      // daemon costs the user everything, so this never throws.
+    }
+  };
+  const persistTick = setInterval(persist, 30_000);
+  persistTick.unref();
+
   const shutdown = (): void => {
+    // The most valuable write there is: a clean stop is exactly when the state
+    // is worth keeping, and `astir autostart` restarts make it the common path.
+    persist();
     clearInterval(tick);
     clearInterval(discoveryTick);
     clearInterval(progressionTick);
     clearInterval(remoteTick);
     clearInterval(rosterTick);
+    clearInterval(persistTick);
     void daemon.close().then(() => process.exit(0));
   };
   process.once("SIGINT", shutdown);
@@ -514,6 +565,11 @@ async function runStatus(flags: Args["flags"]): Promise<void> {
   for (const s of body.sessions) {
     const label = s.name ?? s.sessionId.slice(0, 8);
     process.stdout.write(`${label}  ${s.cwd}${s.status ? `  [${s.status}]` : ""}\n`);
+    if (s.restored === true) {
+      // Said once, at the top of the session, because it qualifies everything
+      // below it: these durations are from before the restart.
+      process.stdout.write("    restored after a daemon restart — not confirmed by an event yet\n");
+    }
     for (const a of s.agents) {
       const who = a.agentType ?? "main";
       process.stdout.write(

@@ -3,6 +3,7 @@
 import type { AstirEvent, ParentSource, Provider } from "../contract/event.js";
 import type { DiscoveredSession } from "../discovery/sessions.js";
 import { RepoMap } from "./map.js";
+import { identityMatches, SNAPSHOT_VERSION, type Snapshot, type SnapshotSession } from "./snapshot.js";
 
 export type AgentState = "thinking" | "tool-running" | "waiting" | "blocked" | "idle" | "done" | "error";
 
@@ -179,8 +180,27 @@ export interface SessionRecord {
   invalidEvents: number;
   /** OS pid, enriched from discovery — what `astir focus` needs to find a window. */
   pid: number | null;
+  /**
+   * Epoch ms the provider says this session started, when it reports one.
+   *
+   * Enriched from discovery like `pid`. Part of the identity a crash-recovery
+   * snapshot is checked against: a sessionId outlives a process and a pid is
+   * recycled, so neither alone proves the session on disk is the one running.
+   */
+  startedAt: number | null;
   /** DMN-11 — false when no human is sitting at it (a plugin or script drives it). */
   attended?: boolean;
+  /**
+   * This state came from the crash-recovery snapshot, not from an event.
+   *
+   * Worth saying out loud rather than presenting as ordinary: the guard proves
+   * the SESSION is still alive, not that its agent state is current. An agent
+   * that was blocked when the daemon died may have been unblocked while it was
+   * down, and astir would have no way to know until the session next acts.
+   * Cleared by the first event, which is the moment the state stops being a
+   * memory and starts being an observation.
+   */
+  restored?: boolean;
 }
 
 export interface RegistryOpts {
@@ -261,6 +281,8 @@ export class Registry {
    * every silent session belonging to anyone else.
    */
   private silentByProvider = new Map<Provider, DiscoveredSession[]>();
+  /** Saved sessions awaiting a provider's confirmation. See `stageRestore`. */
+  private pendingRestore = new Map<string, SnapshotSession>();
 
   constructor(opts: RegistryOpts) {
     this.nowMs = opts.nowMs;
@@ -396,6 +418,10 @@ export class Registry {
     }
 
     const session = this.ensureSession(event.sessionId, event.provider, cwd);
+    // The state has stopped being a memory and started being an observation.
+    // Also the point at which a restored `blocked` that had since resolved is
+    // corrected — which is why the flag says "restored" rather than nothing.
+    session.restored = false;
     this.heard(event.sessionId);
     const agent = this.ensureAgent(session, event);
     if (agent.description === null && event.description !== null) {
@@ -570,6 +596,7 @@ export class Registry {
         pathsOutsideRepo: 0,
         invalidEvents: 0,
         pid: null,
+        startedAt: null,
       };
       this.sessions.set(sessionId, s);
     }
@@ -620,6 +647,17 @@ export class Registry {
       live.add(d.sessionId);
       const s = this.sessions.get(d.sessionId);
       if (!s) {
+        // The moment a saved session earns its place. The provider is reporting
+        // this process right now, and its identity matches what was written —
+        // so the agent state is about something still running, which is the one
+        // thing a snapshot cannot establish on its own.
+        const saved = this.pendingRestore.get(d.sessionId);
+        if (saved !== undefined && saved.provider === provider && identityMatches(saved, d)) {
+          this.pendingRestore.delete(d.sessionId);
+          this.adopt(saved, d);
+          enriched++;
+          continue;
+        }
         // Known to the provider, but it has sent us nothing. Either it has only
         // just started, or — far more likely once it persists — its hooks are not
         // wired up at all. Recorded rather than skipped, because "I am receiving
@@ -632,6 +670,7 @@ export class Registry {
       s.status = d.status;
       s.name = d.name;
       s.pid = d.pid;
+      s.startedAt = d.startedAt;
       if (d.attended !== undefined) s.attended = d.attended;
       if (d.cwd) s.cwd = d.cwd;
       enriched++;
@@ -658,6 +697,14 @@ export class Registry {
     // neither can a complete view from ONE provider, because the other
     // provider's silent sessions are not in it either. What this provider just
     // reported replaces what it reported last time; everyone else's survives.
+    if (complete) {
+      // A complete answer that does not mention a saved session is the provider
+      // saying it is not running. Keeping it "just in case" is how a snapshot
+      // starts reporting work that stopped while the daemon was down.
+      for (const [id, saved] of [...this.pendingRestore]) {
+        if (saved.provider === provider && !live.has(id)) this.pendingRestore.delete(id);
+      }
+    }
     const previous = this.silentByProvider.get(provider) ?? [];
     this.silentByProvider.set(provider, complete ? silent : mergeSilent(previous, silent));
     return { enriched, pruned };
@@ -671,8 +718,107 @@ export class Registry {
    * installed, since hooks bind at session start and are never picked up
    * mid-session.
    */
+  /**
+   * Hold a snapshot's sessions aside, to be adopted only if discovery confirms.
+   *
+   * Deliberately NOT loaded into `sessions`: until the provider vouches for it,
+   * a saved session is a claim about a process that may have exited while the
+   * daemon was down. Until then it is not in the registry at all, so every
+   * surface treats it exactly as it treats any other session astir has not
+   * heard from — a path they already render honestly.
+   */
+  stageRestore(snap: Snapshot): void {
+    for (const s of snap.sessions) this.pendingRestore.set(s.sessionId, s);
+  }
+
+  /** How many saved sessions are still waiting to be confirmed or discarded. */
+  pendingRestoreCount(): number {
+    return this.pendingRestore.size;
+  }
+
+  /** DMN-06 — agent state only. The map is deliberately not persisted. */
+  snapshot(): Snapshot {
+    return {
+      v: SNAPSHOT_VERSION,
+      writtenAt: this.nowMs(),
+      sessions: [...this.sessions.values()]
+        // An ended session is lingering only so "what just finished" is
+        // answerable; restoring one would resurrect it.
+        .filter((s) => s.endedAt === null && s.agents.size > 0)
+        .map((s) => ({
+          sessionId: s.sessionId,
+          provider: s.provider,
+          cwd: s.cwd,
+          name: s.name,
+          pid: s.pid,
+          startedAt: s.startedAt,
+          agents: [...s.agents.values()].map((a) => ({
+            id: a.id,
+            agentType: a.agentType,
+            parentId: a.parentId,
+            parentSource: a.parentSource,
+            state: a.state,
+            activeMs: a.activeMs,
+            blockedMs: a.blockedMs,
+            turnMs: a.turnMs,
+            stateSince: a.stateSince,
+            lastActivityMs: a.lastActivityMs,
+            lastEventTs: a.lastEventTs,
+            blockedReason: a.blockedReason,
+            description: a.description,
+            tool: a.tool,
+            toolPath: a.toolPath,
+            acknowledgedAt: a.acknowledgedAt,
+          })),
+        })),
+    };
+  }
+
   silent(): DiscoveredSession[] {
     return [...this.silentByProvider.values()].flat();
+  }
+
+  /**
+   * Rebuild a session from its saved agent state.
+   *
+   * `everDiscovered` is true because it just was — this runs from inside
+   * reconcile, holding the provider's answer. `restored` marks the state as a
+   * memory rather than an observation, and the first event clears it.
+   *
+   * No map is restored: DMN-06 permits agent state only, and heat rebuilds as
+   * work continues.
+   */
+  private adopt(saved: SnapshotSession, found: DiscoveredSession): SessionRecord {
+    const s = this.ensureSession(saved.sessionId, saved.provider, found.cwd || saved.cwd);
+    s.everDiscovered = true;
+    s.restored = true;
+    s.name = found.name ?? saved.name;
+    s.status = found.status;
+    s.pid = found.pid;
+    s.startedAt = found.startedAt;
+    if (found.attended !== undefined) s.attended = found.attended;
+    for (const a of saved.agents) {
+      s.agents.set(a.id, {
+        id: a.id,
+        provider: saved.provider,
+        agentType: a.agentType,
+        parentId: a.parentId,
+        parentSource: a.parentSource as ParentSource | null,
+        state: a.state as AgentRecord["state"],
+        lastEventTs: a.lastEventTs,
+        activeMs: a.activeMs,
+        blockedMs: a.blockedMs,
+        turnMs: a.turnMs,
+        stateSince: a.stateSince,
+        lastActivityMs: a.lastActivityMs,
+        blockedReason: a.blockedReason,
+        description: a.description,
+        tool: a.tool,
+        toolPath: a.toolPath,
+        acknowledgedAt: a.acknowledgedAt,
+      });
+    }
+    return s;
   }
 
   private ensureAgent(session: SessionRecord, event: AstirEvent): AgentRecord {

@@ -68,6 +68,16 @@ export interface StatusSession {
   files?: FileSummary;
   /** DMN-11 — false when a plugin or script drives it, not a person. */
   attended?: boolean;
+  /**
+   * Agent state restored from the crash-recovery snapshot, with no event since.
+   *
+   * Worth showing rather than presenting as ordinary. Discovery confirmed the
+   * SESSION is still running; nothing confirms its agent state is current. An
+   * agent blocked when the daemon died may have unblocked while it was down,
+   * and astir cannot know until the session next acts — so rendering this
+   * identically to a heard-from session would assert more than it knows.
+   */
+  restored?: boolean;
   sessionId: string;
   cwd: string;
   name: string | null;
