@@ -35,8 +35,15 @@ const MAX_BODY_BYTES = 1024 * 1024;
  */
 const STREAM_TICK_MS = 1_000;
 
-/** Proof of life for a stream that has had nothing to say. */
-const STREAM_HEARTBEAT_MS = 15_000;
+/**
+ * Proof of life for a stream that has had nothing to say.
+ *
+ * Exported because the client's silence deadline is meaningful only in relation
+ * to it: a deadline shorter than the beat would drop healthy streams, and one
+ * far longer would leave a dead map reading as live. A test pins that ratio, so
+ * changing either constant alone fails rather than degrading quietly.
+ */
+export const STREAM_HEARTBEAT_MS = 15_000;
 
 /**
  * Concurrent /stream connections allowed.
