@@ -3,12 +3,13 @@
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { defaultNewId, normalizeClaudeHook } from "../adapters/claude/normalize.js";
 import type { Normalizer, SidecarMeta } from "../adapters/types.js";
 import { validateEvent } from "../contract/event.js";
 import type { Registry } from "../model/registry.js";
+import { shortHost } from "../notify/envelope.js";
 import { mergeRemoteSessions } from "../notify/roster.js";
 import { type FocusResult, focusSession } from "../status/focus.js";
 import type { RemoteSession } from "../status/types.js";
@@ -305,7 +306,18 @@ export class Daemon {
     }
 
     if (path === "/healthz") {
-      return this.json(res, 200, { ok: true, counters: this.counters });
+      // `role` and `host` mirror the notifier's, and for the same reason: a
+      // port that answers 200 is not proof of what is behind it. The notifier
+      // has refused anything without its role since it was written; the daemon
+      // could not, so nothing could tell THIS machine's daemon from another
+      // machine's arriving down a forwarded port — and since `astir pair`
+      // shares one token, that impostor authenticates cleanly.
+      return this.json(res, 200, {
+        ok: true,
+        role: "daemon",
+        host: shortHost(hostname()),
+        counters: this.counters,
+      });
     }
 
     // Deliberately ahead of the token check — see the note in view.ts. These
@@ -629,6 +641,10 @@ export class Daemon {
       // emits nothing — so without this the surface reports perfectly wired
       // sessions as "not connected" for as long as they stay quiet.
       daemonStartedAt: this.startedAt,
+      // The identity check that matters, on the route every surface already
+      // polls. `/healthz` is for probing something you have not committed to;
+      // this is for the reply you are about to render as your own machine.
+      host: shortHost(hostname()),
       // Merged by session id, so a machine that both pushes and answers an SSH
       // poll appears once — see `mergeRemoteSessions`. The push wins on state,
       // the poll wins on the name the user configured.

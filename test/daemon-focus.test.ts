@@ -145,3 +145,28 @@ describe("/state carries what a silent session needs to be diagnosed", () => {
     expect(body.silent?.[0]?.status).toBeNull();
   });
 });
+
+describe("/healthz says which daemon this is", () => {
+  it("carries the role and the host, so a forwarded port is detectable", async () => {
+    // Nothing asserted this before, which is how the daemon came to have no
+    // identity at all while the notifier had one from the start. A port that
+    // answers 200 is not proof of what is behind it.
+    const h = await harness();
+    const res = await fetch(`http://127.0.0.1:${h.port}/healthz`);
+    const body = (await res.json()) as { role?: string; host?: string; ok?: boolean };
+
+    expect(body.ok).toBe(true);
+    expect(body.role).toBe("daemon");
+    expect(typeof body.host).toBe("string");
+    expect(body.host).not.toContain(".");
+  });
+
+  it("answers without a token, so a probe can run before trusting anything", async () => {
+    // The check has to be usable on a port you have NOT committed to. Gating it
+    // behind the shared token would make an impostor holding that token the one
+    // thing that passes.
+    const h = await harness();
+    const res = await fetch(`http://127.0.0.1:${h.port}/healthz`);
+    expect(res.status).toBe(200);
+  });
+});
