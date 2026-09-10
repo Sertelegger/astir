@@ -19,6 +19,7 @@ import {
 } from "../config/paths.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
 import { installService, serviceInstalled, servicePath, uninstallService } from "../config/service.js";
+import { probeDaemon } from "../daemon/detect.js";
 import { Daemon } from "../daemon/server.js";
 import { createSshLister, RemoteDiscovery } from "../discovery/remote.js";
 import { createClaudeLister } from "../discovery/sessions.js";
@@ -754,6 +755,18 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
     }
   } else {
     out(`  daemon          ${status.reason}`);
+    // Say WHAT is on the port, not just that we could not use it. The failure
+    // that matters here answers 200 with valid-looking state, so "cannot reach
+    // it" would be exactly the wrong description.
+    const probe = await probeDaemon(port);
+    if (probe.kind === "foreign") {
+      out(`                  it is ${probe.host}'s daemon — its sessions are not this machine's`);
+      out("                  VS Code Remote-SSH auto-forwards ports it sees on the remote;");
+      out("                  add to settings.json to keep astir's to itself:");
+      out(`                    "remote.portsAttributes": { "${port}": { "onAutoForward": "ignore" } }`);
+    } else if (probe.kind === "unknown") {
+      out(`                  something is on port ${port}: ${probe.detail}`);
+    }
   }
 
   if (flags.get("notify") === true) {

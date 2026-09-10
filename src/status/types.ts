@@ -177,6 +177,19 @@ export interface StatusBody {
   daemonStartedAt?: number;
   /** Sessions found by polling paired hosts over SSH. */
   remote?: RemoteSession[];
+  /**
+   * The machine this daemon runs on, first label only.
+   *
+   * Present so a surface can tell "my daemon" from another machine's arriving
+   * through a forwarded port — VS Code Remote-SSH auto-forwards the ports it
+   * sees, and `astir pair` shares one token across paired machines, so an
+   * impostor on 47000 answers 200 with entirely valid-looking state.
+   *
+   * Optional because an older daemon does not send it, and VER-01 says an
+   * unknown minor is ignored field-wise rather than rejected: absent means
+   * "cannot tell", which must not be treated as "wrong machine".
+   */
+  host?: string;
 }
 
 /**

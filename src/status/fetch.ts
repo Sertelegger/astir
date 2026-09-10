@@ -21,7 +21,23 @@ export async function fetchStatus(port: number, timeoutMs = 3_000): Promise<Stat
     });
     if (res.status === 401) return { ok: false, reason: "token rejected — is it current?" };
     if (!res.ok) return { ok: false, reason: `daemon returned ${res.status}` };
-    return { ok: true, body: (await res.json()) as StatusBody };
+    const body = (await res.json()) as StatusBody;
+
+    // The dangerous case is not an unreachable port — that already reports
+    // itself. It is ANOTHER astir daemon answering here, forwarded from the
+    // machine you are developing on, whose sessions would be rendered as this
+    // machine's. It shares the token `astir pair` copied, so it authenticates
+    // cleanly and the reply looks entirely valid.
+    //
+    // Only when the daemon actually said: absent means "cannot tell" (an older
+    // daemon), and refusing on that would break every surface against one.
+    if (body.host !== undefined && !sameHost(body.host, hostname())) {
+      return {
+        ok: false,
+        reason: `port ${port} is ${body.host}'s daemon, not this machine's — a forwarded port?`,
+      };
+    }
+    return { ok: true, body };
   } catch {
     return { ok: false, reason: `no daemon on 127.0.0.1:${port}` };
   }

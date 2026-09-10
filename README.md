@@ -142,6 +142,29 @@ used.
 
 All formatting lives in `astir menubar`, not in the plugin script, so it stays unit-tested and works unchanged under xbar, Hammerspoon, or a plain shell prompt if SwiftBar ever stops being the right host.
 
+### If you develop over VS Code Remote-SSH
+
+VS Code auto-forwards the ports it sees listening on the remote host — including
+astir's. Your workstation's `47000` can then be the *remote* daemon rather than
+your own, and because `astir pair` shares one token across paired machines, that
+one authenticates cleanly and its sessions look local.
+
+`astir doctor` names it rather than leaving you to work it out: it reports whose
+daemon is actually on the port. To keep astir's ports to themselves, in VS Code's
+`settings.json`:
+
+```jsonc
+"remote.portsAttributes": {
+  "47000": { "onAutoForward": "ignore" },
+  "47001": { "onAutoForward": "ignore" }
+}
+```
+
+Astir will not edit that file for you, for the same reason it ships no npm
+`postinstall`: reaching into another tool's configuration as a side effect is how
+you end up surprised by your own machine. You may well want those ports
+forwarded — it just cannot be astir that decides.
+
 ## Sessions on another machine
 
 A session opened over SSH — VS Code Remote-SSH, or a terminal on another box —
