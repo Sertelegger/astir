@@ -8,12 +8,14 @@ Those two failures are why this file is short. A roadmap that tracks work drifts
 
 **Issues and milestones are the source of truth for what is in flight, what is next, and what is done.** This file does not list tasks and does not carry checkboxes — if you want status, the milestones have it and they cannot go stale.
 
-| | |
-|---|---|
-| [M1 — daemon receives real events](https://github.com/Sertelegger/astir/milestone/1) | complete |
-| [M2 — you find out without looking](https://github.com/Sertelegger/astir/milestone/2) | complete |
-| [M3 — the view](https://github.com/Sertelegger/astir/milestone/3) | in progress |
-| [M4 — depth](https://github.com/Sertelegger/astir/milestone/4) | next |
+- [M1 — daemon receives real events](https://github.com/Sertelegger/astir/milestone/1)
+- [M2 — you find out without looking](https://github.com/Sertelegger/astir/milestone/2)
+- [M3 — the view](https://github.com/Sertelegger/astir/milestone/3)
+- [M4 — depth](https://github.com/Sertelegger/astir/milestone/4)
+
+Each link carries its own state. Repeating it here would be a second place to
+update and a second place to be wrong — which is the whole reason this file
+stopped listing tasks.
 
 The arc is deliberate and the order is not arbitrary. **M1** made the daemon receive real events from a real session, because the previous version's fatal defect was that it never had. **M2** made astir reach you without being looked at — the push half of the product, and the half that justifies it existing. **M3** is the pull half: a view worth opening once you are interested. **M4** is depth over that view: time, and a second provider.
 
@@ -33,7 +35,7 @@ Where an invariant is held only by a comment rather than a test, it is tracked i
 
 ## Known gaps
 
-- **A daemon restart blinds astir to every running session** until it next acts ([#18](https://github.com/Sertelegger/astir/issues/18)). The menu bar reports this honestly — a session older than the daemon says so rather than claiming its hooks are unwired — but the web overview and `astir status` do not yet, and the hole itself is described rather than filled. `astir autostart`'s `KeepAlive` makes restarts more frequent. Fixing it means choosing between re-deriving state from provider transcripts and persisting it, and the latter is in tension with NG2.
+- **A daemon restart loses the interval it was down for.** Agent state is written to a crash-recovery snapshot and restored when the provider confirms the session is still the same process, so `blocked` and its accounting survive — but anything that happened while the daemon was gone did not reach it, and cannot be recovered. Provider transcripts were the obvious candidate and turned out not to be one: they record completed exchanges only, so nothing in flight is ever in them.
 - **A remote session's map cannot be seen locally** ([#19](https://github.com/Sertelegger/astir/issues/19)). A paired daemon pushes a roster over the tunnel but not frames, so you can see that a remote session exists without seeing where its work is happening.
 
 ## Later, deliberately deferred

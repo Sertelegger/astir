@@ -1,0 +1,87 @@
+# RELEASE-WORKFLOW: tag-triggered publishing
+#
+# The changelog is the release and this file is the messenger. It publishes the
+# section of CHANGELOG.md that bears the tag's version and adds nothing of its
+# own — release prose written only into the GitHub object is not in the
+# repository, is not reviewed with the code, and does not survive the repository
+# being recreated. astir has the scar: v0.1.0's notes still describe a binary
+# called `clide`, months after the rename, because they live nowhere else.
+#
+# Deliberate constraints, since this is the one workflow holding a write token:
+#   * triggered by tags ONLY — no branches, no pull_request, no schedule. Nothing
+#     but somebody tagging a commit on purpose can start it.
+#   * `gh` rather than a release action: preinstalled on the runner, so this adds
+#     no third-party dependency to pin, review and watch for compromise.
+#   * no `continue-on-error` — a release that half-happened and reported success
+#     is worse than one that failed.
+#   * no artifacts. `package.json` is `private: true`; there is nothing to
+#     publish and nothing to attach.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # The whole grant, and only here.
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Three things must agree before anything is published: the tag, the
+      # manifest version, and a changelog section that exists. Any pair agreeing
+      # while the third does not is the failure this catches — a tag pushed
+      # before the bump, or a bump with no notes written.
+      - name: The tag, the version and the changelog must agree
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$manifest" ]; then
+            echo "tag v$tag does not match package.json $manifest" >&2
+            exit 1
+          fi
+          # The heading may carry a codename: `## [X.Y.Z] — DATE (Codename)`.
+          if ! grep -qE "^## \[$tag\]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no section for $tag" >&2
+            exit 1
+          fi
+          # Every stamp, not just the one package.json carries. The fourth lives
+          # in a shell comment that no JSON tooling would find.
+          for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json; do
+            grep -q "\"version\": \"$tag\"" "$f" || { echo "$f is not at $tag" >&2; exit 1; }
+          done
+          grep -q "<bitbar.version>v\?$tag<" contrib/swiftbar/astir.3s.sh \
+            || { echo "contrib/swiftbar/astir.3s.sh is not at $tag" >&2; exit 1; }
+
+      - name: Take the notes and the name from the changelog
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          # The section body, up to the next version heading.
+          awk -v v="## [$tag]" '
+            index($0, v) == 1 { inside = 1; next }
+            inside && /^## \[/ { exit }
+            inside { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "the section for $tag is empty" >&2; exit 1; }
+          # The codename sits on the heading beside its version — the one place
+          # it is already recorded, so there is no second file to disagree with.
+          name="$(grep -E "^## \[$tag\]" CHANGELOG.md \
+            | sed -E 's/.*\(([^)]+)\)[[:space:]]*$/ (\1)/;t;s/.*//')"
+          echo "RELEASE_NAME=astir $tag$name" >> "$GITHUB_ENV"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$RELEASE_NAME" --notes-file notes.md
