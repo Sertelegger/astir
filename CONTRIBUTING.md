@@ -88,6 +88,11 @@ version whose heading carries no codename is named `astir X.Y.Z`.
 Baked goods, alphabetically, one per release. No hyphens and no diacritics, so
 a codename is always safe in a tag message, a filename or a shell.
 
+The sequence starts at the first release, so **0.1.0 is Amaretti** even though it
+shipped before the scheme existed — named retroactively in the changelog, which
+is cheap while there is one release to renumber and gets more expensive with
+every one that is not.
+
 | | | | |
 |---|---|---|---|
 | A Amaretti | B Bagel | C Croissant | D Doughnut |

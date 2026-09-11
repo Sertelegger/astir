@@ -12,7 +12,7 @@ release is cut, named and published is in
 
 ## [Unreleased]
 
-## [0.2.0] — 2026-09-11 (Amaretti)
+## [0.2.0] — 2026-09-11 (Bagel)
 
 The first release under the name **astir**. 0.1.0 shipped as `clide`, so
 upgrading is not automatic — see below.
@@ -109,7 +109,7 @@ Nothing under `~/.clide/` is deleted. Remove it once you are satisfied.
   exempt the ports.
 - Codex is not a supported provider yet, despite appearing in the spec.
 
-## [0.1.0] — 2026-08-17
+## [0.1.0] — 2026-08-17 (Amaretti)
 
 Shipped as `clide`. The daemon, notifications with an insistent reminder
 schedule, the macOS menu bar, cross-machine visibility, and deterministic
