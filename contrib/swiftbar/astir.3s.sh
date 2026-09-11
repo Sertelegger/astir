@@ -1,6 +1,6 @@
 #!/bin/bash
 # <bitbar.title>Astir</bitbar.title>
-# <bitbar.version>v0.1.0</bitbar.version>
+# <bitbar.version>v0.2.0</bitbar.version>
 # <bitbar.author>Sascha Sertel</bitbar.author>
 # <bitbar.desc>Shows whether an AI coding agent is blocked waiting on you.</bitbar.desc>
 # <bitbar.dependencies>node,astir</bitbar.dependencies>

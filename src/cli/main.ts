@@ -1103,9 +1103,38 @@ function readLineSync(): string {
   }
 }
 
+/**
+ * The version, read from the manifest rather than restated here.
+ *
+ * A second copy is a second thing to forget on release day, and this one has a
+ * caller that cannot tell a wrong answer from a right one: `astir pair` runs
+ * `astir --version` on the remote to decide whether astir is installed there.
+ * Before this existed the flag fell through to `usage()`, which exits 0 and
+ * prints a command list — so the check passed on any astir, including one far
+ * too old to pair with, and its `|| echo MISSING` could never fire.
+ */
+function version(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // dist/cli/main.js → ../../package.json, and the same from src/ under tsx.
+    const pkg = JSON.parse(readFileSync(join(here, "..", "..", "package.json"), "utf8")) as {
+      version?: unknown;
+    };
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const { command, flags } = args;
+  // Before the switch: `--version` is a flag, not a command, so it has to work
+  // in either position and must not depend on the command that follows it.
+  if (command === "--version" || command === "-v" || flags.get("version") === true) {
+    process.stdout.write(`astir ${version()}\n`);
+    return;
+  }
   switch (command) {
     case "daemon":
       return runDaemon(flags);

@@ -38,13 +38,13 @@ body:
       label: Daemon output and /healthz
       description: |
         Relevant daemon stderr, plus `curl -s localhost:47000/healthz`.
-        The counters there (`ingested`, `rejected`, `duplicates`, `droppedPaths`) usually narrow it down fast — `ingested: 0` means nothing is reaching the daemon at all.
+        The counters there (`ingested`, `rejected`, `duplicates`, `pathsOutsideRepo`) usually narrow it down fast — `ingested: 0` means nothing is reaching the daemon at all.
       render: shell
   - type: dropdown
     id: provider
     attributes:
       label: AI provider
-      options: [Claude Code, OpenAI Codex, Both]
+      options: [Claude Code]
     validations:
       required: true
   - type: input
@@ -52,7 +52,7 @@ body:
     attributes:
       label: Versions
       description: Provider CLI version (`claude --version` / `codex --version`) and the astir version
-      placeholder: "Claude Code 2.1.233, astir 2.0.0-alpha.0"
+      placeholder: "Claude Code 2.1.267, astir 0.2.0"
     validations:
       required: true
   - type: dropdown

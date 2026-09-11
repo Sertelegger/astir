@@ -25,7 +25,10 @@ Astir's first job is to make that not happen. Everything else is secondary.
   alert is never lost, and `astir dismiss` is how you stop it
 - A macOS menu-bar badge, including sessions on other machines
 - `astir status` across all live sessions
-- `astir view` — a live map of where a session is working, in a browser
+- `astir view` — every session astir knows about, and a live map of where each is working, in a browser
+- **Agent state survives a daemon restart** — what was blocked, and for how long,
+  rather than starting from nothing
+- A **cross-session overview**: everything on every machine, worst first
 
 ## Install
 
@@ -76,6 +79,9 @@ remote sessions pushing rosters to your notifier:
 astir autostart          # a LaunchAgent: starts at login, restarts on crash
 astir autostart --remove
 ```
+
+**macOS only.** It installs a LaunchAgent, and there is no systemd equivalent
+yet — on Linux it refuses and says so rather than pretending to have worked.
 
 `astir doctor` reports which of these is in place.
 
@@ -281,7 +287,7 @@ entitled to.
 ## The map
 
 ```bash
-astir view              # opens the busiest session's map
+astir view              # opens the overview: every session astir knows about
 astir view <sessionId>  # a particular one
 astir view --print      # just print the URL
 ```
