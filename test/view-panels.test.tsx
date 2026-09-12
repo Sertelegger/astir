@@ -41,7 +41,11 @@ describe("VIEW-01 — the arrangement is persisted", () => {
     expect(h.latest.arrangement.hidden).toContain("legend");
 
     act(() => h.rerender("/repos/other"));
-    expect(h.latest.arrangement.hidden, "a different project starts clean").toEqual([]);
+    // "Clean" means the DEFAULTS, not empty: `timelapse` is hidden by default
+    // (VIEW-11 — a panel you open, not one that takes permanent space).
+    expect(h.latest.arrangement.hidden, "a different project starts at the defaults").toEqual([
+      "timelapse",
+    ]);
 
     act(() => h.rerender("/repos/astir"));
     expect(h.latest.arrangement.hidden, "and switching back restores it").toContain("legend");
@@ -92,7 +96,7 @@ describe("VIEW-01 — the arrangement is persisted", () => {
     act(() => h.latest.hide("map", true));
 
     act(() => h.rerender("/repos/other"));
-    expect(h.latest.arrangement.hidden).toEqual([]);
+    expect(h.latest.arrangement.hidden).toEqual(["timelapse"]);
   });
 
   it("prefers a stored layout when the user has not touched anything", () => {

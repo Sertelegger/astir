@@ -83,6 +83,27 @@ export interface RepoMapOpts {
   progressionSamples?: number;
 }
 
+/**
+ * VIEW-11 on the wire: what changed in one interval, and how long ago.
+ *
+ * Deliberately not cumulative — see `RepoMap.progression`.
+ */
+export interface ProgressionStep {
+  /** Milliseconds before the moment of the request that this interval sealed. */
+  agoMs: number;
+  /** Files touched in this interval and how many times. Sparse. */
+  delta: Record<string, number>;
+}
+
+export interface Progression {
+  /** Oldest sample to now. Zero when nothing has been sampled yet. */
+  spanMs: number;
+  /** Intervals sealed so far — the same number `/state` reports. */
+  samples: number;
+  /** Oldest first, so replaying them in order replays the session. */
+  steps: ProgressionStep[];
+}
+
 /** One step of the progression: cumulative totals as of `at`. */
 export interface Frame {
   at: number;
@@ -264,6 +285,36 @@ export class RepoMap {
    * for everything sealed — which is the property that proves compaction loses
    * nothing.
    */
+  /**
+   * VIEW-11 — the progression, in the shape it crosses a wire.
+   *
+   * Deltas, not `frames()`. `frames()` prefix-sums every interval back into
+   * full cumulative totals, so a thousand-file session with sixty samples
+   * re-inflates to sixty thousand entries — exactly the cost storing deltas
+   * exists to avoid, paid at the moment it is least affordable. The client
+   * prefix-sums locally, which is the same arithmetic against a fraction of
+   * the bytes.
+   *
+   * Ages, not timestamps. `Sample.at` is `performance.now()`-relative, so it
+   * is meaningful only inside this process — a browser given those numbers has
+   * no way to interpret them. An age is a duration, and both ends agree on how
+   * long a second is. Same reasoning as `FileFrame.ageMs`, and the same reason
+   * the frame protocol carries no wall clock anywhere.
+   */
+  progression(): Progression {
+    const now = this.now();
+    return {
+      // Oldest sample to now, so a client can lay out a time axis without
+      // reconstructing it from the steps.
+      spanMs: this.ring.length === 0 ? 0 : Math.max(0, now - (this.ring[0]?.at ?? now)),
+      samples: this.ring.length,
+      steps: this.ring.map((sample) => ({
+        agoMs: Math.max(0, now - sample.at),
+        delta: Object.fromEntries(sample.delta),
+      })),
+    };
+  }
+
   frames(): Frame[] {
     const running = new Map<string, number>();
     const out: Frame[] = [];

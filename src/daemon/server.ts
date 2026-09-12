@@ -356,6 +356,22 @@ export class Daemon {
     }
 
     // VIEW-02 — the live wire. One snapshot, then only what changed.
+    // VIEW-11 — served on request, never pushed. A progression is the whole
+    // session's shape, so streaming it would resend the past on every tick;
+    // what changes between requests is one appended step.
+    if (path === "/progression" && req.method === "GET") {
+      const sessionId = url.searchParams.get("session");
+      if (sessionId === null) return this.json(res, 400, { error: "session required" });
+      const session = this.opts.registry.get(sessionId);
+      if (session === undefined) {
+        // A session this daemon does not own — including every remote one,
+        // since the registry holds only what reached it. Saying so beats an
+        // empty progression, which reads as "this session did nothing".
+        return this.json(res, 404, { error: "no such session here" });
+      }
+      return this.json(res, 200, { sessionId, ...session.map.progression() });
+    }
+
     if (path === "/stream" && req.method === "GET") {
       const sessionId = url.searchParams.get("session");
       if (sessionId === null) return this.json(res, 400, { error: "session required" });
