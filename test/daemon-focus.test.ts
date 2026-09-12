@@ -170,3 +170,29 @@ describe("/healthz says which daemon this is", () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe("GET /progression — VIEW-11's data, served on request", () => {
+  const get = (port: number, q: string, token = TOKEN) =>
+    fetch(`http://127.0.0.1:${port}/progression${q}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+  it("404s a session this daemon does not own", async () => {
+    // Every REMOTE session lands here — the registry holds only what reached
+    // this daemon. Saying so beats an empty progression, which would read as
+    // "that session did nothing" rather than "ask the machine that has it".
+    const h = await harness();
+    const res = await get(h.port, "?session=not-mine");
+    expect(res.status).toBe(404);
+  });
+
+  it("requires a session, rather than guessing one", async () => {
+    const h = await harness();
+    expect((await get(h.port, "")).status).toBe(400);
+  });
+
+  it("is token-gated like every other data route", async () => {
+    const h = await harness();
+    expect((await get(h.port, "?session=quiet-1", "x".repeat(48))).status).toBe(401);
+  });
+});

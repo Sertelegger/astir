@@ -54,10 +54,10 @@ export interface FileSummary {
   /**
    * MOD-08 — progression intervals sealed so far, and when the map started.
    *
-   * The frames themselves are not on this route: only VIEW-11's timelapse
-   * consumes them and they are far too large for a poll. The count is here so
-   * a progression that has silently stopped advancing is visible rather than
-   * being a feature nobody can tell has broken.
+   * The steps themselves are not on this route — they are far too large for a
+   * poll, and `GET /progression` serves them on request instead. The count is
+   * here so a progression that has silently stopped advancing is visible
+   * rather than being a feature nobody can tell has broken.
    */
   samples: number;
   since: number;
