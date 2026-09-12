@@ -447,3 +447,16 @@ aside h2 {
 .background-group summary { cursor: pointer; color: var(--dim); font-size: 12px; }
 .background-group summary::marker { color: var(--line); }
 .background-group .sessions { margin-top: 8px; }
+
+/* VIEW-11 — the timelapse. The map is an SVG rather than the live map's canvas
+   because it is scrubbed rather than animated: one render per slider move, not
+   one per animation frame, so the DOM cost is paid when the user asks for it. */
+.timelapse { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; }
+.timelapse-map { width: 100%; flex: 1 1 auto; min-height: 0; background: #0e0e13; border-radius: 4px; }
+.timelapse-controls { flex: 0 0 auto; }
+.timelapse-controls input[type="range"] { width: 100%; accent-color: #7fd98a; }
+.timelapse-read { margin: 4px 0 0; font-size: 11px; color: var(--dim); font-family: Menlo, monospace; }
+.linkish {
+  background: none; border: none; padding: 0;
+  color: #7fd98a; text-decoration: underline; cursor: pointer; font: inherit;
+}

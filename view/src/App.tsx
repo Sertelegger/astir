@@ -8,8 +8,10 @@ import { MapPanel } from "./MapPanel";
 import { Overview } from "./Overview";
 import { HiddenPanels, Panel } from "./Panel";
 import { Agents, Honesty, Hottest, Legend } from "./Sidebar";
+import { TimelapsePanel } from "./TimelapsePanel";
 import { useNow } from "./useNow";
 import { usePanels } from "./usePanels";
+import { useProgression } from "./useProgression";
 import { useSession, useWorld } from "./useSession";
 
 /** Which question the view is answering right now. */
@@ -84,6 +86,11 @@ export function App({ token }: { token: string }): JSX.Element {
    * highlighting the map and the ranked list is what tells you WHICH file you
    * just copied when the two disagree about ordering.
    */
+  // Only while the panel is on screen: fetching a whole session's progression
+  // for a panel nobody opened is waste, and it is hidden by default.
+  const timelapseOpen = screen === "map" && !panels.arrangement.hidden.includes("timelapse");
+  const progression = useProgression(token, screen === "map" ? chosen : null, timelapseOpen);
+
   const copyPath = (path: string): void => {
     setSelected(path);
     const absolute = absolutePathOf(snapshot?.cwd ?? "", path);
@@ -132,6 +139,14 @@ export function App({ token }: { token: string }): JSX.Element {
         );
       case "legend":
         return <Legend mode={mode} />;
+      case "timelapse":
+        return (
+          <TimelapsePanel
+            state={progression.state}
+            onRefresh={progression.refresh}
+            host={world.sessions.find((s) => s.sessionId === chosen)?.host ?? null}
+          />
+        );
     }
   };
 

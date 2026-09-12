@@ -161,8 +161,8 @@ describe("a stored arrangement is a preference, not a schema", () => {
   it("drops a name this build cannot render", () => {
     // Written by a newer release, or naming a panel since removed. Throwing
     // here would brick the view for anyone who downgraded.
-    const a = reconcile({ main: ["map", "timelapse"], side: ["agents"], hidden: [] });
-    expect(ids(a)).not.toContain("timelapse");
+    const a = reconcile({ main: ["map", "hologram"], side: ["agents"], hidden: [] });
+    expect(ids(a)).not.toContain("hologram");
     assertTotal(a);
   });
 

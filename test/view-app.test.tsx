@@ -637,9 +637,14 @@ describe("VIEW-01 — panels are arrangeable in the real app", () => {
     await waitFor(() => expect(view.container.querySelector(".panel-map")).not.toBeNull());
     await press(view, "Hide Repo map");
 
+    // By NAME, not by index. `timelapse` is hidden by default, so it shares the
+    // restore list — and an index would silently restore whichever panel
+    // happened to sort first rather than the one this test is about.
     const restore = [...view.container.querySelectorAll<HTMLButtonElement>(".hidden-panels button")];
+    const mapRestore = restore.find((b) => (b.textContent ?? "").includes("Repo map"));
+    expect(mapRestore, "the hidden map should offer a restore button").toBeDefined();
     await act(async () => {
-      restore[0]?.click();
+      mapRestore?.click();
     });
     expect(view.container.querySelector(".panel-map")).not.toBeNull();
   });

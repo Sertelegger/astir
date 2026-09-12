@@ -25,7 +25,7 @@
 
 export type Region = "main" | "side";
 
-export type PanelId = "map" | "agents" | "files" | "legend";
+export type PanelId = "map" | "agents" | "files" | "legend" | "timelapse";
 
 export interface PanelSpec {
   id: PanelId;
@@ -38,6 +38,15 @@ export interface PanelSpec {
    */
   defaultRegion: Region;
   defaultWeight: number;
+  /**
+   * Starts hidden, and stays hidden for anyone who already has an arrangement.
+   *
+   * VIEW-01 makes the arrangement the user's. A new panel appearing unbidden in
+   * a layout somebody deliberately built is a change they did not ask for — so
+   * a panel that answers a question you go looking for, rather than one you
+   * want ambient, opens from the hidden list instead of taking space.
+   */
+  defaultHidden?: boolean;
 }
 
 /**
@@ -52,6 +61,9 @@ export const PANELS: readonly PanelSpec[] = [
   { id: "agents", title: "Agents", defaultRegion: "side", defaultWeight: 1 },
   { id: "files", title: "Files", defaultRegion: "side", defaultWeight: 2 },
   { id: "legend", title: "Legend", defaultRegion: "side", defaultWeight: 0 },
+  // VIEW-11. Hidden by default: "how did the work spread" is a question you ask
+  // occasionally, and the live map is what earns permanent room.
+  { id: "timelapse", title: "Timelapse", defaultRegion: "main", defaultWeight: 3, defaultHidden: true },
 ];
 
 const KNOWN = new Set<string>(PANELS.map((p) => p.id));
@@ -65,10 +77,11 @@ export interface Arrangement {
 }
 
 export function defaultArrangement(): Arrangement {
+  const visible = PANELS.filter((p) => p.defaultHidden !== true);
   return {
-    main: PANELS.filter((p) => p.defaultRegion === "main").map((p) => p.id),
-    side: PANELS.filter((p) => p.defaultRegion === "side").map((p) => p.id),
-    hidden: [],
+    main: visible.filter((p) => p.defaultRegion === "main").map((p) => p.id),
+    side: visible.filter((p) => p.defaultRegion === "side").map((p) => p.id),
+    hidden: PANELS.filter((p) => p.defaultHidden === true).map((p) => p.id),
   };
 }
 
@@ -114,8 +127,13 @@ export function reconcile(stored: unknown): Arrangement {
   // deliberate "hide everything".
   if (seen.size === 0) return defaultArrangement();
 
+  // A panel the stored arrangement predates. It has to land somewhere, and for
+  // a `defaultHidden` one that somewhere is `hidden` — otherwise upgrading
+  // rearranges a layout the user built, which is the one thing VIEW-01 promises
+  // it will not do.
   for (const panel of PANELS) {
-    if (!seen.has(panel.id)) arrangement[panel.defaultRegion].push(panel.id);
+    if (seen.has(panel.id)) continue;
+    arrangement[panel.defaultHidden === true ? "hidden" : panel.defaultRegion].push(panel.id);
   }
   return arrangement;
 }
