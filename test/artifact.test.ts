@@ -128,6 +128,14 @@ describe("the SessionStart daemon starter (DMN-12)", () => {
     expect(starter, "SessionStart must carry a command hook to start the daemon").toBeDefined();
     expect(starter?.async, "it must not block session startup").toBe(true);
     expect(String(starter?.command)).toContain("ensure-daemon.sh");
+
+    // Claude Code validates this file against a schema and warns on every
+    // session start for anything it does not recognise. A `_comment` key lived
+    // here for months doing exactly that: harmless, ignored, and printed to the
+    // user forever. JSON has no comments — the prose is in `hooks/README.md`.
+    const allowed = new Set(["hooks"]);
+    const unknown = Object.keys(cfg).filter((k) => !allowed.has(k));
+    expect(unknown, `hooks.json carries keys the plugin schema will reject: ${unknown}`).toEqual([]);
     // ${CLAUDE_PLUGIN_ROOT} — the plugin is installed to a cache directory whose
     // path nobody can hardcode.
     expect(String(starter?.command)).toContain("CLAUDE_PLUGIN_ROOT");
