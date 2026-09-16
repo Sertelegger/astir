@@ -17,6 +17,7 @@ import {
   tokenPath,
   writeSecret,
 } from "../config/paths.js";
+import { describePlugins, installedPlugins } from "../config/plugin.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
 import { installService, serviceInstalled, servicePath, uninstallService } from "../config/service.js";
 import { probeDaemon } from "../daemon/detect.js";
@@ -724,6 +725,15 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
       out("    be filtered to empty no matter how the variable is installed.");
     }
   }
+
+  // The hooks run from a CACHED copy of the plugin, which moves independently of
+  // the binary printing this. Bumping `marketplace.json` announces a new version
+  // rather than installing it, so a release can be cut, tagged and published
+  // while every session still posts through the previous one's hooks — and
+  // nothing anywhere says so. It is the same class as a dead daemon reading as
+  // idle, and the only one here a user cannot see without reading
+  // `installed_plugins.json` by hand.
+  for (const line of describePlugins(installedPlugins(), version())) out(line);
 
   // DMN-12 — whether it will still be here after a reboot. A daemon that must be
   // started by hand is one hook-error storm away from being uninstalled.
