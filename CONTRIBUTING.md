@@ -68,10 +68,36 @@ Cutting one:
 5. Commit, tag `vX.Y.Z`, push both. Tagging triggers
    `.github/workflows/release.yml`, which refuses to publish unless the tag, the
    manifest version and a non-empty changelog section all agree.
+6. **Update the installed plugin, and check every profile.** Publishing does not
+   install anything (see below):
+   ```bash
+   claude plugin update astir@astir-marketplace
+   astir doctor          # the `plugin` rows name any install still behind
+   ```
 
-`.claude-plugin/marketplace.json`'s version is **load-bearing, not cosmetic**:
-it is what tells an already-installed `claude plugin install` there is something
-newer. A release that forgets it ships to nobody.
+`.claude-plugin/marketplace.json`'s version is **necessary and not sufficient**.
+It is what lets an already-installed plugin see that something newer exists; it
+does not fetch it. Forgetting it ships to nobody — and remembering it does not
+ship to anybody either, which is the half that is easy to miss.
+
+**The hooks and the binary are separate installs.** `astir` runs from wherever
+it was built; the hooks run from a cached copy of the plugin under
+`~/.claude*/plugins/cache/`. A release can be cut, tagged and published while
+every session on the machine still posts through the previous one's hooks.
+
+**And there is rarely one install to update.** `installed_plugins.json` maps one
+key to an array — the same plugin at `user` and `project` scope — and each
+Claude Code profile has its own. Measured here after a release and an update
+that appeared to have worked:
+
+```
+~/.claude-nv  user     0.2.0     ← updated
+~/.claude-nv  project  0.1.0
+~/.claude     user     0.1.0
+```
+
+One of three. Step 6 is why `astir doctor` lists them all rather than reporting
+"the" installed version.
 
 Nothing is published to npm — `package.json` is `private: true`.
 
