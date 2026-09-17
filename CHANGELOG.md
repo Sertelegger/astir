@@ -12,6 +12,27 @@ release is cut, named and published is in
 
 ## [Unreleased]
 
+### Added
+
+- `astir doctor` reports which plugin version is actually installed, per profile
+  and per scope, and names any that is behind the running binary. The hooks run
+  from a cached copy of the plugin and the binary runs from wherever it was
+  built, so the two drift silently — and because one install key holds several
+  scopes, updating one and believing it done is the common failure rather than
+  the exotic one.
+
+### Fixed
+
+- `hooks/hooks.json` no longer carries a `_comment` key, which Claude Code
+  reported as an unknown key on every session start. JSON has no comments; the
+  prose moved to `hooks/README.md`.
+
+### Changed
+
+- The release checklist now includes updating the installed plugin. Bumping
+  `marketplace.json` lets an install see that a new version exists; it does not
+  fetch it, and CONTRIBUTING previously implied otherwise.
+
 ## [0.2.0] — 2026-09-11 (Bagel)
 
 The first release under the name **astir**. 0.1.0 shipped as `clide`, so
