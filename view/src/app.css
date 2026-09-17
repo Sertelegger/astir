@@ -460,3 +460,7 @@ aside h2 {
   background: none; border: none; padding: 0;
   color: #7fd98a; text-decoration: underline; cursor: pointer; font: inherit;
 }
+
+/* CAP-05 — a parent astir inferred rather than read. Marked because a tree
+   showing a guess with the same confidence as a fact is worse than a flat one. */
+.guessed { color: var(--dim); cursor: help; font-size: 10px; }

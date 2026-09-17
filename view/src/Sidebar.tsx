@@ -1,5 +1,5 @@
 import type { JSX } from "react";
-import { describeAgent, humanDuration, visibleAgents } from "../../src/status/agents";
+import { describeAgent, humanDuration, nestAgents, visibleAgents } from "../../src/status/agents";
 import type { AgentFrame, FileFrame, FrameCounters, MapMode } from "../../src/status/frames";
 import { shades } from "../../src/status/frames";
 import { css, ramp } from "../../src/status/ramp";
@@ -147,6 +147,7 @@ export function Agents({ agents, receivedAt, now }: AgentsProps): JSX.Element {
   const elapsed = Math.max(0, now - receivedAt);
   const live = visibleAgents(agents);
   const hidden = agents.length - live.length;
+  const rows = nestAgents(live);
 
   return (
     <div className="agents">
@@ -154,13 +155,28 @@ export function Agents({ agents, receivedAt, now }: AgentsProps): JSX.Element {
         <p className="empty">Nothing running.</p>
       ) : (
         <ul>
-          {live.map((a) => {
+          {rows.map(({ agent: a, depth }) => {
             const { who, task, doing } = describeAgent(a);
             return (
-              <li key={a.id}>
+              <li
+                key={a.id}
+                // Indentation caps at four levels. Past that the rail is mostly
+                // margin and the rows it exists to show are unreadable — and
+                // depth beyond four says less than the row's content does.
+                style={depth > 0 ? { marginLeft: `${Math.min(depth, 4) * 12}px` } : undefined}
+                data-depth={depth}
+              >
                 <div className="agent-head">
                   <span className={`state ${a.state}`}>{a.state}</span>
                   <span className="who">{who}</span>
+                  {/* CAP-05 — an inferred parent is a guess, and a tree that
+                      shows guesses with the same confidence as sidecar-read
+                      facts lies about the one thing CAP-05 was careful about. */}
+                  {depth > 0 && a.parentSource === "inferred" && (
+                    <span className="guessed" title="Parent inferred, not read from the provider">
+                      ?
+                    </span>
+                  )}
                   <span className="num">{humanDuration(a.inStateMs + elapsed)}</span>
                 </div>
                 {/* Both, when both exist: the standing brief and the current
