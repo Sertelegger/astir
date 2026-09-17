@@ -32,13 +32,28 @@ export type Connection =
    * that as "daemon unreachable" blames the daemon for something that is not
    * wrong with it, which is the dishonesty this whole type exists to avoid.
    */
-  | { state: "absent"; host: string | null };
+  | { state: "absent"; host: string | null }
+  /**
+   * VER-01 — the daemon speaks a frame major this build cannot read.
+   *
+   * Terminal for the same reason `absent` is: retrying cannot help, and the
+   * problem is not with the connection. Separate from `absent` because the
+   * remedy is completely different — one means ask another daemon, this one
+   * means the page is older than the daemon serving it and a reload fixes it.
+   *
+   * The alternative was to apply the frame anyway, which is the failure this
+   * whole type exists to prevent: an unknown major may have MOVED a field
+   * rather than added one, so the map would render confidently from a payload
+   * it has misread, and nothing would look wrong.
+   */
+  | { state: "incompatible"; theirs: number; ours: number };
 
 export type ConnectionEvent =
   | { type: "open"; at: number }
   | { type: "end" }
   | { type: "lost"; detail: string }
   | { type: "absent"; host: string | null }
+  | { type: "incompatible"; theirs: number; ours: number }
   | { type: "retry" };
 
 /** First retry is nearly immediate; a daemon restart should not cost a reload. */
@@ -61,13 +76,17 @@ export const initialConnection: Connection = { state: "connecting", attempt: 1 }
 export function nextConnection(current: Connection, event: ConnectionEvent): Connection {
   // Terminal states. A late error from a socket closing afterwards must not
   // resurrect the stream and start it retrying something that cannot succeed.
-  if (current.state === "ended" || current.state === "absent") return current;
+  if (current.state === "ended" || current.state === "absent" || current.state === "incompatible") {
+    return current;
+  }
 
   switch (event.type) {
     case "open":
       return { state: "live", since: event.at };
     case "end":
       return { state: "ended" };
+    case "incompatible":
+      return { state: "incompatible", theirs: event.theirs, ours: event.ours };
     case "absent":
       return { state: "absent", host: event.host };
     case "lost": {
@@ -105,5 +124,11 @@ export function describeConnection(c: Connection): string {
       return c.host === null
         ? "This daemon does not have that session"
         : `That session runs on ${c.host}, not here`;
+    case "incompatible":
+      // Names both numbers and the remedy. "Incompatible version" alone tells
+      // someone that something is wrong and nothing about what to do, and the
+      // fix here is genuinely trivial — this page is simply older than the
+      // daemon that served it.
+      return `This view reads frame v${c.ours} and the daemon sends v${c.theirs} — reload the page`;
   }
 }

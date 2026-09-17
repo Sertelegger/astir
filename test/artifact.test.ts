@@ -67,6 +67,17 @@ beforeAll(async () => {
   proc = spawn(process.execPath, [ENTRY, "daemon", "--port", "0", "--token", TOKEN], {
     cwd: REPO,
     stdio: ["ignore", "pipe", "pipe"],
+    // `ASTIR_NO_PERSIST` was added to two spawns below and missed on THIS one,
+    // which is the only one that persists anything. Without it the test daemon
+    // loads the developer's real `~/.astir/state.json` — inheriting whatever
+    // the real daemon was doing, so one genuinely blocked agent makes `dismiss`
+    // look broken — and overwrites that file on shutdown, which is the exact
+    // loss the flag exists to prevent.
+    //
+    // It passes in CI either way, because CI has no snapshot. A suite that is
+    // green on a clean machine and red on a working one is worse than no suite:
+    // the failure reads as a bug in the code rather than in the harness.
+    env: { ...process.env, ASTIR_NO_PERSIST: "1" },
   });
 
   // The daemon prints its bound address on stdout as its first line.
