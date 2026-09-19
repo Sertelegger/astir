@@ -217,3 +217,38 @@ describe("VIEW-02 — a session this daemon does not own", () => {
     expect(describeConnection({ state: "absent", host: null })).toContain("does not have");
   });
 });
+
+describe("VER-01 — a frame major this build cannot read", () => {
+  it("is terminal, because retrying cannot make the daemon older", () => {
+    // The same reason `absent` is terminal. Retrying a version mismatch would
+    // produce an infinite reconnect loop against a daemon that is working
+    // perfectly, and report it as though the connection were at fault.
+    const c = nextConnection(initialConnection, { type: "incompatible", theirs: 2, ours: 1 });
+    expect(c.state).toBe("incompatible");
+    for (const event of [
+      { type: "retry" },
+      { type: "open", at: 1 },
+      { type: "lost", detail: "x" },
+    ] as const) {
+      expect(nextConnection(c, event), `${event.type} must not resurrect it`).toEqual(c);
+    }
+  });
+
+  it("names both versions and the remedy", () => {
+    // "Incompatible version" says something is wrong and nothing about what to
+    // do — and here the fix is trivial: the page is older than the daemon.
+    const text = describeConnection({ state: "incompatible", theirs: 2, ours: 1 });
+    expect(text).toContain("v2");
+    expect(text).toContain("v1");
+    expect(text).toMatch(/reload/i);
+  });
+
+  it("is distinct from absent, which has a completely different remedy", () => {
+    // Both are terminal; conflating them would tell someone to go ask another
+    // machine when what they need is to refresh the page.
+    const absent = describeConnection({ state: "absent", host: "other-box" });
+    const incompatible = describeConnection({ state: "incompatible", theirs: 2, ours: 1 });
+    expect(absent).not.toEqual(incompatible);
+    expect(incompatible).not.toContain("does not have");
+  });
+});

@@ -6,7 +6,7 @@ import {
   initialConnection,
   nextConnection,
 } from "../../src/status/connection";
-import { applyDelta, type Delta, type Snapshot } from "../../src/status/frames";
+import { applyDelta, type Delta, FRAME_VERSION, type Snapshot } from "../../src/status/frames";
 import { type OverviewSession, overview } from "../../src/status/overview";
 import type { StatusBody } from "../../src/status/types";
 import { authHeaders } from "./credentials";
@@ -117,7 +117,24 @@ export function useSession(
               return;
             }
             if (message.event === "snapshot") {
-              publish(JSON.parse(message.data) as Snapshot);
+              const snapshot = JSON.parse(message.data) as Snapshot;
+              // VER-01's consumer half. `seq` and `sessionId` were both checked
+              // and the version never was, so a daemon speaking a newer frame
+              // major would have been rendered confidently from a payload this
+              // build had misread — an unknown major may have MOVED a field
+              // rather than added one, and nothing about the result would look
+              // wrong. Checked on the snapshot alone: a delta can only arrive
+              // after one, so the gate cannot be bypassed and the check costs
+              // nothing per frame.
+              if (snapshot.v?.major !== FRAME_VERSION.major) {
+                advance({
+                  type: "incompatible",
+                  theirs: snapshot.v?.major ?? 0,
+                  ours: FRAME_VERSION.major,
+                });
+                return;
+              }
+              publish(snapshot);
               continue;
             }
             if (message.event === "delta" && base.current !== null) {

@@ -92,6 +92,25 @@ const KINDS = new Set<string>([
 ]);
 const PROVIDERS = new Set<string>(["claude", "codex"]);
 const OPS = new Set<string>(["read", "write", "edit", "other"]);
+const PARENT_SOURCES = new Set<string>(["sidecar", "tooluse", "inferred"]);
+
+/**
+ * Every value `NotificationKind` declares — including `other`.
+ *
+ * Deliberately not the set in `normalize.ts`, which holds the five matcher
+ * values CLAUDE sends and maps anything else to `other`. That one answers "did
+ * the provider say something I recognise"; this one answers "is this a
+ * NotificationKind", and `other` is a perfectly good one. Sharing a set would
+ * make `other` unroutable in the normalizer or unrepresentable here.
+ */
+const NOTIFICATION_KINDS = new Set<string>([
+  "permission_prompt",
+  "agent_needs_input",
+  "worker_permission_prompt",
+  "idle_prompt",
+  "agent_completed",
+  "other",
+]);
 
 function isSaneString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0 && v.length <= LIMITS.maxStringLength;
@@ -128,6 +147,21 @@ export function validateEvent(raw: unknown): ValidateResult {
 
   const op = r.op == null ? null : (r.op as string);
   if (op !== null && !OPS.has(op)) return { ok: false, error: "bad op" };
+
+  // Checked against their sets like every other closed vocabulary above. They
+  // were cast straight through, which was not a bug only because the single
+  // normalizer validated `notificationKind` itself — the same shape as the
+  // prune #37 fixed: an invariant held by one caller's diligence rather than by
+  // the boundary claiming to enforce it. A second normalizer inherits none of
+  // it, and `notificationKind` reaches the registry as the `kind` of a
+  // notification envelope, so an unvalidated string ends up in what astir shows
+  // a human — the one surface whose credibility is the whole product.
+  if (r.notificationKind != null && !NOTIFICATION_KINDS.has(r.notificationKind as string)) {
+    return { ok: false, error: "bad notificationKind" };
+  }
+  if (r.parentSource != null && !PARENT_SOURCES.has(r.parentSource as string)) {
+    return { ok: false, error: "bad parentSource" };
+  }
 
   // DMN-03 — bounded like every other string crossing this boundary. Rejected
   // rather than truncated, per LIMITS, and a rejection is now attributed to the
