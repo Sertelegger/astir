@@ -10,6 +10,7 @@
  */
 
 import type { Registry } from "../model/registry.js";
+import { debug } from "../obs/debug.js";
 import type { Dispatcher } from "./dispatch.js";
 import { buildEnvelope } from "./envelope.js";
 import type { NotifyPolicy } from "./policy.js";
@@ -77,28 +78,31 @@ export class NotifyLoop {
       // is the policy's business, and a genuine block is minutes long anyway —
       // this delay is invisible against a one-minute reminder interval, and the
       // user is by definition not looking yet.
+      debug("notify", "considering", {
+        session: b.sessionId,
+        agent: b.agentId,
+        blockedForMs: b.blockedForMs,
+        restored: b.restored,
+        announced: this.announced.has(key),
+      });
+
       // DMN-06 — a RESTORED block has not proved anything yet.
       //
       // Its `blockedForMs` accrued before the daemon died, so it clears the
-      // dwell below the instant the daemon returns — which is PSH-16's own
-      // failure arriving from the other direction. The dwell exists to let a
-      // block prove it is real, and this one proves only that it was real
-      // earlier. An agent that unblocked while the daemon was down is working,
-      // and working sessions emit; the first event clears `restored` and
-      // replaces the guess with the truth. So wait for that event rather than
-      // interrupting someone on a memory.
+      // dwell below the instant the daemon returns — PSH-16's own failure
+      // arriving from a direction it did not anticipate. The dwell exists to
+      // let a block prove it is real; this one proves only that it was real
+      // earlier.
       //
-      // Deliberately NOT suppressed forever. A genuinely blocked agent emits
-      // NOTHING, so `restored` would never clear and the one thing this product
-      // exists to say would go unsaid — which is a worse failure than a stale
-      // alert. So the dwell is re-measured from the restore instead of skipped:
-      // a session that merely unblocked while the daemon was down is working,
-      // and working sessions emit within that window, which clears `restored`
-      // and replaces the memory with the truth.
+      // Re-measured from the restore rather than skipped, and the distinction
+      // is the whole design: a genuinely blocked agent emits NOTHING, so
+      // waiting for it to act would silence the one thing this product exists
+      // to say. A session that merely unblocked while the daemon was down is
+      // working, and working sessions emit within that window — which clears
+      // `restored` and replaces the memory with the truth.
       //
-      // The BADGE is not gated — PSH-16 already says an ambient count costs no
-      // attention — so a restored block is visible immediately. Only the
-      // interruption waits.
+      // The BADGE is not gated, per PSH-16's own note that an ambient count
+      // costs no attention. Only the interruption waits.
       if (!this.announced.has(key) && b.restored) {
         const first = this.restoredSeen.get(key) ?? now;
         this.restoredSeen.set(key, first);

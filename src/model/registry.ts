@@ -2,6 +2,7 @@
 
 import type { AstirEvent, ParentSource, Provider } from "../contract/event.js";
 import type { DiscoveredSession } from "../discovery/sessions.js";
+import { debug } from "../obs/debug.js";
 import { RepoMap } from "./map.js";
 import { identityMatches, SNAPSHOT_VERSION, type Snapshot, type SnapshotSession } from "./snapshot.js";
 
@@ -717,6 +718,13 @@ export class Registry {
     }
     const previous = this.silentByProvider.get(provider) ?? [];
     this.silentByProvider.set(provider, complete ? silent : mergeSilent(previous, silent));
+    debug("reconcile", "swept", {
+      provider,
+      discovered: discovered.length,
+      pruned,
+      complete,
+    });
+
     return { enriched, pruned };
   }
 
