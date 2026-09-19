@@ -9,6 +9,7 @@
 
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { renderMenubar } from "../src/status/menubar.js";
@@ -22,7 +23,7 @@ function debugOutput(env: Record<string, string>): string {
     [
       "--input-type=module",
       "-e",
-      `import { debug, debugEnabled } from "${join(REPO, "dist/obs/debug.js")}";
+      `import { debug, debugEnabled } from "${pathToFileURL(join(REPO, "dist/obs/debug.js")).href}";
        debug("test", "hello", { n: 1, s: "x", b: true, nil: null });
        process.stdout.write(String(debugEnabled()));`,
     ],
@@ -40,7 +41,7 @@ describe("OBS-02 — ASTIR_DEBUG", () => {
       [
         "--input-type=module",
         "-e",
-        `import { debug } from "${join(REPO, "dist/obs/debug.js")}";
+        `import { debug } from "${pathToFileURL(join(REPO, "dist/obs/debug.js")).href}";
          debug("test", "should not appear");`,
       ],
       { env: { ...process.env, ASTIR_DEBUG: "" }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
