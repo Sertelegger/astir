@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Daemon } from "../src/daemon/server.js";
 import { Registry } from "../src/model/registry.js";
@@ -255,7 +256,11 @@ describe("CAP-06 — SessionStart hands the watcher its paths", () => {
       // Compared on the final SEGMENT, not as a substring: `/.github` contains
       // `/.git`, and `.github` is deliberately watched — a workflow edited by a
       // script is real work. A substring check fails here for the wrong reason.
-      const names = (paths ?? []).map((x) => x.split("/").at(-1));
+      // `basename`, not a split on "/": Windows joins with a backslash, so the
+      // split leaves the whole path as one segment and every assertion below
+      // passes or fails for the wrong reason. The non-blocking Windows job
+      // caught exactly that.
+      const names = (paths ?? []).map((x) => basename(x));
       for (const bad of ["node_modules", ".git", "dist", "coverage"]) {
         expect(names, `${bad} must not be watched`).not.toContain(bad);
       }
