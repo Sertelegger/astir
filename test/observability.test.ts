@@ -9,8 +9,7 @@
 
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { renderMenubar } from "../src/status/menubar.js";
 
