@@ -7,6 +7,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultNewId, normalizeClaudeHook } from "../adapters/claude/normalize.js";
+import { watchPathsFor } from "../adapters/claude/watch.js";
 import type { Normalizer, SidecarMeta } from "../adapters/types.js";
 import { validateEvent } from "../contract/event.js";
 import { candidateConfigDirs } from "../discovery/profiles.js";
@@ -673,7 +674,57 @@ export class Daemon {
       }
     }
 
+    // CAP-06 — hand the watcher its paths on SessionStart.
+    //
+    // The watcher starts only if a `FileChanged` hook is registered AND resolves
+    // to a non-empty path list, and the list comes from either a hook's
+    // `matcher` or this field. `matcher` cannot do the job: it doubles as a
+    // regex tested against the changed file's BASENAME at dispatch, so a
+    // matcher naming directories would also filter events to files whose names
+    // contain those words. So astir registers a matcher-less entry, which fires
+    // for every watched change, and supplies the paths here instead.
+    if (valid.event.kind === "session_start") {
+      const watch = this.watchPathsFor(valid.event.sessionId, cwd);
+      if (watch !== null) {
+        // `this.json` returns void; returning its result from a void method is
+        // the kind of thing that reads as intentional and is not.
+        this.json(res, 200, {
+          ok: true,
+          applied: result.applied,
+          hookSpecificOutput: { hookEventName: "SessionStart", watchPaths: watch },
+        });
+        return;
+      }
+    }
     this.json(res, 200, { ok: true, applied: result.applied });
+  }
+
+  /**
+   * Directories this session should watch, or null when there is nothing to say.
+   *
+   * Errors are swallowed to null rather than propagated: a session must start
+   * even if its working directory cannot be read, and a missing watch list
+   * costs map coverage while a failed SessionStart hook costs the session.
+   */
+  private watchPathsFor(sessionId: string, cwd: string | null): string[] | null {
+    if (cwd === null || cwd === "") return null;
+    try {
+      const entries = readdirSync(cwd, { withFileTypes: true }).map((e) => ({
+        name: e.name,
+        isDirectory: e.isDirectory(),
+      }));
+      const { paths, truncated } = watchPathsFor(cwd, entries, join);
+      // Truncation is silent to the hook and NOT silent here: a map that is
+      // quietly partial is the failure this project exists downstream of.
+      debug("watch", "handing over watch paths", {
+        session: sessionId,
+        count: paths.length,
+        truncated,
+      });
+      return paths.length === 0 ? null : paths;
+    } catch {
+      return null;
+    }
   }
 
   private snapshot(): unknown {

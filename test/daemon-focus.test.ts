@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Daemon } from "../src/daemon/server.js";
 import { Registry } from "../src/model/registry.js";
@@ -209,6 +210,65 @@ describe("/healthz says how old the daemon is", () => {
       expect(typeof body.startedAt).toBe("number");
       expect(body.startedAt).toBeGreaterThan(0);
       expect(typeof body.build).toBe("string");
+    });
+  });
+});
+
+describe("CAP-06 — SessionStart hands the watcher its paths", () => {
+  it("returns watchPaths, without which the watcher never starts", () => {
+    // The watcher runs only if a FileChanged hook is registered AND resolves to
+    // a non-empty path list. astir registers a matcher-less entry, so this
+    // response is the only thing that can supply one.
+    return harness().then(async (h) => {
+      const res = await fetch(`http://127.0.0.1:${h.port}/hook/claude`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          hook_event_name: "SessionStart",
+          session_id: "watch-check",
+          cwd: process.cwd(),
+        }),
+      });
+      const body = (await res.json()) as {
+        hookSpecificOutput?: { hookEventName?: string; watchPaths?: string[] };
+      };
+      expect(body.hookSpecificOutput?.hookEventName).toBe("SessionStart");
+      expect(Array.isArray(body.hookSpecificOutput?.watchPaths)).toBe(true);
+      expect(body.hookSpecificOutput?.watchPaths?.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("hands over no build or vendor directory from a real repo", () => {
+    // Run against astir's OWN checkout, which has node_modules and dist — the
+    // case a synthetic fixture would not catch.
+    return harness().then(async (h) => {
+      const res = await fetch(`http://127.0.0.1:${h.port}/hook/claude`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          hook_event_name: "SessionStart",
+          session_id: "watch-check-2",
+          cwd: process.cwd(),
+        }),
+      });
+      const paths = ((await res.json()) as { hookSpecificOutput?: { watchPaths?: string[] } })
+        .hookSpecificOutput?.watchPaths;
+      // Compared on the final SEGMENT, not as a substring: `/.github` contains
+      // `/.git`, and `.github` is deliberately watched — a workflow edited by a
+      // script is real work. A substring check fails here for the wrong reason.
+      // `basename`, not a split on "/": Windows joins with a backslash, so the
+      // split leaves the whole path as one segment and every assertion below
+      // passes or fails for the wrong reason. The non-blocking Windows job
+      // caught exactly that.
+      const names = (paths ?? []).map((x) => basename(x));
+      for (const bad of ["node_modules", ".git", "dist", "coverage"]) {
+        expect(names, `${bad} must not be watched`).not.toContain(bad);
+      }
+      expect(names, ".github is the deliberate exception").toContain(".github");
+      // Also via `basename`, and for the same reason: `endsWith("/src")` is
+      // false on Windows for a path that ends in `\src`. Fixing only the first
+      // assertion left this one failing on the next run.
+      expect(names, "the repo's own src/ must be watched").toContain("src");
     });
   });
 });
