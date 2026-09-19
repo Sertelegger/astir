@@ -1,0 +1,32 @@
+{
+  "_capture": {
+    "note": "Recorded verbatim from a live Claude Code session via a temporary PostToolUse command hook in a gitignored .claude/settings.local.json, removed immediately after. Do not hand-edit; re-capture instead. The command and its output are this session inspecting the capture \u2014 genuine, and deliberately left as recorded rather than tidied, because a tidied fixture is an invented one.",
+    "provider": "claude",
+    "cliVersion": "2.1.278 (Claude Code)",
+    "capturedAt": "2026-09-19",
+    "settles": "The tool result field is `tool_response`, not `tool_output`. Spec A2 and the comment at normalize.ts said the latter. Nothing read it \u2014 `ok` is derived from the event kind \u2014 so the error was documentation, not behaviour."
+  },
+  "session_id": "d8458719-ef7f-472f-be54-5616006a1f7c",
+  "transcript_path": "/home/dev/.claude-nv/projects/-home-dev-repos-astir/d8458719-ef7f-472f-be54-5616006a1f7c.jsonl",
+  "cwd": "/home/dev/repos/astir",
+  "prompt_id": "f3c49dc9-f65a-4d3c-aab4-58d6328187a4",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "xhigh"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cd /home/dev/repos/astir\nif [ -f /tmp/ptu-capture.json ]; then\n  python3 -c \"\nimport json\nd=json.load(open('/tmp/ptu-capture.json'))\nprint('  CAPTURED. top-level keys:'); print('   ', sorted(d))\nprint('  tool_name       :', d.get('tool_name'))\nprint('  result-ish keys :', [k for k in d if any(w in k for w in ('response','output','result'))])\nprint('  tool_input keys :', sorted(d.get('tool_input',{})) if isinstance(d.get('tool_input'),dict) else type(d.get('tool_input')).__name__)\"\nelse\n  echo \"  still nothing \u2014 hooks bind at session start, so a settings change mid-session may not apply\"\nfi",
+    "description": "Check again for the capture"
+  },
+  "tool_response": {
+    "stdout": "  CAPTURED. top-level keys:\n    ['cwd', 'duration_ms', 'effort', 'hook_event_name', 'permission_mode', 'prompt_id', 'session_id', 'tool_input', 'tool_name', 'tool_response', 'tool_use_id', 'transcript_path']\n  tool_name       : Bash\n  result-ish keys : ['tool_response']\n  tool_input keys : ['command', 'description']",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+  },
+  "tool_use_id": "toolu_01TEuWf7eBrL1sDG9MpwfBpg",
+  "duration_ms": 89
+}

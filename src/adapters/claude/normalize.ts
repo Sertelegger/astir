@@ -173,8 +173,11 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
         else paths.push(rel);
       }
     }
-    // A2: the result field is `tool_output`. A failure arrives as its own event
-    // kind rather than as ok:false, so `ok` is derivable rather than guessed.
+    // The result field is `tool_response` — A2 and this comment both said
+    // `tool_output`, and a live capture settles it (test/fixtures/claude/
+    // post-tool-use.json). Nothing here read it either way: a failure arrives
+    // as its own event KIND rather than as ok:false, so `ok` is derivable
+    // rather than guessed. The error was documentation, not behaviour.
     ok = kind === "tool_failed" ? false : kind === "post_tool" ? true : null;
   }
 
