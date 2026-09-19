@@ -69,6 +69,10 @@ export interface AgentFrame {
   inStateMs: number;
   turnMs: number;
   acknowledged: boolean;
+  /** CAP-05 — null for a session's root agent, which has no parent. */
+  parentId: string | null;
+  /** `sidecar` | `tooluse` | `inferred`. Null when parentage is unknown. */
+  parentSource: string | null;
 }
 
 /**
@@ -159,6 +163,8 @@ function toAgentFrame(a: StatusAgent): AgentFrame {
     description: a.description ?? null,
     tool: a.tool ?? null,
     toolPath: a.toolPath ?? null,
+    parentId: a.parentId ?? null,
+    parentSource: a.parentSource ?? null,
     state: a.state,
     activeMs: a.activeMs,
     blockedMs: a.blockedMs,

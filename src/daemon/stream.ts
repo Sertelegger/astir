@@ -106,6 +106,8 @@ export function observe(session: SessionRecord, now: number): Observation {
     description: a.description,
     tool: a.tool,
     toolPath: a.toolPath,
+    parentId: a.parentId,
+    parentSource: a.parentSource,
   }));
   return {
     sessionId: session.sessionId,

@@ -199,6 +199,8 @@ const agentFrame = (over: Partial<Parameters<typeof Agents>[0]["agents"][number]
   inStateMs: 0,
   turnMs: 0,
   acknowledged: false,
+  parentId: null,
+  parentSource: null,
   ...over,
 });
 
@@ -337,5 +339,66 @@ describe("the rail says what each agent is doing", () => {
     );
     expect(view.container.querySelector("li")).toBe(before);
     expect(view.container.textContent).toContain("Edit b.ts");
+  });
+});
+
+describe("CAP-05 — the rail nests", () => {
+  it("indents a child under its parent", () => {
+    // Before this, `AgentFrame` carried no parentage at all, so the rail was
+    // unconditionally flat no matter what the registry knew.
+    const view = render(
+      <Agents
+        agents={[agentFrame({ id: "root" }), agentFrame({ id: "kid", parentId: "root" })]}
+        receivedAt={0}
+        now={0}
+      />,
+    );
+    const depths = [...view.container.querySelectorAll("li")].map((li) => li.dataset.depth);
+    expect(depths).toEqual(["0", "1"]);
+  });
+
+  it("marks an inferred parent, and leaves a read one unmarked", () => {
+    // A tree that shows a guess with the same confidence as a sidecar-read fact
+    // lies about the one thing CAP-05 was careful about.
+    const guessed = render(
+      <Agents
+        agents={[
+          agentFrame({ id: "root" }),
+          agentFrame({ id: "kid", parentId: "root", parentSource: "inferred" }),
+        ]}
+        receivedAt={0}
+        now={0}
+      />,
+    );
+    expect(guessed.container.querySelector(".guessed")).not.toBeNull();
+    cleanup();
+
+    const read = render(
+      <Agents
+        agents={[
+          agentFrame({ id: "root" }),
+          agentFrame({ id: "kid", parentId: "root", parentSource: "sidecar" }),
+        ]}
+        receivedAt={0}
+        now={0}
+      />,
+    );
+    expect(read.container.querySelector(".guessed")).toBeNull();
+  });
+
+  it("puts a blocked branch above a quiet one", () => {
+    const view = render(
+      <Agents
+        agents={[
+          agentFrame({ id: "quiet" }),
+          agentFrame({ id: "busy" }),
+          agentFrame({ id: "stuck", parentId: "busy", state: "blocked" }),
+        ]}
+        receivedAt={0}
+        now={0}
+      />,
+    );
+    const ids = [...view.container.querySelectorAll(".who")].map((e) => e.textContent);
+    expect(ids[0]).not.toBe("quiet");
   });
 });

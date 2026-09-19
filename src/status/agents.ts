@@ -112,3 +112,116 @@ export function ellipsise(text: string, max: number): string {
   if (max <= 1 || text.length <= max) return text;
   return `${text.slice(0, max - 1)}…`;
 }
+
+/** One rail row: the agent, and how deep in the spawn tree it sits. */
+export interface RailRow<T> {
+  agent: T;
+  depth: number;
+}
+
+type Nestable = Pick<StatusAgent, "id" | "state" | "acknowledged"> & {
+  parentId?: string | null;
+};
+
+/**
+ * How loudly a subtree is asking for a human.
+ *
+ * The rail's whole job is G1 — which agent needs you — so this is what decides
+ * order, at every level. An unacknowledged block outranks a dismissed one,
+ * because dismissing says "I know" and not "it is resolved".
+ */
+function urgency(a: Nestable): number {
+  if (a.state !== "blocked") return 0;
+  return a.acknowledged ? 1 : 2;
+}
+
+/**
+ * CAP-05 — the spawn tree, flattened into rows with a depth.
+ *
+ * Returns rows rather than a nested structure because the rail renders a list
+ * and the only thing it needs from the tree is indentation — and because a flat
+ * array is what makes "is this ordered correctly" a testable question.
+ *
+ * **Depth must never outrank needing a human.** A subtree is ordered by the
+ * worst thing anywhere inside it, so a blocked grandchild pulls its whole
+ * branch to the top and stays reachable without scrolling. Ordering purely by
+ * structure would bury the one row the product exists to show, which is the
+ * rail being pretty at the cost of being useful.
+ *
+ * Orphans are roots. An agent whose parent has finished and been filtered out
+ * still has to appear — dropping it would hide live work because something
+ * unrelated ended, and the parent's absence is not the child's fault.
+ *
+ * Cycles cannot hang it, and the reason is worth stating because it is not the
+ * visited sets. Each agent has exactly one `parentId`, so every member of a
+ * cycle has its parent INSIDE that cycle — which means no cycle is ever a root
+ * and none is reachable from one. The walk therefore covers a forest and
+ * terminates on its own; what rescues a cycle's members is the completeness
+ * sweep at the end, which appends anything the walk never reached.
+ *
+ * The visited sets are kept anyway, and deliberately: they are unreachable
+ * given one parent per node, and that invariant lives in a payload arriving
+ * over a wire. The cost of keeping them is a Set; the cost of being wrong is a
+ * frozen tab. A mutation removing them survives the suite, and that is honest
+ * rather than a gap — there is no input that reaches them.
+ */
+export function nestAgents<T extends Nestable>(agents: readonly T[]): Array<RailRow<T>> {
+  const byId = new Map<string, T>(agents.map((a) => [a.id, a]));
+  const children = new Map<string, T[]>();
+  const roots: T[] = [];
+
+  for (const a of agents) {
+    const parent = a.parentId ?? null;
+    // Present in the input, not merely named: a parent that has finished is not
+    // a parent this rail can nest under.
+    if (parent !== null && parent !== a.id && byId.has(parent)) {
+      const sibs = children.get(parent) ?? [];
+      sibs.push(a);
+      children.set(parent, sibs);
+    } else {
+      roots.push(a);
+    }
+  }
+
+  /** The loudest urgency anywhere in this agent's subtree. */
+  const worst = new Map<string, number>();
+  const scoreOf = (a: T, seen: Set<string>): number => {
+    const cached = worst.get(a.id);
+    if (cached !== undefined) return cached;
+    if (seen.has(a.id)) return urgency(a);
+    seen.add(a.id);
+    let best = urgency(a);
+    for (const child of children.get(a.id) ?? []) best = Math.max(best, scoreOf(child, seen));
+    worst.set(a.id, best);
+    return best;
+  };
+
+  // Stable within a tie: two equally quiet siblings must not swap places
+  // between frames, which would make the rail flicker and every row's position
+  // meaningless.
+  const order = (list: T[]): T[] => {
+    const index = new Map(list.map((a, i) => [a.id, i]));
+    return [...list].sort(
+      (x, y) =>
+        scoreOf(y, new Set()) - scoreOf(x, new Set()) || (index.get(x.id) ?? 0) - (index.get(y.id) ?? 0),
+    );
+  };
+
+  const rows: Array<RailRow<T>> = [];
+  const walk = (list: T[], depth: number, seen: Set<string>): void => {
+    for (const a of order(list)) {
+      if (seen.has(a.id)) continue;
+      seen.add(a.id);
+      rows.push({ agent: a, depth });
+      walk(children.get(a.id) ?? [], depth + 1, seen);
+    }
+  };
+  walk(roots, 0, new Set());
+
+  // A cycle among non-roots would otherwise vanish entirely. Appending them at
+  // the top level keeps the rail's contents complete even when its shape is
+  // wrong, because a missing agent is the worse failure.
+  const shown = new Set(rows.map((r) => r.agent.id));
+  for (const a of agents) if (!shown.has(a.id)) rows.push({ agent: a, depth: 0 });
+  return rows;
+}

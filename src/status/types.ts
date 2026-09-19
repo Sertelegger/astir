@@ -35,6 +35,22 @@ export interface StatusAgent {
   /** The tool running right now and the path it is on, or null between tools. */
   tool?: string | null;
   toolPath?: string | null;
+  /**
+   * CAP-05 — who spawned this agent, and how confidently we know.
+   *
+   * Resolved deterministically from the provider's sidecar, stored on the
+   * record and persisted across a restart — and then dropped here, so the rail
+   * could not nest however much the view wanted to. SC3 ("a three-level
+   * subagent tree renders with correct parentage") was not unimplemented; it
+   * was unsatisfiable by the wire contract.
+   */
+  parentId?: string | null;
+  /**
+   * `sidecar` is read, `inferred` is a guess. Carried because a tree that
+   * presents both with the same confidence lies about the one thing CAP-05 was
+   * careful about.
+   */
+  parentSource?: string | null;
 }
 
 /**

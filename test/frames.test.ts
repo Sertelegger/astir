@@ -107,6 +107,8 @@ function toFrame(a: StatusAgent) {
     inStateMs: a.inStateMs,
     turnMs: 0,
     acknowledged: a.acknowledged,
+    parentId: a.parentId ?? null,
+    parentSource: a.parentSource ?? null,
   };
 }
 
@@ -268,5 +270,44 @@ describe("VIEW-10 / SC11 — the same file, opposite answers", () => {
     const frame = snap();
     expect(shades(frame.files, "session", 0, frame.decay)).toEqual([]);
     expect(shades(frame.files, "live", 0, frame.decay)).toEqual([]);
+  });
+});
+
+describe("CAP-05 — parentage survives the trip to the wire", () => {
+  it("carries parentId and parentSource onto the frame", () => {
+    // THE original bug, and the one every rail test misses: those all build
+    // `AgentFrame`s directly, so a `toAgentFrame` that dropped parentage again
+    // would leave them green while the rail went flat for real users.
+    const snapshot = buildSnapshot({
+      sessionId: "s1",
+      cwd: "/repo",
+      name: null,
+      status: "busy",
+      agents: [agent({ id: "root" }), agent({ id: "kid", parentId: "root", parentSource: "sidecar" })],
+      map: new RepoMap({ nowMs: () => 1_000 }),
+      seq: 1,
+      counters: { pathsOutsideRepo: 0, invalidEvents: 0 },
+    });
+
+    const kid = snapshot.agents.find((x) => x.id === "kid");
+    expect(kid?.parentId).toBe("root");
+    expect(kid?.parentSource).toBe("sidecar");
+  });
+
+  it("reports a root agent's absent parent as null, not undefined", () => {
+    // Downstream compares against null; `undefined` would pass `!== null` and
+    // reach code that assumed an id.
+    const snapshot = buildSnapshot({
+      sessionId: "s1",
+      cwd: "/repo",
+      name: null,
+      status: "busy",
+      agents: [agent({ id: "root" })],
+      map: new RepoMap({ nowMs: () => 1_000 }),
+      seq: 1,
+      counters: { pathsOutsideRepo: 0, invalidEvents: 0 },
+    });
+    expect(snapshot.agents[0]?.parentId).toBeNull();
+    expect(snapshot.agents[0]?.parentSource).toBeNull();
   });
 });
