@@ -13,8 +13,25 @@
 import { reasonText } from "../notify/envelope.js";
 import { mergeRemoteSessions } from "../notify/roster.js";
 import { agentDetail, ellipsise, humanDuration, visibleAgents as visible } from "./agents.js";
+import { isSeparator, type Menu, MenuBuilder, type MenuItem, toSwiftBar } from "./menu.js";
 import { background, dominantState, repoName, sessionLabels } from "./overview.js";
 import type { RemoteSession, StatusAgent, StatusBody, StatusResult } from "./types.js";
+
+/**
+ * Split the collected nodes into a status item and a dropdown.
+ *
+ * astir always emits exactly one bar line and then a rule, so the first node is
+ * the badge by construction. Asserting that here rather than trusting position
+ * at every call site keeps the invariant in one place.
+ */
+function finish(menu: MenuBuilder): Menu {
+  const [first, ...rest] = menu.build();
+  const badge: MenuItem = first === undefined || isSeparator(first) ? { text: "", depth: 0 } : first;
+  // Drop the rule that followed the badge: `toSwiftBar` writes that separator
+  // itself, as part of the format rather than as content.
+  const items = rest.length > 0 && rest[0] !== undefined && isSeparator(rest[0]) ? rest.slice(1) : rest;
+  return { badge, items };
+}
 
 /** States that mean work is actively happening. */
 const WORKING = new Set(["thinking", "tool-running"]);
@@ -93,16 +110,6 @@ const COLOUR = {
   /** Paths, hints, dismissed items: present, deliberately quiet. */
   dim: "#6c6c70,#98989d",
 } as const;
-
-/**
- * A clickable menu item. `param1` is the script because `bash=` is the
- * interpreter — see `MenubarOpts.invocation`.
- */
-function action(invocation: string[], args: string[]): string {
-  const [command = "", ...rest] = invocation;
-  const params = [...rest, ...args].map((value, i) => `param${i + 1}=${value}`);
-  return `bash=${command} ${params.join(" ")} terminal=false refresh=true`;
-}
 
 /**
  * How recently a token rejection must have happened to still be the diagnosis.
@@ -227,7 +234,7 @@ function timeText(agent: StatusAgent): string {
  * away the remote sessions it already had and showed only a warning triangle.
  */
 function remoteSection(
-  lines: string[],
+  menu: MenuBuilder,
   remote: RemoteEntry[],
   elsewhere: RemoteSession[],
   now: number,
@@ -245,7 +252,7 @@ function remoteSection(
 
   if (remote.length > 0 || quietElsewhere.length > 0) {
     separator();
-    lines.push(`Other machines | color=${COLOUR.dim}`);
+    menu.push({ text: `Other machines`, depth: 0, colour: COLOUR.dim });
     for (const entry of remote) {
       if (entry.stale === true) {
         // Losing the tunnel does not mean the agent stopped waiting — it means we
@@ -255,23 +262,34 @@ function remoteSection(
           entry.lastSeen === undefined
             ? ""
             : `  ·  last heard ${humanDuration(Math.max(0, now - entry.lastSeen))} ago`;
-        lines.push(`${safe(entry.host)}  ⚠ unreachable | color=${COLOUR.danger}`);
-        lines.push(`-- ${safe(entry.repo)}${lastHeard} | color=${COLOUR.dim} font=Menlo`);
-        lines.push(`-- Reconnect:  ssh -R 47001:127.0.0.1:47001 ${safe(entry.host)} | color=${COLOUR.dim}`);
-        lines.push(`-- Forget | ${action(exe, ["forget", entry.sessionId])} color=${COLOUR.dim}`);
+        menu.push({ text: `${safe(entry.host)}  ⚠ unreachable`, depth: 0, colour: COLOUR.danger });
+        menu.push({ text: `${safe(entry.repo)}${lastHeard}`, depth: 1, colour: COLOUR.dim, monospace: true });
+        menu.push({
+          text: `Reconnect:  ssh -R 47001:127.0.0.1:47001 ${safe(entry.host)}`,
+          depth: 1,
+          colour: COLOUR.dim,
+        });
+        menu.push({
+          text: `Forget`,
+          depth: 1,
+          colour: COLOUR.dim,
+          action: { argv: [...exe, ...["forget", entry.sessionId]] },
+        });
         continue;
       }
 
       const marker = entry.acknowledged ? "" : " ⏳";
       const colour = entry.acknowledged ? COLOUR.dim : COLOUR.alert;
-      lines.push(`${safe(entry.host)} · ${safe(entry.repo)}${marker} | color=${colour}`);
+      menu.push({ text: `${safe(entry.host)} · ${safe(entry.repo)}${marker}`, depth: 0, colour: colour });
       const suffix = entry.acknowledged ? "  (dismissed)" : "";
-      lines.push(
-        `-- ${safe(reasonText(entry.reason))}  ·  waiting ${humanDuration(Math.max(0, now - entry.since))}${suffix}` +
-          ` | color=${COLOUR.detail} font=Menlo`,
-      );
+      menu.push({
+        text: `${safe(reasonText(entry.reason))}  ·  waiting ${humanDuration(Math.max(0, now - entry.since))}${suffix}`,
+        depth: 1,
+        colour: COLOUR.detail,
+        monospace: true,
+      });
       // No focus action: there is no window on this machine to raise.
-      lines.push(`-- Dismiss | ${action(exe, ["dismiss", entry.sessionId])}`);
+      menu.push({ text: `Dismiss`, depth: 1, action: { argv: [...exe, ...["dismiss", entry.sessionId]] } });
     }
 
     const quietTitlesRemote = sessionLabels(quietElsewhere);
@@ -280,9 +298,9 @@ function remoteSection(
       // and there is no window on this machine to raise, so no click either.
       const label = `${safe(quietTitlesRemote[i] ?? "")}  ·  ${safe(s.host)}`;
       if (s.stale === true) {
-        lines.push(`${label}  ⚠ unreachable | color=${COLOUR.danger}`);
-        lines.push(`-- ${safe(s.cwd)} | color=${COLOUR.dim} font=Menlo`);
-        lines.push(`-- Contact lost — it is probably still running | color=${COLOUR.dim}`);
+        menu.push({ text: `${label}  ⚠ unreachable`, depth: 0, colour: COLOUR.danger });
+        menu.push({ text: `${safe(s.cwd)}`, depth: 1, colour: COLOUR.dim, monospace: true });
+        menu.push({ text: `Contact lost — it is probably still running`, depth: 1, colour: COLOUR.dim });
         continue;
       }
       // The row text stays dim: nothing here is waiting on you, and there is no
@@ -291,25 +309,33 @@ function remoteSection(
       // "idle" are distinguishable at a glance instead of both reading as grey.
       const badge = s.status === null ? undefined : REMOTE_BADGE[s.status];
       const shown = badge === undefined ? "" : `  ·  ${badge.label}`;
-      const icon = badge === undefined ? "" : ` sfimage=${badge.sfimage} sfcolor=${badge.colour}`;
-      lines.push(`${label}${shown} | color=${COLOUR.dim}${icon}`);
+      menu.push({
+        text: `${label}${shown}`,
+        depth: 0,
+        colour: COLOUR.dim,
+        ...(badge === undefined ? {} : { symbol: badge.sfimage, symbolColour: badge.colour }),
+      });
       const via = s.source === "push" ? "reported by its daemon" : "seen over ssh";
       const slug = s.name == null ? "" : `  ·  ${safe(s.name)}`;
-      lines.push(`-- ${safe(s.cwd)}${slug} | color=${COLOUR.dim} font=Menlo`);
+      menu.push({ text: `${safe(s.cwd)}${slug}`, depth: 1, colour: COLOUR.dim, monospace: true });
       // The status is repeated here ONLY when the row could not show it — an
       // unrecognised word still belongs on screen, just not as a badge.
       const detail = badge === undefined ? `${safe(s.status ?? "running")}  ·  ${via}` : via;
-      lines.push(`-- ${detail} | color=${COLOUR.detail} font=Menlo`);
+      menu.push({ text: `${detail}`, depth: 1, colour: COLOUR.detail, monospace: true });
     }
   }
 }
 
-export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
-  const lines: string[] = [];
-  /** SwiftBar renders consecutive separators as a visible double rule. */
-  const separator = (): void => {
-    if (lines.at(-1) !== "---") lines.push("---");
-  };
+/**
+ * What the menu says. `renderMenubar` is this plus a serialiser.
+ *
+ * The first item emitted is the status item itself — astir always says exactly
+ * one thing in the bar and then opens a dropdown — so it is lifted out here
+ * rather than left for a host to guess at by position.
+ */
+export function buildMenu(result: StatusResult, opts: MenubarOpts): Menu {
+  const menu = new MenuBuilder();
+  const separator = (): void => menu.separator();
   const exe = opts.invocation;
   const now = opts.now ?? Date.now();
   const remote = opts.remote?.agents ?? [];
@@ -329,20 +355,22 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     // top of a notifier that knew about four live sessions.
     const strandedRemote = opts.remote?.agents ?? [];
     const strandedSessions = opts.remote?.sessions ?? [];
-    const [command = "", ...rest] = exe;
-    const params = [...rest, "daemon"].map((value, i) => `param${i + 1}=${value}`);
-    const startDaemon = `Start the daemon | bash=${command} ${params.join(" ")} terminal=true`;
+    const startDaemon = {
+      text: "Start the daemon",
+      depth: 0,
+      action: { argv: [...exe, "daemon"], terminal: true },
+    };
 
     if (strandedRemote.length === 0 && strandedSessions.length === 0) {
       // Nothing anywhere. Deliberately distinct from "idle": the daemon being
       // unreachable is information, and rendering it as calm would be a lie.
-      lines.push(`astir ⚠ | sfimage=exclamationmark.triangle color=${COLOUR.dim}`);
-      lines.push("---");
-      lines.push(`${safe(result.reason)} | color=${COLOUR.dim}`);
+      menu.push({ text: `astir ⚠`, depth: 0, colour: COLOUR.dim, symbol: "exclamationmark.triangle" });
+      menu.rule();
+      menu.push({ text: `${safe(result.reason)}`, depth: 0, colour: COLOUR.dim });
       // terminal=true on purpose: starting the daemon should show its output.
-      lines.push(startDaemon);
-      lines.push("Refresh | refresh=true");
-      return `${lines.join("\n")}\n`;
+      menu.push(startDaemon);
+      menu.push({ text: "Refresh", depth: 0, refresh: true });
+      return finish(menu);
     }
 
     // Degraded, and it says so. The badge still counts what is waiting on you,
@@ -350,18 +378,24 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     // anything is running here.
     const strandedBlocked = strandedRemote.filter((r) => !r.acknowledged && r.stale !== true).length;
     if (strandedBlocked > 0) {
-      lines.push(`${strandedBlocked} | sfimage=bell.badge.fill color=${COLOUR.alert} font=Menlo`);
+      menu.push({
+        text: `${strandedBlocked}`,
+        depth: 0,
+        colour: COLOUR.alert,
+        symbol: "bell.badge.fill",
+        monospace: true,
+      });
     } else {
-      lines.push(`| sfimage=externaldrive.badge.questionmark color=${COLOUR.dim}`);
+      menu.push({ text: "", depth: 0, colour: COLOUR.dim, symbol: "externaldrive.badge.questionmark" });
     }
-    lines.push("---");
-    lines.push(`No local daemon — showing other machines only | color=${COLOUR.dim}`);
-    lines.push(`-- ${safe(result.reason)} | color=${COLOUR.dim}`);
-    lines.push(startDaemon);
-    remoteSection(lines, strandedRemote, strandedSessions, now, exe, separator);
+    menu.rule();
+    menu.push({ text: `No local daemon — showing other machines only`, depth: 0, colour: COLOUR.dim });
+    menu.push({ text: `${safe(result.reason)}`, depth: 1, colour: COLOUR.dim });
+    menu.push(startDaemon);
+    remoteSection(menu, strandedRemote, strandedSessions, now, exe, separator);
     separator();
-    lines.push("Refresh | refresh=true");
-    return `${lines.join("\n")}\n`;
+    menu.push({ text: "Refresh", depth: 0, refresh: true });
+    return finish(menu);
   }
 
   const { body } = result;
@@ -373,31 +407,40 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
   // The menu bar line. Blocked always wins — it is the only state that needs a
   // human, and the whole surface exists for it.
   if (blocked > 0) {
-    lines.push(`${blocked} | sfimage=bell.badge.fill color=${COLOUR.alert} font=Menlo`);
+    menu.push({
+      text: `${blocked}`,
+      depth: 0,
+      colour: COLOUR.alert,
+      symbol: "bell.badge.fill",
+      monospace: true,
+    });
   } else if (working > 0) {
-    lines.push(`${working} | sfimage=circle.fill color=${COLOUR.busy} font=Menlo`);
+    menu.push({ text: `${working}`, depth: 0, colour: COLOUR.busy, symbol: "circle.fill", monospace: true });
   } else if (remoteUnreachable > 0) {
-    lines.push(`| sfimage=exclamationmark.triangle color=${COLOUR.danger}`);
+    menu.push({ text: "", depth: 0, colour: COLOUR.danger, symbol: "exclamationmark.triangle" });
   } else if (body.sessions.length > 0 || remote.length > 0) {
-    lines.push(`| sfimage=circle color=${COLOUR.dim}`);
+    menu.push({ text: "", depth: 0, colour: COLOUR.dim, symbol: "circle" });
   } else {
-    lines.push(`| sfimage=circle.dotted color=${COLOUR.dim}`);
+    menu.push({ text: "", depth: 0, colour: COLOUR.dim, symbol: "circle.dotted" });
   }
 
-  lines.push("---");
+  menu.rule();
 
   if (blocked > 0) {
-    lines.push(
-      `${blocked} agent${blocked === 1 ? "" : "s"} waiting on you | color=${COLOUR.alert} sfimage=bell.badge.fill`,
-    );
-    lines.push(`Dismiss all | ${action(exe, ["dismiss"])}`);
-    lines.push("---");
+    menu.push({
+      text: `${blocked} agent${blocked === 1 ? "" : "s"} waiting on you`,
+      depth: 0,
+      colour: COLOUR.alert,
+      symbol: "bell.badge.fill",
+    });
+    menu.push({ text: `Dismiss all`, depth: 0, action: { argv: [...exe, ...["dismiss"]] } });
+    menu.rule();
   }
 
   const silent = body.silent ?? [];
 
   if (body.sessions.length === 0 && remote.length === 0 && silent.length === 0) {
-    lines.push(`No live sessions | color=${COLOUR.dim}`);
+    menu.push({ text: `No live sessions`, depth: 0, colour: COLOUR.dim });
   }
 
   const mine = body.sessions.filter((s) => !background(s));
@@ -412,16 +455,18 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     // this menu and belongs in the system label colour.
     const state = dominantState(session);
     const badge = (state === null ? undefined : BADGE[state]) ?? null;
-    const title = blockedHere > 0 ? ` color=${COLOUR.alert}` : "";
     const shown = badge === null ? "" : `  ·  ${badge.label}`;
-    const icon = badge === null ? "" : ` sfimage=${badge.sfimage} sfcolor=${badge.colour}`;
-    lines.push(
-      `${safe(titles[i] ?? "")}${shown}${marker} |${title}${icon} ${action(exe, ["focus", session.sessionId])}`,
-    );
+    menu.push({
+      text: `${safe(titles[i] ?? "")}${shown}${marker}`,
+      depth: 0,
+      ...(blockedHere > 0 ? { colour: COLOUR.alert } : {}),
+      ...(badge === null ? {} : { symbol: badge.sfimage, symbolColour: badge.colour }),
+      action: { argv: [...exe, "focus", session.sessionId] },
+    });
     // Every line in a session's block goes to the same place. Clicking the path
     // or a state line and getting nothing reads as broken, not as "that one is
     // not a button" — there is no visual difference between them.
-    const goThere = action(exe, ["focus", session.sessionId]);
+    const goThere = { argv: [...exe, "focus", session.sessionId] };
     if (session.restored === true) {
       // DMN-06 — agent state off the crash-recovery snapshot, unconfirmed
       // since. The rows below this one say things like "blocked 14m", which
@@ -429,14 +474,24 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
       // SESSION is alive, not that its state is current — an agent blocked when
       // the daemon died may have unblocked while it was down, and astir cannot
       // know until the session next acts.
-      lines.push(`-- Recovered after a daemon restart — the times below | color=${COLOUR.dim} ${goThere}`);
-      lines.push(`-- predate it and correct themselves on its next action | color=${COLOUR.dim} ${goThere}`);
+      menu.push({
+        text: `Recovered after a daemon restart — the times below`,
+        depth: 1,
+        colour: COLOUR.dim,
+        action: goThere,
+      });
+      menu.push({
+        text: `predate it and correct themselves on its next action`,
+        depth: 1,
+        colour: COLOUR.dim,
+        action: goThere,
+      });
     }
     // The full path disambiguates two repos sharing a basename, and the session
     // slug is what `astir focus`/`dismiss` and the logs call it — both are worth
     // having, neither is worth the top line.
     const slug = session.name == null ? "" : `  ·  ${safe(session.name)}`;
-    lines.push(`-- ${safe(session.cwd)}${slug} | color=${COLOUR.dim} ${goThere}`);
+    menu.push({ text: `${safe(session.cwd)}${slug}`, depth: 1, colour: COLOUR.dim, action: goThere });
 
     for (const agent of visible(session.agents)) {
       const who = agent.agentType ?? "main";
@@ -449,21 +504,33 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
       // elapsed time off the right edge — losing the number this row exists for.
       const detail = agentDetail(agent);
       const doing = detail === null ? "" : `  ·  ${safe(ellipsise(detail, DETAIL_CHARS))}`;
-      lines.push(
-        `-- ${agent.state.padEnd(12)} ${safe(who)}${doing}  ·  ${timeText(agent)}${suffix}` +
-          ` | color=${colour} font=Menlo ${goThere}`,
-      );
+      menu.push({
+        text: `${agent.state.padEnd(12)} ${safe(who)}${doing}  ·  ${timeText(agent)}${suffix}`,
+        depth: 1,
+        colour,
+        monospace: true,
+        action: goThere,
+      });
     }
 
     // VIEW-03 — straight to THIS session's map, not the overview. `astir view`
     // takes a session id, so the menu can deep-link rather than making someone
     // arrive at a list and find the row they just clicked.
-    lines.push(`-- Open the map | ${action(exe, ["view", session.sessionId])}`);
+    menu.push({ text: `Open the map`, depth: 1, action: { argv: [...exe, ...["view", session.sessionId]] } });
 
     if (blockedHere > 0) {
-      lines.push(`-- Dismiss this session | ${action(exe, ["dismiss", session.sessionId])}`);
+      menu.push({
+        text: `Dismiss this session`,
+        depth: 1,
+        action: { argv: [...exe, ...["dismiss", session.sessionId]] },
+      });
     }
-    lines.push(`-- Forget this session | ${action(exe, ["forget", session.sessionId])} color=${COLOUR.dim}`);
+    menu.push({
+      text: `Forget this session`,
+      depth: 1,
+      colour: COLOUR.dim,
+      action: { argv: [...exe, ...["forget", session.sessionId]] },
+    });
   }
 
   // Only a RECENT rejection is a diagnosis. `unauthorizedIngest` is a lifetime
@@ -485,7 +552,7 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     // cannot say what this session is doing, so "take me to it" is the only
     // useful thing left, and a row that looks like the others but does nothing
     // reads as broken rather than as deliberately inert.
-    const goThere = action(exe, ["focus", s.sessionId]);
+    const goThere = { argv: [...exe, "focus", s.sessionId] };
     // What the PROVIDER says it is doing, which is a different question from
     // whether astir has heard from it — and one we have an answer to. Saying
     // only "not connected" reported astir's reach as though it were the
@@ -494,11 +561,20 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     // rule: an unrecognised status gets none rather than a guessed one.
     const badge = s.status == null ? undefined : REMOTE_BADGE[s.status];
     const doing = badge === undefined ? "" : `  ·  ${badge.label}`;
-    const icon = badge === undefined ? "" : ` sfimage=${badge.sfimage} sfcolor=${badge.colour}`;
-    lines.push(
-      `${safe(quietTitles[i] ?? "")}${doing}  ·  not connected | color=${COLOUR.dim}${icon} ${goThere}`,
-    );
-    lines.push(`-- ${safe(s.cwd)}${slug} | color=${COLOUR.dim} font=Menlo ${goThere}`);
+    menu.push({
+      text: `${safe(quietTitles[i] ?? "")}${doing}  ·  not connected`,
+      depth: 0,
+      colour: COLOUR.dim,
+      ...(badge === undefined ? {} : { symbol: badge.sfimage, symbolColour: badge.colour }),
+      action: goThere,
+    });
+    menu.push({
+      text: `${safe(s.cwd)}${slug}`,
+      depth: 1,
+      colour: COLOUR.dim,
+      monospace: true,
+      action: goThere,
+    });
 
     // A session older than the daemon cannot have had its `SessionStart`
     // received — the daemon keeps state in memory and a restart forgets
@@ -509,17 +585,33 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
       body.daemonStartedAt !== undefined && s.startedAt != null && s.startedAt < body.daemonStartedAt;
 
     if (predatesDaemon && s.sandboxBlocked !== true) {
-      lines.push(`-- Started before astir was listening, so nothing has been | color=${COLOUR.dim}`);
-      lines.push(`-- heard from it yet — it will appear as soon as it does | color=${COLOUR.dim}`);
-      lines.push(`-- anything | color=${COLOUR.dim}`);
+      menu.push({
+        text: `Started before astir was listening, so nothing has been`,
+        depth: 1,
+        colour: COLOUR.dim,
+      });
+      menu.push({
+        text: `heard from it yet — it will appear as soon as it does`,
+        depth: 1,
+        colour: COLOUR.dim,
+      });
+      menu.push({ text: `anything`, depth: 1, colour: COLOUR.dim });
     } else if (s.sandboxBlocked === true) {
       // The one silent case astir can prove rather than guess.
-      lines.push(`-- This project is sandboxed, so its hooks cannot reach the | color=${COLOUR.dim}`);
-      lines.push(`-- daemon — the proxy refuses them before they arrive | color=${COLOUR.dim}`);
-      lines.push(`-- Allow astir through this project's sandbox | ${action(exe, ["allow-sandbox", s.cwd])}`);
+      menu.push({
+        text: `This project is sandboxed, so its hooks cannot reach the`,
+        depth: 1,
+        colour: COLOUR.dim,
+      });
+      menu.push({ text: `daemon — the proxy refuses them before they arrive`, depth: 1, colour: COLOUR.dim });
+      menu.push({
+        text: `Allow astir through this project's sandbox`,
+        depth: 1,
+        action: { argv: [...exe, ...["allow-sandbox", s.cwd]] },
+      });
     } else if (rejecting) {
-      lines.push(`-- Hooks are firing but the token is rejected | color=${COLOUR.dim}`);
-      lines.push(`-- Run \`astir install\` to repair the token | color=${COLOUR.dim}`);
+      menu.push({ text: `Hooks are firing but the token is rejected`, depth: 1, colour: COLOUR.dim });
+      menu.push({ text: "Run `astir install` to repair the token", depth: 1, colour: COLOUR.dim });
     } else if (body.everIngested === false) {
       // OBS-01's inverse, fixed: this was computed on every `/state` and read
       // by nothing. It answers a question none of the branches above can —
@@ -531,16 +623,24 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
       // Placed last among the specific causes because it is the least likely on
       // a working machine and the most likely on a broken one, and the generic
       // "restart it" below would otherwise claim it.
-      lines.push(`-- No event has EVER reached astir, so the hooks are not | color=${COLOUR.dim}`);
-      lines.push(`-- wired at all — \`astir install\` registers them | color=${COLOUR.dim}`);
+      menu.push({
+        text: `No event has EVER reached astir, so the hooks are not`,
+        depth: 1,
+        colour: COLOUR.dim,
+      });
+      menu.push({ text: "wired at all — `astir install` registers them", depth: 1, colour: COLOUR.dim });
     } else {
-      lines.push(`-- Hooks bind when a session starts, so one older than | color=${COLOUR.dim}`);
-      lines.push(`-- the astir plugin never sends anything — restart it | color=${COLOUR.dim}`);
+      menu.push({
+        text: `Hooks bind when a session starts, so one older than`,
+        depth: 1,
+        colour: COLOUR.dim,
+      });
+      menu.push({ text: `the astir plugin never sends anything — restart it`, depth: 1, colour: COLOUR.dim });
     }
   }
 
   const elsewhere = mergeRemoteSessions(opts.remote?.sessions ?? [], body.remote ?? []);
-  remoteSection(lines, remote, elsewhere, now, exe, separator);
+  remoteSection(menu, remote, elsewhere, now, exe, separator);
 
   // DMN-11 — sessions a program launched, kept out of the way of the ones you
   // are working in. Listed rather than hidden: they are real work and a machine
@@ -554,13 +654,20 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
   if (chores.length > 0) {
     separator();
     const n = chores.length;
-    lines.push(`${n} background session${n === 1 ? "" : "s"} | color=${COLOUR.dim}`);
-    lines.push(`-- Launched by a plugin or script — nothing here waits on you | color=${COLOUR.dim}`);
+    menu.push({ text: `${n} background session${n === 1 ? "" : "s"}`, depth: 0, colour: COLOUR.dim });
+    menu.push({
+      text: `Launched by a plugin or script — nothing here waits on you`,
+      depth: 1,
+      colour: COLOUR.dim,
+    });
     for (const c of chores) {
       const where = c.where === null ? "" : `  ·  ${safe(c.where)}`;
-      lines.push(
-        `-- ${safe(repoName(c.cwd, c.sessionId.slice(0, 8)))}${where} | color=${COLOUR.dim} font=Menlo`,
-      );
+      menu.push({
+        text: `${safe(repoName(c.cwd, c.sessionId.slice(0, 8)))}${where}`,
+        depth: 1,
+        colour: COLOUR.dim,
+        monospace: true,
+      });
     }
   }
 
@@ -569,7 +676,17 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
   // daemon, so when that is unreachable the item would open a browser tab at a
   // refused connection. The degraded path leaves it out rather than handing
   // someone an action that cannot work.
-  lines.push(`Open the web view | ${action(exe, ["view"])}`);
-  lines.push("Refresh | refresh=true");
-  return `${lines.join("\n")}\n`;
+  menu.push({ text: `Open the web view`, depth: 0, action: { argv: [...exe, ...["view"]] } });
+  menu.push({ text: "Refresh", depth: 0, refresh: true });
+  return finish(menu);
+}
+
+/**
+ * The SwiftBar/xbar plugin text.
+ *
+ * Kept as the composition it now is, so every existing caller — the plugin
+ * script, `astir menubar`, 75 tests — is untouched by the split.
+ */
+export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
+  return `${toSwiftBar(buildMenu(result, opts))}\n`;
 }
