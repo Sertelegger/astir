@@ -852,7 +852,17 @@ export class Registry {
     // Same reason as agentType: only `subagent_start` carries it, and it may
     // arrive after an event that created the record.
     if (a.description === null && event.description !== null) a.description = event.description;
-    if (a.parentSource === null && event.parentSource !== null) {
+    // A GUESS may be replaced by a FACT, never the reverse.
+    //
+    // "Only when null" was right for `agentType` and `description`, where every
+    // answer is equally good, and wrong here because these answers are not: a
+    // sidecar read is exact and `inferred` means astir could not find one. The
+    // sidecar is written by the provider around the time the first event fires,
+    // so an agent whose event wins that race was pinned to `inferred` forever —
+    // and the sidecar appearing a moment later could never correct it. That
+    // made the whole deterministic route a coin flip per agent.
+    const upgrading = event.parentSource === "sidecar" && a.parentSource !== "sidecar";
+    if (upgrading || (a.parentSource === null && event.parentSource !== null)) {
       a.parentId = event.parentAgentId;
       a.parentSource = event.parentSource;
     }

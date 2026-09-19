@@ -61,12 +61,34 @@ describe("CAP-04 path normalization", () => {
 });
 
 describe("CAP-05 parentage", () => {
-  it("treats an absent parentAgentId WITH spawnDepth as an exact 'parent is main'", () => {
+  it("names the main session as the parent, rather than returning null for it", () => {
+    // This test was right in its NAME and wrong in its assertion: it called the
+    // case "an exact 'parent is main'" and then expected `null`, which is the
+    // value the fall-through uses for "no idea". Both reached the rail as "no
+    // parent", so every depth-1 subagent rendered as a root — 137 of 400
+    // sidecars sampled on a real machine. The main agent's id IS the session
+    // id, so the answer was nameable all along.
     const sidecar: SidecarMeta = { agentType: "general-purpose", toolUseId: "toolu_1", spawnDepth: 1 };
     expect(resolveParent("s", "a", () => sidecar)).toEqual({
-      parentAgentId: null,
+      parentAgentId: "s",
       parentSource: "sidecar",
     });
+  });
+
+  it("still distinguishes that answer from a missing sidecar", () => {
+    // The distinction the fix turns on: one is read, the other is a guess, and
+    // collapsing them is what made parentage useless.
+    expect(resolveParent("s", "a", () => null)).toEqual({
+      parentAgentId: null,
+      parentSource: "inferred",
+    });
+  });
+
+  it("gives the root agent no parent, since it is the session", () => {
+    // Guard against the obvious way to get the fix wrong: resolving the root
+    // to itself would make it its own parent and the rail would nest forever.
+    const sidecar: SidecarMeta = { agentType: "general-purpose", spawnDepth: 1 };
+    expect(resolveParent("s", "s", () => sidecar).parentAgentId).toBeNull();
   });
 
   it("uses parentAgentId for a nested agent", () => {

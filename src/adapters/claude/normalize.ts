@@ -105,9 +105,22 @@ export function resolveParent(
   agentId: string,
   readSidecar: NormalizeDeps["readSidecar"],
 ): { parentAgentId: string | null; parentSource: ParentSource } {
+  // The root agent is its own session and has no parent to resolve.
+  if (agentId === sessionId) return { parentAgentId: null, parentSource: "sidecar" };
+
   const meta = readSidecar(sessionId, agentId);
   if (meta && (meta.parentAgentId !== undefined || meta.spawnDepth !== undefined)) {
-    return { parentAgentId: meta.parentAgentId ?? null, parentSource: "sidecar" };
+    // `null` was doing two jobs here, and the doc comment above already says
+    // so: an absent `parentAgentId` means "parent is the main session", which
+    // is an ANSWER, while the fall-through below returns null to mean "no
+    // idea". Both reached the rail as "no parent", so every depth-1 subagent
+    // rendered as a root — 137 of 400 sidecars sampled on a real machine.
+    // The main session's agent id IS the session id (see `registry.apply`),
+    // so the answer is nameable rather than merely known.
+    return {
+      parentAgentId: meta.parentAgentId ?? sessionId,
+      parentSource: "sidecar",
+    };
   }
   if (meta?.toolUseId !== undefined) {
     // Route 2 (pre-2.1.208 sidecars) needs a tool_use → owner index, which the
