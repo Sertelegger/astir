@@ -196,3 +196,19 @@ describe("GET /progression — VIEW-11's data, served on request", () => {
     expect((await get(h.port, "?session=quiet-1", "x".repeat(48))).status).toBe(401);
   });
 });
+
+describe("/healthz says how old the daemon is", () => {
+  it("carries startedAt and a build stamp", () => {
+    // Version alone cannot answer "is this the daemon I just started" — the
+    // stale one and the new one both reported 0.2.0.
+    return harness().then(async (h) => {
+      const body = (await (await fetch(`http://127.0.0.1:${h.port}/healthz`)).json()) as {
+        startedAt?: number;
+        build?: string;
+      };
+      expect(typeof body.startedAt).toBe("number");
+      expect(body.startedAt).toBeGreaterThan(0);
+      expect(typeof body.build).toBe("string");
+    });
+  });
+});

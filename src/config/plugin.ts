@@ -156,3 +156,36 @@ export function describePlugins(installed: InstalledPlugin[], running: string): 
   }
   return lines;
 }
+
+/**
+ * Is the daemon answering on this port running the build that is on disk?
+ *
+ * Pure, and separate from the probe that fetches it, for the reason
+ * `describePlugins` is: the judgement is worth pinning and `runDoctor` cannot
+ * be tested. Returns null when there is nothing worth saying, so doctor's
+ * output does not grow a line that is always there and never interesting.
+ *
+ * The failure this catches is specific and was expensive: a daemon of the SAME
+ * version, on the right host, holding the port since before the last build —
+ * so every identity check passes and every measurement is against stale code.
+ */
+export function describeDaemonBuild(
+  daemon: { startedAt: number | null; build: string | null },
+  onDisk: string,
+): string | null {
+  const pad = `  ${"".padEnd(16)}`;
+  if (daemon.build === null) {
+    // Older than the field. Worth one line, because "I cannot tell" is the
+    // honest answer and this is the daemon most likely to be the stale one.
+    return `${pad}its build is unknown — too old to say, so restart it before trusting what it reports`;
+  }
+  if (daemon.build === onDisk) return null;
+
+  const age =
+    daemon.startedAt === null
+      ? ""
+      : ` — running since ${new Date(daemon.startedAt).toISOString().replace("T", " ").slice(0, 16)}`;
+  return `${pad}STALE: built ${daemon.build.replace("T", " ").slice(0, 16)}, on disk ${onDisk
+    .replace("T", " ")
+    .slice(0, 16)}${age}. A restart that failed to bind leaves the old one serving.`;
+}

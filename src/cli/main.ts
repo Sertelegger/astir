@@ -17,11 +17,11 @@ import {
   tokenPath,
   writeSecret,
 } from "../config/paths.js";
-import { describePlugins, installedPlugins } from "../config/plugin.js";
+import { describeDaemonBuild, describePlugins, installedPlugins } from "../config/plugin.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
 import { installService, serviceInstalled, servicePath, uninstallService } from "../config/service.js";
 import { probeDaemon } from "../daemon/detect.js";
-import { Daemon } from "../daemon/server.js";
+import { BUILD_STAMP, Daemon } from "../daemon/server.js";
 import { createSshLister, RemoteDiscovery } from "../discovery/remote.js";
 import { createClaudeLister } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
@@ -396,7 +396,44 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
     pushedSessions: () => pushed,
   });
 
-  const bound = await daemon.listen(port);
+  // A bind that fails is the moment somebody is actually present and looking,
+  // and it used to exit on an unhandled EADDRINUSE. That is how a daemon three
+  // days old goes on serving while every restart appears to have worked and
+  // every later measurement is against stale code — the failure that produced
+  // this. Naming the incumbent turns a silent no-op into a sentence.
+  let bound: number;
+  try {
+    bound = await daemon.listen(port);
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code !== "EADDRINUSE") throw error;
+    process.stderr.write(`astir: port ${port} is already in use\n`);
+    const holder = await probeDaemon(port);
+    if (holder.kind === "mine") {
+      const since =
+        holder.startedAt === null
+          ? "an unknown time"
+          : new Date(holder.startedAt).toISOString().replace("T", " ").slice(0, 16);
+      process.stderr.write(`  an astir daemon has held it since ${since}\n`);
+      // Three answers, not two. A daemon too old to report its build is the one
+      // MOST likely to be stale, and collapsing that into "same build" is a
+      // false reassurance precisely where it costs the most — which is what the
+      // first version of this said, out loud, about a three-day-old daemon.
+      process.stderr.write(
+        holder.build === null
+          ? "  and it is too old to say which build it is running — stop it before trusting it\n"
+          : holder.build === BUILD_STAMP
+            ? "  and it is running this same build, so there is nothing to restart\n"
+            : "  and it is running an OLDER BUILD than this one — stop it before relying on it\n",
+      );
+    } else if (holder.kind === "foreign") {
+      process.stderr.write(`  it belongs to ${holder.host}, not this machine — see \`astir doctor\`\n`);
+    } else {
+      process.stderr.write(`  something else is listening: ${holder.detail}\n`);
+    }
+    process.exitCode = 1;
+    return;
+  }
   // The artifact test parses this line; keep the format stable.
   process.stdout.write(`astir daemon listening on 127.0.0.1:${bound}\n`);
   process.stdout.write(`delivery paths: ${dispatcher.names().join(", ")}\n`);
@@ -744,6 +781,15 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
   // idle, and the only one here a user cannot see without reading
   // `installed_plugins.json` by hand.
   for (const line of describePlugins(installedPlugins(), version())) out(line);
+
+  // Is the daemon on this port running the build that is on disk? A stale one
+  // of the SAME version passes every check #40 added — right role, right host,
+  // right token — and turns every subsequent measurement into a lie.
+  const probe = await probeDaemon(port);
+  if (probe.kind === "mine") {
+    const drift = describeDaemonBuild(probe, BUILD_STAMP);
+    if (drift !== null) out(drift);
+  }
 
   // DMN-12 — whether it will still be here after a reboot. A daemon that must be
   // started by hand is one hook-error storm away from being uninstalled.

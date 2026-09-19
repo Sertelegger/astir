@@ -84,9 +84,29 @@ describe("fetchStatus refuses another machine's daemon", () => {
 });
 
 describe("probeDaemon says what is actually on the port", () => {
-  it("recognises this machine's daemon", async () => {
+  it("recognises this machine's daemon, and carries how old it is", async () => {
+    // `startedAt` and `build` ride along because role and host cannot answer
+    // "is this the daemon I just started" — a stale one of the same version
+    // passes both.
+    stub(200, { ok: true, role: "daemon", host: SELF, startedAt: 1_787_000_000_000, build: "b1" });
+    expect(await probeDaemon(47_000)).toEqual({
+      kind: "mine",
+      host: SELF.split(".")[0],
+      startedAt: 1_787_000_000_000,
+      build: "b1",
+    });
+  });
+
+  it("reports an older daemon's missing build as null rather than inventing one", async () => {
+    // A daemon predating those fields is the one most likely to be stale, so
+    // "cannot tell" has to survive as its own answer all the way to the surface.
     stub(200, { ok: true, role: "daemon", host: SELF });
-    expect(await probeDaemon(47_000)).toEqual({ kind: "mine", host: SELF.split(".")[0] });
+    expect(await probeDaemon(47_000)).toEqual({
+      kind: "mine",
+      host: SELF.split(".")[0],
+      startedAt: null,
+      build: null,
+    });
   });
 
   it("names another machine's daemon rather than calling it broken", async () => {
