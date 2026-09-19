@@ -116,6 +116,11 @@ export function observe(session: SessionRecord, now: number): Observation {
     status: session.status,
     agents,
     map: session.map,
+    // The one surface that could not see it: `restored` reached `astir status`
+    // and stopped there, so the menu bar and the web view rendered a number
+    // recovered from disk exactly like one observed — which `SessionRecord`
+    // says must not happen, in the comment two lines above the field.
+    ...(session.restored === true ? { restored: true } : {}),
     // Off the session, never off the daemon — see `SessionRecord.pathsOutsideRepo`.
     counters: {
       pathsOutsideRepo: session.pathsOutsideRepo,
