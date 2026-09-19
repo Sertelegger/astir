@@ -126,6 +126,8 @@ export interface OverviewSession {
    * which surface you looked at.
    */
   predatesDaemon: boolean;
+  /** DMN-06 — agent state came off the crash-recovery snapshot, unconfirmed. */
+  restored: boolean;
 }
 
 const KIND_RANK: Record<SessionKind, number> = { live: 0, silent: 1, remote: 2, background: 3 };
@@ -191,6 +193,10 @@ export function overview(body: StatusBody): OverviewSession[] {
       // Never relevant for a live session: we have heard from it, so its
       // silence is not a thing needing explanation.
       predatesDaemon: false,
+      // NOT hardcoded false, unlike `predatesDaemon` above: a restored session
+      // is listed as live — it has agents and a record — and "live" is exactly
+      // how it would otherwise be rendered, which is the lie.
+      restored: s.restored === true,
       host: null,
       state: dominantState({ agents: s.agents ?? [] }),
       blocked: unacknowledgedBlocked(s.agents ?? []),
@@ -206,6 +212,8 @@ export function overview(body: StatusBody): OverviewSession[] {
       cwd: s.cwd,
       name: s.name,
       kind: background(s) ? "background" : "silent",
+      // A silent session has no agent state at all, restored or otherwise.
+      restored: false,
       host: null,
       // What the provider says, when it says anything. This is not a guess and
       // not a substitute for having heard from the session: "the provider says
@@ -232,6 +240,8 @@ export function overview(body: StatusBody): OverviewSession[] {
       // question about the wrong machine.
       predatesDaemon: false,
       kind: background(s) ? "background" : "remote",
+      // Another machine's daemon owns its state; we see only its roster.
+      restored: false,
       host: s.host,
       state: s.status,
       blocked: 0,

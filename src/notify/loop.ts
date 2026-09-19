@@ -37,6 +37,14 @@ export class NotifyLoop {
   private readonly now: () => number;
   /** Keys we have sent a `blocked` envelope for, and therefore owe a `resolved`. */
   private announced = new Set<string>();
+  /**
+   * When a restored block was first seen, per agent.
+   *
+   * The dwell for these is measured from the RESTORE rather than from the
+   * block, because the block's own duration accrued while the daemon was dead
+   * and proves nothing about now.
+   */
+  private restoredSeen = new Map<string, number>();
   private readonly notifyAfterMs: number;
 
   constructor(private opts: NotifyLoopOpts) {
@@ -69,6 +77,33 @@ export class NotifyLoop {
       // is the policy's business, and a genuine block is minutes long anyway —
       // this delay is invisible against a one-minute reminder interval, and the
       // user is by definition not looking yet.
+      // DMN-06 — a RESTORED block has not proved anything yet.
+      //
+      // Its `blockedForMs` accrued before the daemon died, so it clears the
+      // dwell below the instant the daemon returns — which is PSH-16's own
+      // failure arriving from the other direction. The dwell exists to let a
+      // block prove it is real, and this one proves only that it was real
+      // earlier. An agent that unblocked while the daemon was down is working,
+      // and working sessions emit; the first event clears `restored` and
+      // replaces the guess with the truth. So wait for that event rather than
+      // interrupting someone on a memory.
+      //
+      // Deliberately NOT suppressed forever. A genuinely blocked agent emits
+      // NOTHING, so `restored` would never clear and the one thing this product
+      // exists to say would go unsaid — which is a worse failure than a stale
+      // alert. So the dwell is re-measured from the restore instead of skipped:
+      // a session that merely unblocked while the daemon was down is working,
+      // and working sessions emit within that window, which clears `restored`
+      // and replaces the memory with the truth.
+      //
+      // The BADGE is not gated — PSH-16 already says an ambient count costs no
+      // attention — so a restored block is visible immediately. Only the
+      // interruption waits.
+      if (!this.announced.has(key) && b.restored) {
+        const first = this.restoredSeen.get(key) ?? now;
+        this.restoredSeen.set(key, first);
+        if (now - first < this.notifyAfterMs) continue;
+      }
       if (!this.announced.has(key) && b.blockedForMs < this.notifyAfterMs) continue;
       if (!this.opts.policy.shouldNotify(key, "blocked", now)) continue;
 
@@ -106,6 +141,7 @@ export class NotifyLoop {
         if (live.has(key)) continue;
 
         // Only announce a resolution for something we actually announced.
+        this.restoredSeen.delete(key);
         if (this.announced.delete(key)) {
           const envelope = buildEnvelope({
             kind: "resolved",
