@@ -3,11 +3,12 @@
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { homedir, hostname } from "node:os";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { defaultNewId, normalizeClaudeHook } from "../adapters/claude/normalize.js";
 import type { Normalizer, SidecarMeta } from "../adapters/types.js";
 import { validateEvent } from "../contract/event.js";
+import { candidateConfigDirs } from "../discovery/profiles.js";
 import type { Registry } from "../model/registry.js";
 import { shortHost } from "../notify/envelope.js";
 import { mergeRemoteSessions } from "../notify/roster.js";
@@ -134,18 +135,32 @@ const NORMALIZERS: Record<string, Normalizer> = {
 };
 
 /** CAP-05 route 1 — read `<session>/subagents/agent-<id>.meta.json`. */
-export function defaultReadSidecar(sessionId: string, agentId: string): SidecarMeta | null {
-  const base = join(homedir(), ".claude", "projects");
-  if (!existsSync(base)) return null;
-  // The project directory is the cwd with separators replaced; rather than
-  // reproduce that encoding, look for the session directory directly.
-  try {
-    for (const proj of readdirSafe(base)) {
-      const file = join(base, proj, sessionId, "subagents", `agent-${agentId}.meta.json`);
-      if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8")) as SidecarMeta;
+export function defaultReadSidecar(
+  sessionId: string,
+  agentId: string,
+  /** Injectable so a test needs no real profile. Defaults to every candidate. */
+  dirs: string[] = candidateConfigDirs(),
+): SidecarMeta | null {
+  // EVERY profile, not `~/.claude`. Hardcoding that one is the same blindness
+  // the multi-profile discovery fix removed from session listing, left behind
+  // here — and it fails in the direction that hides itself: a miss is
+  // indistinguishable from "this agent has no sidecar", so parentage silently
+  // degrades to `inferred` and astir reports a guess where it could have read
+  // the answer. Measured on the machine this was found on: 812 sidecars under
+  // `$CLAUDE_CONFIG_DIR` and not one of them reachable.
+  for (const dir of dirs) {
+    const base = join(dir, "projects");
+    if (!existsSync(base)) continue;
+    // The project directory is the cwd with separators replaced; rather than
+    // reproduce that encoding, look for the session directory directly.
+    try {
+      for (const proj of readdirSafe(base)) {
+        const file = join(base, proj, sessionId, "subagents", `agent-${agentId}.meta.json`);
+        if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8")) as SidecarMeta;
+      }
+    } catch {
+      // One unreadable profile must not hide the others behind it.
     }
-  } catch {
-    return null;
   }
   return null;
 }
