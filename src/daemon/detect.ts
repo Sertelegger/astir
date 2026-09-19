@@ -19,7 +19,7 @@ import { sameHost, shortHost } from "../notify/envelope.js";
 
 export type DaemonProbe =
   /** This machine's daemon, as expected. */
-  | { kind: "mine"; host: string }
+  | { kind: "mine"; host: string; startedAt: number | null; build: string | null }
   /** A astir daemon, but somewhere else — almost always a forwarded port. */
   | { kind: "foreign"; host: string }
   /**
@@ -39,7 +39,12 @@ export async function probeDaemon(port: number, timeoutMs = 1_500): Promise<Daem
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return { kind: "unknown", detail: `HTTP ${res.status}` };
-    const body = (await res.json()) as { role?: unknown; host?: unknown };
+    const body = (await res.json()) as {
+      role?: unknown;
+      host?: unknown;
+      startedAt?: unknown;
+      build?: unknown;
+    };
     if (body.role !== "daemon") {
       return { kind: "unknown", detail: "not an astir daemon, or one too old to say" };
     }
@@ -47,7 +52,15 @@ export async function probeDaemon(port: number, timeoutMs = 1_500): Promise<Daem
       return { kind: "unknown", detail: "a daemon that does not say which machine it is" };
     }
     return sameHost(body.host, hostname())
-      ? { kind: "mine", host: shortHost(body.host) }
+      ? {
+          kind: "mine",
+          host: shortHost(body.host),
+          // Absent on a daemon older than this field, which is exactly the
+          // daemon most likely to be the stale one. Null means "cannot tell",
+          // and a surface must render that as a question rather than a pass.
+          startedAt: typeof body.startedAt === "number" ? body.startedAt : null,
+          build: typeof body.build === "string" ? body.build : null,
+        }
       : { kind: "foreign", host: shortHost(body.host) };
   } catch {
     return { kind: "absent", detail: "nothing is listening" };

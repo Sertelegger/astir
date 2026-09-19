@@ -1,10 +1,11 @@
 /** DMN-01..04 — the one daemon. Fixed port, token-gated data routes, error-bounded. */
 
 import { timingSafeEqual } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defaultNewId, normalizeClaudeHook } from "../adapters/claude/normalize.js";
 import type { Normalizer, SidecarMeta } from "../adapters/types.js";
 import { validateEvent } from "../contract/event.js";
@@ -135,6 +136,28 @@ const NORMALIZERS: Record<string, Normalizer> = {
 };
 
 /** CAP-05 route 1 — read `<session>/subagents/agent-<id>.meta.json`. */
+/**
+ * Which build is in memory, as the mtime of the running module.
+ *
+ * Not a version string: the case this exists for is a daemon and a CLI at the
+ * SAME version, where one is three days older than the other because a restart
+ * silently failed to bind. Every identity signal agreed and the only difference
+ * was which bytes were loaded — which is exactly what an mtime captures.
+ *
+ * Read once, at import, so it describes the build that is RUNNING rather than
+ * whatever is on disk by the time somebody asks. That distinction is the entire
+ * point; re-reading it per request would make the check always agree.
+ */
+export const BUILD_STAMP: string = (() => {
+  try {
+    return statSync(fileURLToPath(import.meta.url)).mtime.toISOString();
+  } catch {
+    // Bundled, packaged, or otherwise not a plain file on disk. Unknown is a
+    // fine answer; claiming a build we cannot see would be worse.
+    return "unknown";
+  }
+})();
+
 export function defaultReadSidecar(
   sessionId: string,
   agentId: string,
@@ -331,6 +354,12 @@ export class Daemon {
         ok: true,
         role: "daemon",
         host: shortHost(hostname()),
+        // Both, because neither alone answers "is this the daemon I just
+        // started". Uptime without a build cannot tell a fresh daemon running
+        // old code from a fresh daemon running new code; a build without
+        // uptime cannot tell you how long the wrong one has been up.
+        startedAt: this.startedAt,
+        build: BUILD_STAMP,
         counters: this.counters,
       });
     }
