@@ -22,6 +22,7 @@ const session = (over: Record<string, unknown> = {}) => ({
   cwd: "/repo",
   name: "astir-aa",
   status: "busy",
+  pid: 1234,
   agents: [
     {
       id: "s1",
