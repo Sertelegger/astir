@@ -265,7 +265,10 @@ describe("CAP-06 — SessionStart hands the watcher its paths", () => {
         expect(names, `${bad} must not be watched`).not.toContain(bad);
       }
       expect(names, ".github is the deliberate exception").toContain(".github");
-      expect(paths?.some((x) => x.endsWith("/src"))).toBe(true);
+      // Also via `basename`, and for the same reason: `endsWith("/src")` is
+      // false on Windows for a path that ends in `\src`. Fixing only the first
+      // assertion left this one failing on the next run.
+      expect(names, "the repo's own src/ must be watched").toContain("src");
     });
   });
 });
