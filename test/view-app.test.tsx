@@ -679,3 +679,42 @@ describe("VIEW-01 — panels are arrangeable in the real app", () => {
     expect(view.container.querySelector(".panel-map"), "alpha stays rearranged").toBeNull();
   });
 });
+
+describe("VER-01 — the view refuses a frame it cannot read", () => {
+  it("says so instead of rendering a payload it has misread", () => {
+    // `seq` and `sessionId` were both checked here and the version never was,
+    // so a newer daemon's snapshot was applied on trust. An unknown major may
+    // have MOVED a field rather than added one — the map would then render
+    // confidently from a misreading, and nothing about it would look wrong.
+    window.localStorage.clear();
+    window.history.replaceState(null, "", "/view?session=demo");
+    const repo = map();
+    repo.touch(["a.ts"]);
+
+    const future = { ...snapshotOf(repo, 1), v: { major: 99, minor: 0 } };
+    stubDaemon([frame("snapshot", future, 1)]);
+
+    const view = render(<App token={TOKEN} />);
+    return waitFor(() => {
+      expect(view.container.textContent).toMatch(/reload the page/i);
+      // And it names both numbers, or the user cannot tell which side is old.
+      expect(view.container.textContent).toContain("v99");
+    });
+  });
+
+  it("still renders a snapshot whose major matches", () => {
+    // The gate must not be the reason nothing renders — a test asserting only
+    // the refusal would pass against a view that refused everything.
+    window.localStorage.clear();
+    window.history.replaceState(null, "", "/view?session=demo");
+    const repo = map();
+    repo.touch(["a.ts"]);
+    stubDaemon([frame("snapshot", snapshotOf(repo, 1), 1)]);
+
+    const view = render(<App token={TOKEN} />);
+    return waitFor(() => {
+      expect(view.container.querySelector(".panel-map")).not.toBeNull();
+      expect(view.container.textContent).not.toMatch(/reload the page/i);
+    });
+  });
+});

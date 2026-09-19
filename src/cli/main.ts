@@ -278,6 +278,16 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   // that will not start because its recovery file is corrupt has turned a
   // convenience into an outage.
   try {
+    // The same opt-out gates the READ, and it has to. It was added to stop the
+    // artifact test overwriting the developer's recovery file, but that test
+    // runs against the real HOME — so a daemon it spawns went on LOADING that
+    // file, and inherited whatever the real daemon had been doing. One blocked
+    // agent in the snapshot is enough to make `dismiss` look broken: the test
+    // clears its own agent, the restored one still counts, and the suite fails
+    // on a machine where astir is in use while passing in CI, which has no
+    // snapshot. A test whose result depends on the developer's machine is worse
+    // than no test, because a green run stops meaning anything.
+    if (process.env.ASTIR_NO_PERSIST === "1") throw new Error("persistence disabled");
     const saved = parseSnapshot(JSON.parse(readFileSync(snapshotPath(), "utf8")));
     if (saved !== null) registry.stageRestore(saved);
   } catch {
