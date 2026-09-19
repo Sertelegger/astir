@@ -185,8 +185,18 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
       if (rel === null) droppedPaths++;
       else paths = [rel];
     }
-    // FileChanged is how shell-driven writes become visible at all.
-    op = "edit";
+    // FileChanged is how shell-driven writes become visible at all — a `sed -i`,
+    // a formatter, a build step or a `git checkout` touches no file-writing
+    // TOOL, so `classifyTool` sees nothing and the map never learns about it.
+    //
+    // The payload's `event` is honoured rather than assumed. It is one of
+    // `change` | `add` | `unlink`, and recording a deletion as an edit would
+    // add heat to a path that no longer exists — a tile that can never cool
+    // because nothing will touch it again, on a map whose whole claim is that
+    // brightness means recent work.
+    const changeKind = typeof p.event === "string" ? p.event : "change";
+    op = changeKind === "unlink" ? "other" : "edit";
+    if (changeKind === "unlink") paths = [];
   }
 
   let notificationKind: NotificationKind | null = null;

@@ -212,3 +212,55 @@ describe("/healthz says how old the daemon is", () => {
     });
   });
 });
+
+describe("CAP-06 — SessionStart hands the watcher its paths", () => {
+  it("returns watchPaths, without which the watcher never starts", () => {
+    // The watcher runs only if a FileChanged hook is registered AND resolves to
+    // a non-empty path list. astir registers a matcher-less entry, so this
+    // response is the only thing that can supply one.
+    return harness().then(async (h) => {
+      const res = await fetch(`http://127.0.0.1:${h.port}/hook/claude`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          hook_event_name: "SessionStart",
+          session_id: "watch-check",
+          cwd: process.cwd(),
+        }),
+      });
+      const body = (await res.json()) as {
+        hookSpecificOutput?: { hookEventName?: string; watchPaths?: string[] };
+      };
+      expect(body.hookSpecificOutput?.hookEventName).toBe("SessionStart");
+      expect(Array.isArray(body.hookSpecificOutput?.watchPaths)).toBe(true);
+      expect(body.hookSpecificOutput?.watchPaths?.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("hands over no build or vendor directory from a real repo", () => {
+    // Run against astir's OWN checkout, which has node_modules and dist — the
+    // case a synthetic fixture would not catch.
+    return harness().then(async (h) => {
+      const res = await fetch(`http://127.0.0.1:${h.port}/hook/claude`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          hook_event_name: "SessionStart",
+          session_id: "watch-check-2",
+          cwd: process.cwd(),
+        }),
+      });
+      const paths = ((await res.json()) as { hookSpecificOutput?: { watchPaths?: string[] } })
+        .hookSpecificOutput?.watchPaths;
+      // Compared on the final SEGMENT, not as a substring: `/.github` contains
+      // `/.git`, and `.github` is deliberately watched — a workflow edited by a
+      // script is real work. A substring check fails here for the wrong reason.
+      const names = (paths ?? []).map((x) => x.split("/").at(-1));
+      for (const bad of ["node_modules", ".git", "dist", "coverage"]) {
+        expect(names, `${bad} must not be watched`).not.toContain(bad);
+      }
+      expect(names, ".github is the deliberate exception").toContain(".github");
+      expect(paths?.some((x) => x.endsWith("/src"))).toBe(true);
+    });
+  });
+});
