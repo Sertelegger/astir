@@ -38,6 +38,14 @@ export class NotifyLoop {
   private readonly now: () => number;
   /** Keys we have sent a `blocked` envelope for, and therefore owe a `resolved`. */
   private announced = new Set<string>();
+  /**
+   * When a restored block was first seen, per agent.
+   *
+   * The dwell for these is measured from the RESTORE rather than from the
+   * block, because the block's own duration accrued while the daemon was dead
+   * and proves nothing about now.
+   */
+  private restoredSeen = new Map<string, number>();
   private readonly notifyAfterMs: number;
 
   constructor(private opts: NotifyLoopOpts) {
@@ -74,8 +82,32 @@ export class NotifyLoop {
         session: b.sessionId,
         agent: b.agentId,
         blockedForMs: b.blockedForMs,
+        restored: b.restored,
         announced: this.announced.has(key),
       });
+
+      // DMN-06 — a RESTORED block has not proved anything yet.
+      //
+      // Its `blockedForMs` accrued before the daemon died, so it clears the
+      // dwell below the instant the daemon returns — PSH-16's own failure
+      // arriving from a direction it did not anticipate. The dwell exists to
+      // let a block prove it is real; this one proves only that it was real
+      // earlier.
+      //
+      // Re-measured from the restore rather than skipped, and the distinction
+      // is the whole design: a genuinely blocked agent emits NOTHING, so
+      // waiting for it to act would silence the one thing this product exists
+      // to say. A session that merely unblocked while the daemon was down is
+      // working, and working sessions emit within that window — which clears
+      // `restored` and replaces the memory with the truth.
+      //
+      // The BADGE is not gated, per PSH-16's own note that an ambient count
+      // costs no attention. Only the interruption waits.
+      if (!this.announced.has(key) && b.restored) {
+        const first = this.restoredSeen.get(key) ?? now;
+        this.restoredSeen.set(key, first);
+        if (now - first < this.notifyAfterMs) continue;
+      }
       if (!this.announced.has(key) && b.blockedForMs < this.notifyAfterMs) continue;
       if (!this.opts.policy.shouldNotify(key, "blocked", now)) continue;
 
@@ -113,6 +145,7 @@ export class NotifyLoop {
         if (live.has(key)) continue;
 
         // Only announce a resolution for something we actually announced.
+        this.restoredSeen.delete(key);
         if (this.announced.delete(key)) {
           const envelope = buildEnvelope({
             kind: "resolved",

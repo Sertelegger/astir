@@ -120,6 +120,15 @@ export interface BlockedAgent {
   cwd: string;
   reason: string;
   /**
+   * DMN-06 — this block came off the crash-recovery snapshot, unconfirmed.
+   *
+   * `blockedForMs` is then a duration that ACCRUED BEFORE the daemon died, so
+   * it sails past PSH-16's dwell the instant the daemon comes back. That is
+   * PSH-16's own failure arriving from the other direction: the dwell exists to
+   * prove a block is real, and this one proves only that it was real earlier.
+   */
+  restored: boolean;
+  /**
    * How long it has been blocked.
    *
    * A permission event is not proof a human is needed. Under `defaultMode:
@@ -339,6 +348,7 @@ export class Registry {
             cwd: s.cwd,
             reason: a.blockedReason ?? "blocked",
             blockedForMs: Math.max(0, this.nowMs() - a.stateSince),
+            restored: s.restored === true,
           });
         }
       }

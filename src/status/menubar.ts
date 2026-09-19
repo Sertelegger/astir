@@ -422,6 +422,16 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     // or a state line and getting nothing reads as broken, not as "that one is
     // not a button" — there is no visual difference between them.
     const goThere = action(exe, ["focus", session.sessionId]);
+    if (session.restored === true) {
+      // DMN-06 — agent state off the crash-recovery snapshot, unconfirmed
+      // since. The rows below this one say things like "blocked 14m", which
+      // read as observations; here they are a memory. Discovery confirmed the
+      // SESSION is alive, not that its state is current — an agent blocked when
+      // the daemon died may have unblocked while it was down, and astir cannot
+      // know until the session next acts.
+      lines.push(`-- Recovered after a daemon restart — the times below | color=${COLOUR.dim} ${goThere}`);
+      lines.push(`-- predate it and correct themselves on its next action | color=${COLOUR.dim} ${goThere}`);
+    }
     // The full path disambiguates two repos sharing a basename, and the session
     // slug is what `astir focus`/`dismiss` and the logs call it — both are worth
     // having, neither is worth the top line.

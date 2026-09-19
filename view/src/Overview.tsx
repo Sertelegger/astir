@@ -107,6 +107,17 @@ export function Overview(props: OverviewProps): JSX.Element {
                   : ""}
               </p>
             )}
+            {/* DMN-06 — this came off disk and nothing has confirmed it since.
+                Said rather than shown as ordinary: discovery confirmed the
+                SESSION is alive, not that its agent state is current. An agent
+                blocked when the daemon died may have unblocked while it was
+                down, and astir cannot know until the session next acts. */}
+            {s.restored && (
+              <p className="quiet">
+                Recovered after a daemon restart — these numbers are from before it stopped, and will correct
+                themselves the moment this session does anything.
+              </p>
+            )}
             {s.stale && <p className="quiet">Contact lost — it is probably still running.</p>}
           </li>
         ))}

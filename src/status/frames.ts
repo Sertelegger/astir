@@ -107,6 +107,18 @@ export interface Snapshot {
   files: FileFrame[];
   decay: DecayParams;
   counters: FrameCounters;
+  /**
+   * DMN-06 — this state came off disk, and no event has confirmed it since.
+   *
+   * On the SNAPSHOT rather than per-agent: the whole session was restored at
+   * once, and the first event from any agent clears it for all of them. A
+   * per-agent flag would suggest agents can be individually re-confirmed, which
+   * is not how `apply` works.
+   *
+   * Optional, so an older daemon simply omits it — VER-01 is additive, and its
+   * absence must read as "not restored" rather than as a fault.
+   */
+  restored?: boolean;
 }
 
 export interface Delta {
@@ -138,6 +150,7 @@ export interface SnapshotInput {
   map: Pick<RepoMap, "ages" | "decayParams">;
   counters: FrameCounters;
   seq: number;
+  restored?: boolean;
 }
 
 export function buildSnapshot(input: SnapshotInput): Snapshot {
@@ -153,6 +166,9 @@ export function buildSnapshot(input: SnapshotInput): Snapshot {
     files: input.map.ages(),
     decay: input.map.decayParams(),
     counters: input.counters,
+    // Only when true, so a normal snapshot is not a byte larger and a diff
+    // between two ordinary frames has nothing new to compare.
+    ...(input.restored === true ? { restored: true } : {}),
   };
 }
 
