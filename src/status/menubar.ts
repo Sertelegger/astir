@@ -510,6 +510,19 @@ export function renderMenubar(result: StatusResult, opts: MenubarOpts): string {
     } else if (rejecting) {
       lines.push(`-- Hooks are firing but the token is rejected | color=${COLOUR.dim}`);
       lines.push(`-- Run \`astir install\` to repair the token | color=${COLOUR.dim}`);
+    } else if (body.everIngested === false) {
+      // OBS-01's inverse, fixed: this was computed on every `/state` and read
+      // by nothing. It answers a question none of the branches above can —
+      // not "this session is quiet" but "NOTHING has ever arrived, from
+      // anything", which means the hooks were never wired rather than that this
+      // particular session is old. It is the first-install case, and the one
+      // where every other explanation here is wrong.
+      //
+      // Placed last among the specific causes because it is the least likely on
+      // a working machine and the most likely on a broken one, and the generic
+      // "restart it" below would otherwise claim it.
+      lines.push(`-- No event has EVER reached astir, so the hooks are not | color=${COLOUR.dim}`);
+      lines.push(`-- wired at all — \`astir install\` registers them | color=${COLOUR.dim}`);
     } else {
       lines.push(`-- Hooks bind when a session starts, so one older than | color=${COLOUR.dim}`);
       lines.push(`-- the astir plugin never sends anything — restart it | color=${COLOUR.dim}`);

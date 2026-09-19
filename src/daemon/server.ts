@@ -13,6 +13,7 @@ import { candidateConfigDirs } from "../discovery/profiles.js";
 import type { Registry } from "../model/registry.js";
 import { shortHost } from "../notify/envelope.js";
 import { mergeRemoteSessions } from "../notify/roster.js";
+import { debug } from "../obs/debug.js";
 import { type FocusResult, focusSession } from "../status/focus.js";
 import type { RemoteSession } from "../status/types.js";
 import { observer, StreamState, sseFrame } from "./stream.js";
@@ -633,6 +634,13 @@ export class Daemon {
     }
 
     const valid = validateEvent(event);
+    debug("ingest", valid.ok ? "accepted" : "REJECTED", {
+      provider: valid.ok ? valid.event.provider : null,
+      kind: valid.ok ? valid.event.kind : null,
+      // The reason, not the payload — this is the line that would have named
+      // an unvalidated `notificationKind` before #26 closed that boundary.
+      error: valid.ok ? null : valid.error,
+    });
     if (!valid.ok) {
       this.counters.rejected++;
       if (claimedSessionId !== null) {

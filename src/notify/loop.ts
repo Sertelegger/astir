@@ -10,6 +10,7 @@
  */
 
 import type { Registry } from "../model/registry.js";
+import { debug } from "../obs/debug.js";
 import type { Dispatcher } from "./dispatch.js";
 import { buildEnvelope } from "./envelope.js";
 import type { NotifyPolicy } from "./policy.js";
@@ -69,6 +70,12 @@ export class NotifyLoop {
       // is the policy's business, and a genuine block is minutes long anyway —
       // this delay is invisible against a one-minute reminder interval, and the
       // user is by definition not looking yet.
+      debug("notify", "considering", {
+        session: b.sessionId,
+        agent: b.agentId,
+        blockedForMs: b.blockedForMs,
+        announced: this.announced.has(key),
+      });
       if (!this.announced.has(key) && b.blockedForMs < this.notifyAfterMs) continue;
       if (!this.opts.policy.shouldNotify(key, "blocked", now)) continue;
 

@@ -811,6 +811,12 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
     const alsoRunning = unheard > 0 ? `, ${unheard} running but unheard` : "";
     out(`  daemon          ok — ${status.body.sessions.length} session(s), ${agents} agent(s)${alsoRunning}`);
     out(`  blocked now     ${status.body.blockedCount}`);
+    if (status.body.everIngested === false) {
+      // The first-install case, and the one every other diagnosis gets wrong:
+      // not "this session is old" but "nothing has ever arrived from anything".
+      out("  hooks           NO event has ever reached the daemon — they are not wired");
+      out("                  `astir install` registers them; restart any open session");
+    }
 
     // DMN-08 — name the silent sessions astir can actually explain.
     const blocked = (status.body.silent ?? []).filter((s) => inspectSandbox(s.cwd).blocked);
