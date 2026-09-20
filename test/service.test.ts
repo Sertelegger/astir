@@ -109,14 +109,14 @@ describe("removing it", () => {
   it("unloads and deletes the plist", () => {
     const removed: string[] = [];
     const d = deps({ exists: () => true, remove: (p) => removed.push(p) });
-    const r = uninstallService(d);
+    const r = uninstallService("daemon", d);
     expect(r.ok).toBe(true);
     expect(d.calls.some((c) => c.includes(`gui/501/${SERVICE_LABEL}`))).toBe(true);
     expect(removed).toHaveLength(1);
   });
 
   it("is not an error when it was never installed", () => {
-    const r = uninstallService(deps({ exists: () => false }));
+    const r = uninstallService("daemon", deps({ exists: () => false }));
     expect(r.ok).toBe(true);
     expect(r.detail).toContain("not installed");
   });

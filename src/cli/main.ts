@@ -17,7 +17,13 @@ import {
   tokenPath,
   writeSecret,
 } from "../config/paths.js";
-import { describeDaemonBuild, describePlugins, installedPlugins } from "../config/plugin.js";
+import {
+  describeDaemonBuild,
+  describeHosts,
+  describeNotifier,
+  describePlugins,
+  installedPlugins,
+} from "../config/plugin.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
 import { installService, serviceInstalled, servicePath, uninstallService } from "../config/service.js";
 import { probeDaemon } from "../daemon/detect.js";
@@ -853,6 +859,32 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
     }
   }
 
+  // #65 — the notifier, which doctor never mentioned. The whole cross-machine
+  // path depends on it and a dead one is completely silent, so the surface
+  // people run when something is wrong said nothing about the thing most
+  // likely to be wrong.
+  const notifier = await detectNotifier(port + 1);
+  let rosters: number | null = null;
+  if (notifier.found) {
+    try {
+      const res = await fetch(new URL("/healthz", notifier.url), { signal: AbortSignal.timeout(1_500) });
+      const body = (await res.json()) as { counters?: { rosters?: unknown } };
+      rosters = typeof body.counters?.rosters === "number" ? body.counters.rosters : null;
+    } catch {
+      // A notifier that answered the probe and not this is still a notifier.
+    }
+  }
+  for (const line of describeNotifier(notifier, serviceInstalled("notifier"), rosters)) out(line);
+
+  // #65 — and the hosts it polls, which nothing reported either.
+  const watched = readWatchedHosts();
+  const reporting = new Set(
+    (status.ok ? (status.body.remote ?? []) : [])
+      .map((r) => r.host)
+      .filter((h): h is string => typeof h === "string"),
+  );
+  for (const line of describeHosts(watched, reporting)) out(line);
+
   if (flags.get("notify") === true) {
     out("");
     out("  sending a test notification...");
@@ -1046,7 +1078,11 @@ function runAutostart(args: Args): void {
   };
 
   if (args.flags.get("remove") === true) {
-    const removed = uninstallService();
+    // Both, because installing both and removing one leaves a supervised
+    // process the user believes they have disabled.
+    const removedDaemon = uninstallService("daemon");
+    const removedNotifier = uninstallService("notifier");
+    const removed = removedDaemon.ok ? removedNotifier : removedDaemon;
     out(removed.detail);
     if (!removed.ok) process.exitCode = 1;
     return;
@@ -1056,8 +1092,22 @@ function runAutostart(args: Args): void {
     node: process.execPath,
     script: process.argv[1] ?? "",
     logPath: join(astirDir(), "daemon.log"),
+    role: "daemon",
   });
   out(result.detail);
+
+  // #69 — the notifier gets one too, and the asymmetry it had was backwards.
+  // DMN-12 supervises the daemon because a down daemon is LOUD; the notifier
+  // fails completely silently, which is the stronger case for keeping it up,
+  // not a weaker one. Without this the entire cross-machine path dies at every
+  // reboot and nothing says so.
+  const notifier = installService({
+    node: process.execPath,
+    script: process.argv[1] ?? "",
+    logPath: join(astirDir(), "notifier.log"),
+    role: "notifier",
+  });
+  out(notifier.detail);
   if (!result.ok) {
     process.exitCode = 1;
     return;
