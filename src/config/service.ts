@@ -23,10 +23,31 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-export const SERVICE_LABEL = "com.astir.daemon";
+/**
+ * The two long-running processes, and the reason both are here.
+ *
+ * DMN-12 argues for supervising the daemon because a down daemon is LOUD: an
+ * http hook cannot fail quietly, so every tool call becomes a visible error.
+ * The notifier is the opposite and that is the stronger case, not a weaker one.
+ * A down notifier is completely silent — no errors, no warnings, nothing on any
+ * surface — and you find out when an agent has been blocked for twenty minutes
+ * and nothing told you. That is the failure this product exists to prevent.
+ *
+ * "It fails loudly so we supervise it; it fails silently so we do not" is
+ * exactly backwards, and it is what shipped.
+ */
+export type ServiceRole = "daemon" | "notifier";
 
-export function servicePath(home: string = homedir()): string {
-  return join(home, "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
+export const SERVICE_LABELS: Record<ServiceRole, string> = {
+  daemon: "com.astir.daemon",
+  notifier: "com.astir.notifier",
+};
+
+/** Kept for the daemon's label, which predates there being two. */
+export const SERVICE_LABEL = SERVICE_LABELS.daemon;
+
+export function servicePath(role: ServiceRole = "daemon", home: string = homedir()): string {
+  return join(home, "Library", "LaunchAgents", `${SERVICE_LABELS[role]}.plist`);
 }
 
 function xmlEscape(value: string): string {
@@ -39,6 +60,8 @@ export interface ServiceSpec {
   /** Absolute path to astir's entrypoint. */
   script: string;
   logPath: string;
+  /** Which process this supervises. Defaults to the daemon. */
+  role?: ServiceRole;
 }
 
 /**
@@ -54,15 +77,14 @@ export interface ServiceSpec {
  * idea why.
  */
 export function servicePlist(spec: ServiceSpec): string {
-  const args = [spec.node, spec.script, "daemon"]
-    .map((a) => `      <string>${xmlEscape(a)}</string>`)
-    .join("\n");
+  const role = spec.role ?? "daemon";
+  const args = [spec.node, spec.script, role].map((a) => `      <string>${xmlEscape(a)}</string>`).join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>${SERVICE_LABEL}</string>
+    <string>${SERVICE_LABELS[role]}</string>
     <key>ProgramArguments</key>
     <array>
 ${args}
@@ -140,11 +162,12 @@ export function installService(spec: ServiceSpec, deps: ServiceDeps = defaultSer
     };
   }
 
-  const path = servicePath();
+  const role = spec.role ?? "daemon";
+  const path = servicePath(role);
   // Unload an older copy first, or bootstrap refuses with "service already loaded"
   // and the newly written plist would never take effect.
   if (deps.exists(path)) {
-    deps.run("launchctl", ["bootout", `gui/${deps.uid}/${SERVICE_LABEL}`]);
+    deps.run("launchctl", ["bootout", `gui/${deps.uid}/${SERVICE_LABELS[role]}`]);
   }
   deps.write(path, servicePlist(spec));
 
@@ -160,19 +183,25 @@ export function installService(spec: ServiceSpec, deps: ServiceDeps = defaultSer
   };
 }
 
-export function uninstallService(deps: ServiceDeps = defaultServiceDeps()): ServiceResult {
+export function uninstallService(
+  role: ServiceRole = "daemon",
+  deps: ServiceDeps = defaultServiceDeps(),
+): ServiceResult {
   if (deps.platform !== "darwin") {
     return { ok: false, detail: `autostart is only implemented for macOS, not ${deps.platform}` };
   }
-  const path = servicePath();
-  if (!deps.exists(path)) return { ok: true, detail: "autostart was not installed" };
+  const path = servicePath(role);
+  if (!deps.exists(path)) return { ok: true, detail: `${role} autostart was not installed` };
 
-  deps.run("launchctl", ["bootout", `gui/${deps.uid}/${SERVICE_LABEL}`]);
+  deps.run("launchctl", ["bootout", `gui/${deps.uid}/${SERVICE_LABELS[role]}`]);
   deps.run("launchctl", ["unload", path]);
   deps.remove(path);
   return { ok: true, detail: `removed ${path}` };
 }
 
-export function serviceInstalled(deps: ServiceDeps = defaultServiceDeps()): boolean {
-  return deps.exists(servicePath());
+export function serviceInstalled(
+  role: ServiceRole = "daemon",
+  deps: ServiceDeps = defaultServiceDeps(),
+): boolean {
+  return deps.exists(servicePath(role));
 }

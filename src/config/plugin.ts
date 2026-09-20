@@ -189,3 +189,71 @@ export function describeDaemonBuild(
     .replace("T", " ")
     .slice(0, 16)}${age}. A restart that failed to bind leaves the old one serving.`;
 }
+
+/**
+ * The notifier's half of the report, as lines.
+ *
+ * `doctor` said nothing about the notifier at all — the only mention inside
+ * `runDoctor` was the `--notify` test, which SENDS a notification rather than
+ * reporting whether anything is there to receive one. So a machine whose entire
+ * cross-machine path was dead produced six lines, all of them healthy, none of
+ * them about the thing that was broken.
+ *
+ * Pure for the reason `describePlugins` is: `runDoctor` does I/O and cannot be
+ * tested, and what counts as a healthy notifier is a judgement worth pinning.
+ */
+export function describeNotifier(
+  probe: { found: boolean; reason?: string | undefined },
+  supervised: boolean,
+  rosters: number | null,
+): string[] {
+  const pad = `  ${"".padEnd(16)}`;
+  const lines: string[] = [];
+
+  if (!probe.found) {
+    // The failure that cost hours: `detect.ts` refuses a peer that does not
+    // report `role: "notifier"`, correctly, and then nobody says so. "No
+    // tunnel" and "something else is on that port" need different fixes and
+    // must not read the same.
+    lines.push(`  ${"notifier".padEnd(16)}none — remote machines cannot reach you`);
+    if (probe.reason !== undefined) lines.push(`${pad}${probe.reason}`);
+    lines.push(`${pad}\`astir notifier\` starts one; \`astir pair <host>\` connects a machine to it`);
+    return lines;
+  }
+
+  lines.push(`  ${"notifier".padEnd(16)}running`);
+  // Running and never contacted is a DIFFERENT failure from not running, and
+  // the two need different fixes — one is a process, the other is a tunnel.
+  if (rosters === 0) {
+    lines.push(`${pad}no machine has pushed a roster yet — is the tunnel up?`);
+  } else if (rosters !== null) {
+    lines.push(`${pad}${rosters} roster(s) received`);
+  }
+  if (!supervised) {
+    // #69 — nothing restarts it, so this comes back at every reboot.
+    lines.push(`${pad}not supervised — it will not survive a reboot; \`astir autostart\` fixes that`);
+  }
+  return lines;
+}
+
+/**
+ * The watched hosts, and whether polling them achieves anything.
+ *
+ * `~/.astir/hosts` drives DMN-09's SSH poll and no surface mentioned it. A host
+ * returning nothing for a week looked exactly like a host never added — which
+ * matters because that poll is the FALLBACK for when a machine's daemon is
+ * down, so its silence is the case it exists to cover.
+ */
+export function describeHosts(hosts: readonly string[], reporting: ReadonlySet<string>): string[] {
+  if (hosts.length === 0) return [];
+  const pad = `  ${"".padEnd(16)}`;
+  const lines = [`  ${"watching".padEnd(16)}${hosts.length} host(s) polled over ssh`];
+  for (const h of hosts) {
+    lines.push(
+      reporting.has(h)
+        ? `${pad}${h} — reporting`
+        : `${pad}${h} — nothing returned, which is not the same as nothing running`,
+    );
+  }
+  return lines;
+}
