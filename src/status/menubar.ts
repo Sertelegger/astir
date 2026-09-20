@@ -10,6 +10,7 @@
  * free of any I/O, and the host is a three-line wrapper.
  */
 
+import { hooksLookUnwired } from "../config/plugin.js";
 import { reasonText } from "../notify/envelope.js";
 import { mergeRemoteSessions } from "../notify/roster.js";
 import { agentDetail, ellipsise, humanDuration, visibleAgents as visible } from "./agents.js";
@@ -612,7 +613,7 @@ export function buildMenu(result: StatusResult, opts: MenubarOpts): Menu {
     } else if (rejecting) {
       menu.push({ text: `Hooks are firing but the token is rejected`, depth: 1, colour: COLOUR.dim });
       menu.push({ text: "Run `astir install` to repair the token", depth: 1, colour: COLOUR.dim });
-    } else if (body.everIngested === false) {
+    } else if (hooksLookUnwired(body, now)) {
       // OBS-01's inverse, fixed: this was computed on every `/state` and read
       // by nothing. It answers a question none of the branches above can —
       // not "this session is quiet" but "NOTHING has ever arrived, from

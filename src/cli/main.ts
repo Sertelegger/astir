@@ -22,6 +22,7 @@ import {
   describeHosts,
   describeNotifier,
   describePlugins,
+  hooksLookUnwired,
   installedPlugins,
 } from "../config/plugin.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
@@ -829,7 +830,7 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
     const alsoRunning = unheard > 0 ? `, ${unheard} running but unheard` : "";
     out(`  daemon          ok — ${status.body.sessions.length} session(s), ${agents} agent(s)${alsoRunning}`);
     out(`  blocked now     ${status.body.blockedCount}`);
-    if (status.body.everIngested === false) {
+    if (hooksLookUnwired(status.body, Date.now())) {
       // The first-install case, and the one every other diagnosis gets wrong:
       // not "this session is old" but "nothing has ever arrived from anything".
       out("  hooks           NO event has ever reached the daemon — they are not wired");

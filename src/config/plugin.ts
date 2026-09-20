@@ -257,3 +257,39 @@ export function describeHosts(hosts: readonly string[], reporting: ReadonlySet<s
   }
   return lines;
 }
+
+/**
+ * How long a daemon must have been up before its silence means anything.
+ *
+ * `everIngested` is `ingested > 0` for the RUNNING PROCESS, so it is false for
+ * every daemon in its first moments — including one whose hooks are wired
+ * perfectly. Concluding "the hooks are not wired" from it is a statement about
+ * the process's age dressed up as a statement about the user's configuration.
+ *
+ * Observed: a daemon 8 seconds old reported `NO event has ever reached the
+ * daemon — they are not wired` while showing 5 sessions and 3383 agents, and
+ * had ingested two events by the 22-second mark. Nothing was wrong.
+ *
+ * A minute is long enough that an active session will have fired something —
+ * `PreToolUse` and `PostToolUse` fire on every tool call — and short enough
+ * that a genuinely unwired install is still named promptly.
+ */
+export const HOOKS_VERDICT_AFTER_MS = 60_000;
+
+/**
+ * Is "nothing has ever arrived" actually evidence that the hooks are unwired?
+ *
+ * Only once the daemon has been up long enough for the absence to mean
+ * something. Before that it means the daemon is new, which is not a fault and
+ * must not be reported as one.
+ */
+export function hooksLookUnwired(
+  body: { everIngested?: boolean; daemonStartedAt?: number },
+  nowMs: number,
+): boolean {
+  if (body.everIngested !== false) return false;
+  // An older daemon does not send `daemonStartedAt`; with no age to reason
+  // about, say nothing rather than guess. Absent is "cannot tell".
+  if (typeof body.daemonStartedAt !== "number") return false;
+  return nowMs - body.daemonStartedAt >= HOOKS_VERDICT_AFTER_MS;
+}
