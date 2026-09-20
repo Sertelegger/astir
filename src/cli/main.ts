@@ -789,6 +789,18 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
   if (probe.kind === "mine") {
     const drift = describeDaemonBuild(probe, BUILD_STAMP);
     if (drift !== null) out(drift);
+  } else if (probe.kind === "unknown") {
+    // The case #57 was built for, and the one it originally missed here.
+    //
+    // A daemon too old to report a role answers `/state` perfectly well, so
+    // `fetchStatus` says "ok" and doctor printed nothing at all — silent in
+    // exactly the situation that makes every later measurement a lie. The bind
+    // path in `astir daemon` handled it and this surface did not, which is
+    // backwards: doctor is the one people run when something is already wrong.
+    out(`  daemon build    ${probe.detail}`);
+    out("                  restart it — an older daemon answers normally and reports stale state");
+  } else if (probe.kind === "foreign") {
+    out(`  daemon build    it is ${probe.host}'s daemon, not this machine's — see below`);
   }
 
   // DMN-12 — whether it will still be here after a reboot. A daemon that must be

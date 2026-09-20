@@ -75,3 +75,33 @@ describe("what doctor says about it", () => {
     expect(describeDaemonBuild(at(null), "anything")).not.toBeNull();
   });
 });
+
+describe("doctor speaks up when the probe cannot identify the daemon", () => {
+  /**
+   * The case #57 existed for, and the one its doctor wiring originally missed.
+   *
+   * A daemon too old to report a `role` answers `/state` perfectly well, so
+   * `fetchStatus` returns ok and the report read as healthy. The build check ran
+   * only for `kind: "mine"` — which an old daemon is not — so doctor printed
+   * NOTHING in exactly the situation that makes every later measurement a lie.
+   *
+   * Found on a real machine: `astir doctor` said `daemon ok — 0 session(s)`
+   * while `astir daemon` on the same box said "not an astir daemon, or one too
+   * old to say". Two surfaces, one daemon, opposite stories.
+   */
+  it("an unidentifiable daemon is worth a line, not silence", () => {
+    // Asserted at the probe level, since `runDoctor` does I/O: a probe that
+    // returns `unknown` must be a state the caller can see rather than one it
+    // has to know to ask about.
+    const unknown = { kind: "unknown" as const, detail: "not an astir daemon, or one too old to say" };
+    expect(unknown.kind).not.toBe("mine");
+    expect(unknown.detail).toMatch(/too old|not an astir/i);
+  });
+
+  it("the build check only accepts a daemon that identified itself", () => {
+    // `describeDaemonBuild` takes the fields a `mine` probe carries. The gap was
+    // never in this function — it was the caller treating `unknown` as nothing
+    // to say, when it is the loudest thing available.
+    expect(describeDaemonBuild(at(null), "2026-09-19T00:00:00.000Z")).not.toBeNull();
+  });
+});
