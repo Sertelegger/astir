@@ -46,6 +46,36 @@ export type RemoteLister = (host: string) => Promise<DiscoveredSession[] | null>
  * --json` fails, `$SHELL -lc` succeeds. Same failure this project already hit
  * with SwiftBar's launchd PATH.
  */
+/**
+ * Ask the remote about EVERY Claude profile, not just the default one.
+ *
+ * A login shell carries no `CLAUDE_CONFIG_DIR`, so `claude agents --json` reads
+ * `~/.claude` and a machine whose sessions live anywhere else reports nothing.
+ * Measured on a real host: bare login shell saw **0** sessions, the same command
+ * with the profile set saw **4**.
+ *
+ * This is the same blindness for the third time. Local session discovery had it
+ * and gained `candidateConfigDirs`; sidecar reading had it and was fixed in
+ * astir#55; the remote probe never adopted either. Each time it survives because
+ * a miss is indistinguishable from "nothing is running there" — it fails quiet.
+ *
+ * And it fails quiet in the worst place: DMN-09's poll is the FALLBACK for when
+ * a machine's daemon is down. On a host with a non-default profile it returned
+ * `[]` forever, so the fallback was not degraded, it was absent — and identical
+ * on screen to a quiet machine.
+ *
+ * One line of JSON per profile, flattened, so a partial answer stays usable: a
+ * profile whose `claude` errors contributes an unparseable line and the others
+ * still count. `|| true` keeps one failing profile from ending the loop.
+ */
+/** Separates one profile's answer from the next. Chosen to never occur in JSON. */
+export const PROFILE_SEPARATOR = "--astir--";
+
+const PROBE_SCRIPT =
+  'for d in "$HOME"/.claude*; do [ -d "$d" ] || continue; ' +
+  'CLAUDE_CONFIG_DIR="$d" claude agents --json 2>/dev/null || true; ' +
+  `echo; echo ${PROFILE_SEPARATOR}; done`;
+
 export function sshArgs(host: string, timeoutMs = SSH_TIMEOUT_MS): string[] {
   return [
     "-o",
@@ -54,9 +84,47 @@ export function sshArgs(host: string, timeoutMs = SSH_TIMEOUT_MS): string[] {
     `ConnectTimeout=${Math.max(1, Math.round(timeoutMs / 1000))}`,
     host,
     // Follows the remote user's own shell rather than assuming bash exists.
+    // Single quotes around the script because it contains double quotes and no
+    // single ones; the outer remote shell expands `${SHELL}` and hands the rest
+    // to `-lc` untouched.
     // biome-ignore lint/suspicious/noTemplateCurlyInString: shell expansion evaluated on the remote host, not here
-    '${SHELL:-/bin/sh} -lc "claude agents --json"',
+    `\${SHELL:-/bin/sh} -lc '${PROBE_SCRIPT}'`,
   ];
+}
+
+/**
+ * Merge one probe's per-profile lines into a single session list.
+ *
+ * `null` means the probe told us nothing usable, which is NOT the same as an
+ * empty list — the undiscovered sweep and the prune both key off that
+ * distinction, so a failed probe must never masquerade as "nothing running".
+ * One parseable line is enough to count as an answer.
+ *
+ * Deduplicated by session id: two profiles can name the same session when one
+ * is a symlink of the other, and a doubled row is a worse failure than a
+ * missing one because nothing downstream can tell it is doubled.
+ */
+export function parseProfileLines(stdout: string): DiscoveredSession[] | null {
+  const seen = new Set<string>();
+  const out: DiscoveredSession[] = [];
+  let parsedAny = false;
+
+  // Split on the marker rather than on newlines: `claude agents --json` may
+  // pretty-print, and flattening it would have meant escaping a backslash
+  // through a JS literal, a login shell and an inner shell — three chances to
+  // be wrong, for no benefit.
+  for (const chunk of stdout.split(PROFILE_SEPARATOR)) {
+    if (chunk.trim() === "") continue;
+    const parsed = parseAgentsJson(chunk.trim());
+    if (parsed === null) continue;
+    parsedAny = true;
+    for (const session of parsed) {
+      if (seen.has(session.sessionId)) continue;
+      seen.add(session.sessionId);
+      out.push(session);
+    }
+  }
+  return parsedAny ? out : null;
 }
 
 export function createSshLister(timeoutMs = SSH_TIMEOUT_MS): RemoteLister {
@@ -68,7 +136,7 @@ export function createSshLister(timeoutMs = SSH_TIMEOUT_MS): RemoteLister {
         { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
         (err, stdout) => {
           if (err) return resolve(null);
-          resolve(parseAgentsJson(stdout));
+          resolve(parseProfileLines(stdout));
         },
       );
     });
