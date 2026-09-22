@@ -293,3 +293,44 @@ export function hooksLookUnwired(
   if (typeof body.daemonStartedAt !== "number") return false;
   return nowMs - body.daemonStartedAt >= HOOKS_VERDICT_AFTER_MS;
 }
+
+/**
+ * What `astir notifier` says once it is listening.
+ *
+ * It used to print the manual setup PSH-14 and `astir pair` replaced:
+ *
+ *     on the remote host, run the daemon with:
+ *       astir daemon --notify-url http://127.0.0.1:47001/notify --notify-token <token>
+ *     forward it with:  ssh -R 47001:127.0.0.1:47001 <host>
+ *
+ * Neither flag is dead, so this was superseded guidance rather than a broken
+ * instruction — but it presented as required two things that are not. The
+ * daemon PROBES for a notifier and attaches on its own, and `astir pair` writes
+ * the forward into `~/.ssh/config` so it applies to every future connection
+ * rather than one ad-hoc command.
+ *
+ * It cost real time: during a live debugging session this was read as "the
+ * daemon must be told where the notifier is", which is the model PSH-14 exists
+ * to remove, and it directed attention away from the actual fault — that no
+ * notifier was running at all.
+ *
+ * Pure, so the wording is testable; `runNotifier` binds a socket.
+ */
+export function notifierGreeting(port: number, host: string): string[] {
+  return [
+    `astir notifier listening on 127.0.0.1:${port}`,
+    "",
+    "Remote machines reach this through an ssh tunnel. On the machine you want",
+    "to hear from, once:",
+    "",
+    `    astir pair ${host}`,
+    "",
+    "Their daemon finds this notifier by itself — no flags, and no token to copy.",
+    "Run `astir doctor` there to confirm it attached.",
+    "",
+    // Kept, because the flags are real and exist for a tunnel astir did not set
+    // up. Demoted, because they are not how anyone should start.
+    `If you are wiring a tunnel yourself, the daemon also accepts --notify-url`,
+    `http://127.0.0.1:${port}/notify with --notify-token.`,
+  ];
+}

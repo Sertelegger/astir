@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { describeHosts, describeNotifier } from "../src/config/plugin.js";
+import { describeHosts, describeNotifier, notifierGreeting } from "../src/config/plugin.js";
 import { SERVICE_LABELS, servicePath, servicePlist } from "../src/config/service.js";
 
 const text = (lines: string[]) => lines.join("\n");
@@ -100,5 +100,58 @@ describe("#69 — the notifier gets a service of its own", () => {
     const plist = servicePlist({ node: "/n", script: "/s.js", logPath: "/l" });
     expect(plist).toContain("<string>daemon</string>");
     expect(plist).toContain(SERVICE_LABELS.daemon);
+  });
+});
+
+describe("#66 — what `astir notifier` tells you to do", () => {
+  /**
+   * It printed the manual setup PSH-14 and `astir pair` replaced:
+   *
+   *     on the remote host, run the daemon with:
+   *       astir daemon --notify-url http://…/notify --notify-token <token>
+   *     forward it with:  ssh -R 47001:127.0.0.1:47001 <host>
+   *
+   * Neither flag is dead, so this was superseded guidance rather than a broken
+   * instruction — but it presented as required two things that are not, and
+   * during a live debugging session it was read as "the daemon must be told
+   * where the notifier is". That is the model PSH-14 exists to remove, and it
+   * pulled attention away from the real fault: no notifier was running at all.
+   */
+  const greeting = (port = 47001, host = "mac") => notifierGreeting(port, host).join("\n");
+
+  it("leads with `astir pair`, which is the one command that works", () => {
+    const out = greeting(47001, "my-mac");
+    expect(out).toContain("astir pair my-mac");
+    // Named with THIS machine's host, because that is the argument the user
+    // needs and the one they are least likely to have to hand.
+    expect(out).not.toContain("astir pair <host>");
+  });
+
+  it("says the daemon finds the notifier by itself", () => {
+    // PSH-14. Without this the reader reasonably concludes the opposite from
+    // the flags mentioned further down.
+    expect(greeting()).toMatch(/finds this notifier by itself/i);
+    expect(greeting()).toMatch(/no token to copy/i);
+  });
+
+  it("no longer presents the manual flags as the way to do it", () => {
+    const out = greeting();
+    const pairAt = out.indexOf("astir pair");
+    const flagsAt = out.indexOf("--notify-url");
+    expect(pairAt).toBeGreaterThan(-1);
+    expect(flagsAt).toBeGreaterThan(-1);
+    // Order is the whole fix: the flags are real and belong last.
+    expect(flagsAt).toBeGreaterThan(pairAt);
+  });
+
+  it("keeps the flags documented, since they exist for a real case", () => {
+    // A tunnel astir did not set up. Deleting them would trade one wrong
+    // instruction for a missing one.
+    expect(greeting()).toContain("--notify-url");
+    expect(greeting()).toContain("--notify-token");
+  });
+
+  it("still says where it is listening", () => {
+    expect(greeting(47123)).toContain("127.0.0.1:47123");
   });
 });

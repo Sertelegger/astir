@@ -24,6 +24,7 @@ import {
   describePlugins,
   hooksLookUnwired,
   installedPlugins,
+  notifierGreeting,
 } from "../config/plugin.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
 import { installService, serviceInstalled, servicePath, uninstallService } from "../config/service.js";
@@ -722,12 +723,7 @@ async function runNotifier(flags: Args["flags"]): Promise<void> {
   });
 
   const bound = await server.listen(port);
-  process.stdout.write(`astir notifier listening on 127.0.0.1:${bound}\n`);
-  process.stdout.write("on the remote host, run the daemon with:\n");
-  process.stdout.write(
-    `  astir daemon --notify-url http://127.0.0.1:${bound}/notify --notify-token <token>\n`,
-  );
-  process.stdout.write(`forward it with:  ssh -R ${bound}:127.0.0.1:${bound} <host>\n`);
+  for (const line of notifierGreeting(bound, hostname())) process.stdout.write(`${line}\n`);
 
   const shutdown = (): void => {
     void server.close().then(() => process.exit(0));
