@@ -155,3 +155,70 @@ export function toSwiftBar(menu: Menu): string {
   for (const node of menu.items) out.push(isSeparator(node) ? "---" : line(node));
   return out.join("\n");
 }
+
+/**
+ * The menu as JSON, for a host that is not SwiftBar — today, the native macOS
+ * app (#64).
+ *
+ * Versioned for the reason frames are (VER-01): the app and the CLI ship
+ * separately, so one will be older than the other, and a host drawing from a
+ * shape it has misread is worse than one that says it cannot read it. An
+ * unknown MINOR is additive and must be accepted; an unknown MAJOR refused.
+ */
+export const MENU_JSON_VERSION = { major: 1, minor: 0 } as const;
+
+/** A light/dark pair, split so no host has to parse `"#a,#b"` back apart. */
+export interface ColourPair {
+  light: string;
+  dark: string;
+}
+
+export interface MenuItemJson {
+  text: string;
+  depth: number;
+  colour?: ColourPair;
+  symbol?: string;
+  symbolColour?: ColourPair;
+  monospace?: boolean;
+  action?: { argv: string[]; terminal: boolean };
+  refresh?: boolean;
+}
+
+export interface MenuJson {
+  v: typeof MENU_JSON_VERSION;
+  badge: MenuItemJson;
+  items: Array<MenuItemJson | MenuSeparator>;
+}
+
+/**
+ * One colour value as a pair. A single value is used for both appearances,
+ * which is exactly what SwiftBar does with it — matching that keeps the two
+ * hosts rendering the same menu.
+ */
+export function colourPair(value: string): ColourPair {
+  const [light = "", dark] = value.split(",").map((part) => part.trim());
+  return { light, dark: dark === undefined || dark === "" ? light : dark };
+}
+
+function itemJson(item: MenuItem): MenuItemJson {
+  return {
+    text: item.text,
+    depth: item.depth,
+    ...(item.colour === undefined ? {} : { colour: colourPair(item.colour) }),
+    ...(item.symbol === undefined ? {} : { symbol: item.symbol }),
+    ...(item.symbolColour === undefined ? {} : { symbolColour: colourPair(item.symbolColour) }),
+    ...(item.monospace === true ? { monospace: true } : {}),
+    ...(item.action === undefined
+      ? {}
+      : { action: { argv: item.action.argv, terminal: item.action.terminal === true } }),
+    ...(item.refresh === true ? { refresh: true } : {}),
+  };
+}
+
+export function menuJson(menu: Menu): MenuJson {
+  return {
+    v: MENU_JSON_VERSION,
+    badge: itemJson(menu.badge),
+    items: menu.items.map((node) => (isSeparator(node) ? node : itemJson(node))),
+  };
+}

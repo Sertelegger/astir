@@ -61,9 +61,7 @@ jobs:
 
   macos:
     # The primary development platform, and the only one where the notification
-    # and window-focus paths are real rather than skipped. It genuinely needs
-    # covering: it is the primary development platform and the only one where
-    # the notification and window-focus paths are real rather than skipped.
+    # and window-focus paths are real rather than skipped.
     name: verify (macos-latest, node 24)
     runs-on: macos-latest
     steps:
@@ -77,6 +75,20 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npm test
+      # The menu-bar app (#64) is Swift and nothing else in this suite can
+      # compile it. Building it here is the only check that it compiles at all;
+      # `--check` then polls once against the real `astir menubar --json` and
+      # exits, so the Swift decoder is verified against the actual output rather
+      # than against what someone believed the output to be. No daemon runs
+      # here, so it reads the "daemon unreachable" menu — still a full,
+      # versioned model, which is the contract being tested.
+      - run: npm link
+      - name: build the menu-bar app
+        working-directory: macos
+        run: swift build
+      - name: the app decodes astir's real output
+        working-directory: macos
+        run: .build/debug/AstirBar --check
 
   windows-early-warning:
     # PLT-02: native Windows is deferred for v1, not rejected, and no decision

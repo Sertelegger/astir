@@ -43,7 +43,8 @@ import { NotifyPolicy } from "../notify/policy.js";
 import { dropSelfSessions, pushRoster, rosterUrlFrom } from "../notify/roster.js";
 import { NotifierServer } from "../notify/server.js";
 import { fetchRemote, fetchStatus } from "../status/fetch.js";
-import { renderMenubar } from "../status/menubar.js";
+import { menuJson } from "../status/menu.js";
+import { buildMenu, renderMenubar } from "../status/menubar.js";
 import type { RemoteSession } from "../status/types.js";
 import { defaultPairDeps, pair, pairedHosts, sshConfigPath } from "./pair.js";
 import {
@@ -703,6 +704,14 @@ async function runMenubar(flags: Args["flags"]): Promise<void> {
     for (const s of status.body.silent) {
       s.sandboxBlocked = inspectSandbox(s.cwd).blocked;
     }
+  }
+  // `--json` emits the MODEL rather than SwiftBar's wire format — the input a
+  // native host draws from. It exists so the macOS app (#64) never parses
+  // `sfimage=`/`bash=` back out of a string to recover the structure that
+  // produced it, which is the coupling #63 removed.
+  if (flags.get("json") === true) {
+    process.stdout.write(`${JSON.stringify(menuJson(buildMenu(status, { invocation, remote })))}\n`);
+    return;
   }
   process.stdout.write(renderMenubar(status, { invocation, remote }));
 }
