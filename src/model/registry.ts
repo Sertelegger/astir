@@ -117,6 +117,8 @@ export interface AgentRecord {
 export interface BlockedAgent {
   sessionId: string;
   agentId: string;
+  /** PSH-16 — how long a block must last before it is real depends on who sent it. */
+  provider: Provider;
   cwd: string;
   reason: string;
   /**
@@ -139,6 +141,18 @@ export interface BlockedAgent {
    * it is real.
    */
   blockedForMs: number;
+}
+
+/**
+ * A session whose liveness can be checked from its pid alone. See
+ * `discovery/pids.ts`: the provider that needs this has no session listing.
+ */
+export interface PidCandidate {
+  sessionId: string;
+  cwd: string;
+  pid: number;
+  /** When the process at `pid` started, once something has looked. */
+  startedAt: number | null;
 }
 
 export interface SessionRecord {
@@ -345,6 +359,7 @@ export class Registry {
           out.push({
             sessionId: s.sessionId,
             agentId: a.id,
+            provider: s.provider,
             cwd: s.cwd,
             reason: a.blockedReason ?? "blocked",
             blockedForMs: Math.max(0, this.nowMs() - a.stateSince),
@@ -747,6 +762,42 @@ export class Registry {
    */
   stageRestore(snap: Snapshot): void {
     for (const s of snap.sessions) this.pendingRestore.set(s.sessionId, s);
+  }
+
+  /**
+   * A hook relay running inside the agent's process says which process it is.
+   *
+   * Discovery gives Claude sessions their pid; a provider with no session
+   * listing has only this. A different pid under the same session id is a new
+   * process — resuming a session keeps its id — so the start time is cleared
+   * for the next liveness check to measure afresh rather than to compare
+   * against the old process and conclude this one is a stranger.
+   */
+  observePid(sessionId: string, pid: number): void {
+    const s = this.sessions.get(sessionId);
+    if (s === undefined || s.pid === pid) return;
+    s.pid = pid;
+    s.startedAt = null;
+  }
+
+  /**
+   * What a pid-based lister should check for one provider: live sessions that
+   * reported a pid, and saved ones that recorded a pid and its start time —
+   * without both, a restore cannot be told from a recycled pid.
+   */
+  pidCandidates(provider: Provider): PidCandidate[] {
+    const out: PidCandidate[] = [];
+    for (const s of this.sessions.values()) {
+      if (s.provider === provider && s.pid !== null && s.endedAt === null) {
+        out.push({ sessionId: s.sessionId, cwd: s.cwd, pid: s.pid, startedAt: s.startedAt });
+      }
+    }
+    for (const saved of this.pendingRestore.values()) {
+      if (saved.provider === provider && saved.pid !== null && saved.startedAt !== null) {
+        out.push({ sessionId: saved.sessionId, cwd: saved.cwd, pid: saved.pid, startedAt: saved.startedAt });
+      }
+    }
+    return out;
   }
 
   /** How many saved sessions are still waiting to be confirmed or discarded. */

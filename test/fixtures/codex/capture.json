@@ -1,0 +1,200 @@
+{
+  "_capture": {
+    "note": "Captured from real Codex sessions by a temporary command-hook probe plugin, then sanitised. Do not hand-edit; re-capture instead. Keys are exactly as captured. Kept verbatim: hook_event_name, permission_mode, source, tool_name, model, reason, trigger, stop_hook_active. Ids are stable fakes in the captured format, so events that shared a session still share one. cwd and every path are moved under a fake root; apply_patch keeps its directive lines with remapped paths, and its hunk bodies are replaced. Command text, tool responses, the prompt and the assistant message are replaced by markers.",
+    "provider": "codex",
+    "cliVersion": "codex-cli 0.154.0",
+    "capturedAt": "2026-09-23",
+    "envKeys": [
+      "CLAUDE_PLUGIN_DATA",
+      "CLAUDE_PLUGIN_ROOT",
+      "CODEX_COMPANION_SESSION_ID",
+      "CODEX_COMPANION_TRANSCRIPT_PATH",
+      "CODEX_MANAGED_BY_NPM",
+      "CODEX_MANAGED_PACKAGE_ROOT",
+      "HOME",
+      "PATH",
+      "PLUGIN_DATA",
+      "PLUGIN_ROOT",
+      "SHELL",
+      "USER"
+    ],
+    "settles": [
+      "PermissionRequest carries tool_name and tool_input but no tool_use_id.",
+      "PreToolUse fires BEFORE PermissionRequest for the same call.",
+      "apply_patch carries ABSOLUTE paths in its directives.",
+      "The one captured permission was answered by an automatic reviewer: no human, and the next event arrived ~11.9s later with no PostToolUse for the requested call — which is why the Codex dwell is 30s, not 5s.",
+      "No payload carried agent_id; SubagentStart/SubagentStop/Interrupt were never captured."
+    ]
+  },
+  "events": {
+    "SessionStart": {
+      "session_id": "14493dca-e863-b672-6cdc-24ca9d4a609d",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-14493dca-e863-b672-6cdc-24ca9d4a609d.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "SessionStart",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "default",
+      "source": "startup"
+    },
+    "UserPromptSubmit": {
+      "session_id": "14493dca-e863-b672-6cdc-24ca9d4a609d",
+      "turn_id": "68f687e4-7ab6-f4eb-9936-708f3ccc5be7",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-14493dca-e863-b672-6cdc-24ca9d4a609d.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "UserPromptSubmit",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "default",
+      "prompt": "<redacted: the user's prompt>"
+    },
+    "PreToolUse:Bash": {
+      "session_id": "14493dca-e863-b672-6cdc-24ca9d4a609d",
+      "turn_id": "68f687e4-7ab6-f4eb-9936-708f3ccc5be7",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-14493dca-e863-b672-6cdc-24ca9d4a609d.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "PreToolUse",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "default",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "<redacted>"
+      },
+      "tool_use_id": "exec-54e64d82-3ebb-2fc2-45e2-30207924f33b"
+    },
+    "PostToolUse:Bash": {
+      "session_id": "14493dca-e863-b672-6cdc-24ca9d4a609d",
+      "turn_id": "68f687e4-7ab6-f4eb-9936-708f3ccc5be7",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-14493dca-e863-b672-6cdc-24ca9d4a609d.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "PostToolUse",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "default",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "<redacted>"
+      },
+      "tool_response": "<redacted>",
+      "tool_use_id": "exec-54e64d82-3ebb-2fc2-45e2-30207924f33b"
+    },
+    "PreToolUse:apply_patch": {
+      "session_id": "91d72c60-ed9a-f395-626e-0529089bec4f",
+      "turn_id": "8ca7b44d-27ad-1862-6ab1-21dcd9780376",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-91d72c60-ed9a-f395-626e-0529089bec4f.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "PreToolUse",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "apply_patch",
+      "tool_input": {
+        "command": "*** Begin Patch\n*** Update File: /home/user/repo/crates/core/src/stream.rs\n@@\n-<redacted>\n+<redacted>\n*** End Patch\n"
+      },
+      "tool_use_id": "exec-e331149a-5033-07a8-fd7a-c0039c566315"
+    },
+    "PostToolUse:apply_patch": {
+      "session_id": "91d72c60-ed9a-f395-626e-0529089bec4f",
+      "turn_id": "8ca7b44d-27ad-1862-6ab1-21dcd9780376",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-91d72c60-ed9a-f395-626e-0529089bec4f.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "PostToolUse",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "apply_patch",
+      "tool_input": {
+        "command": "*** Begin Patch\n*** Update File: /home/user/repo/crates/core/src/stream.rs\n@@\n-<redacted>\n+<redacted>\n*** End Patch\n"
+      },
+      "tool_response": "<redacted>",
+      "tool_use_id": "exec-e331149a-5033-07a8-fd7a-c0039c566315"
+    },
+    "Stop": {
+      "session_id": "14493dca-e863-b672-6cdc-24ca9d4a609d",
+      "turn_id": "68f687e4-7ab6-f4eb-9936-708f3ccc5be7",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-14493dca-e863-b672-6cdc-24ca9d4a609d.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "Stop",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "default",
+      "stop_hook_active": false,
+      "last_assistant_message": "<redacted: the model's reply>"
+    },
+    "PreCompact": {
+      "session_id": "14493dca-e863-b672-6cdc-24ca9d4a609d",
+      "turn_id": "05a916e9-ceb2-48ff-6492-7fa453218bba",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-14493dca-e863-b672-6cdc-24ca9d4a609d.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "PreCompact",
+      "model": "gpt-5.6-sol",
+      "trigger": "auto"
+    },
+    "PostCompact": {
+      "session_id": "14493dca-e863-b672-6cdc-24ca9d4a609d",
+      "turn_id": "05a916e9-ceb2-48ff-6492-7fa453218bba",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-14493dca-e863-b672-6cdc-24ca9d4a609d.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "PostCompact",
+      "model": "gpt-5.6-sol",
+      "trigger": "auto"
+    },
+    "SessionEnd": {
+      "session_id": "1d1d0f0b-0f50-9123-cdee-911625195a40",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-1d1d0f0b-0f50-9123-cdee-911625195a40.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "SessionEnd",
+      "reason": "other"
+    }
+  },
+  "permissionSequence": [
+    {
+      "afterMs": 0,
+      "payload": {
+        "session_id": "91d72c60-ed9a-f395-626e-0529089bec4f",
+        "turn_id": "8ca7b44d-27ad-1862-6ab1-21dcd9780376",
+        "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-91d72c60-ed9a-f395-626e-0529089bec4f.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PreToolUse",
+        "model": "gpt-5.6-sol",
+        "permission_mode": "bypassPermissions",
+        "tool_name": "mcp__mcp_search__smart_search",
+        "tool_input": {
+          "max_results": 20,
+          "path": "/home/user/repo/docs",
+          "query": "<redacted>"
+        },
+        "tool_use_id": "exec-02b97e80-25b1-ddea-93a2-726931653c55"
+      }
+    },
+    {
+      "afterMs": 63,
+      "payload": {
+        "session_id": "91d72c60-ed9a-f395-626e-0529089bec4f",
+        "turn_id": "8ca7b44d-27ad-1862-6ab1-21dcd9780376",
+        "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-91d72c60-ed9a-f395-626e-0529089bec4f.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PermissionRequest",
+        "model": "gpt-5.6-sol",
+        "permission_mode": "bypassPermissions",
+        "tool_name": "mcp__mcp_search__smart_search",
+        "tool_input": {
+          "max_results": 20,
+          "path": "/home/user/repo/docs",
+          "query": "<redacted>"
+        }
+      }
+    },
+    {
+      "afterMs": 11957,
+      "payload": {
+        "session_id": "91d72c60-ed9a-f395-626e-0529089bec4f",
+        "turn_id": "8ca7b44d-27ad-1862-6ab1-21dcd9780376",
+        "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-91d72c60-ed9a-f395-626e-0529089bec4f.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PreToolUse",
+        "model": "gpt-5.6-sol",
+        "permission_mode": "bypassPermissions",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>"
+        },
+        "tool_use_id": "exec-b4778003-94d3-8ee5-8daa-5dbdc2005ffe"
+      }
+    }
+  ]
+}

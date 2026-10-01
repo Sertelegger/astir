@@ -26,10 +26,12 @@ import {
   installedPlugins,
   notifierGreeting,
 } from "../config/plugin.js";
+import { CLAUDE_CLI, CODEX_CLI, registerPlugin } from "../config/register.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
 import { installService, serviceInstalled, servicePath, uninstallService } from "../config/service.js";
 import { probeDaemon } from "../daemon/detect.js";
 import { BUILD_STAMP, Daemon } from "../daemon/server.js";
+import { createPidLister, createProcessTable } from "../discovery/pids.js";
 import { createSshLister, RemoteDiscovery } from "../discovery/remote.js";
 import { createClaudeLister } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
@@ -114,47 +116,6 @@ function repoRoot(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
 
-/**
- * Register the plugin — and therefore the hooks — without the user hand-editing
- * anything or typing slash commands.
- *
- * Deliberately invoked from an explicit `astir install`, never from an npm
- * `postinstall`. Reaching into another tool's configuration as a side effect of
- * `npm install` is the behaviour the ecosystem treats as hostile, and it would
- * fire under `npm ci` in CI, inside Docker builds, and for transitive installs
- * where nobody asked for any of this.
- */
-function registerPlugin(root: string, out: (line: string) => void): boolean {
-  const run = (args: string[]): { ok: boolean; detail: string } => {
-    try {
-      const stdout = execFileSync("claude", args, {
-        encoding: "utf8",
-        timeout: 60_000,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      return { ok: true, detail: stdout.trim() };
-    } catch (err) {
-      const e = err as { stderr?: Buffer | string; message?: string };
-      const stderr = typeof e.stderr === "string" ? e.stderr : e.stderr?.toString();
-      return { ok: false, detail: (stderr || e.message || "failed").trim() };
-    }
-  };
-
-  const market = run(["plugin", "marketplace", "add", root]);
-  // Adding a marketplace that is already known is a success for our purposes.
-  if (!market.ok && !/already/i.test(market.detail)) {
-    out(`  could not add the marketplace: ${market.detail}`);
-    return false;
-  }
-
-  const install = run(["plugin", "install", "astir@astir-marketplace", "--yes"]);
-  if (!install.ok && !/already/i.test(install.detail)) {
-    out(`  could not install the plugin: ${install.detail}`);
-    return false;
-  }
-  return true;
-}
-
 function runInstall(flags: Args["flags"]): void {
   const token = readOrCreateToken();
   const root = repoRoot();
@@ -164,12 +125,25 @@ function runInstall(flags: Args["flags"]): void {
 
   if (flags.get("no-plugin") !== true) {
     out("Registering the astir plugin with Claude Code…");
-    if (registerPlugin(root, out)) {
-      out("  hooks registered — restart Claude Code to pick them up");
-    } else {
-      out("  falling back to manual setup; see step 2 below");
-    }
+    const claude = registerPlugin(CLAUDE_CLI, root, out);
+    if (claude === "ok") out("  hooks registered — restart Claude Code to pick them up");
+    else if (claude === "absent") out("  `claude` is not on PATH; see step 2 below");
+    else out("  falling back to manual setup; see step 2 below");
     out("");
+
+    // Codex is optional: most people use one agent, and saying nothing about
+    // a tool they do not have is the right amount to say.
+    const codex = registerPlugin(CODEX_CLI, root, out);
+    if (codex === "ok") {
+      out("Registered the astir plugin with Codex. The next interactive `codex`");
+      out("  session asks you to review its hooks — astir sees nothing until you trust them.");
+      out("");
+    } else if (codex === "failed") {
+      out("Could not register the astir plugin with Codex. By hand:");
+      out(`    codex plugin marketplace add ${root}`);
+      out("    codex plugin add astir@astir-marketplace");
+      out("");
+    }
   }
 
   // INS-04 — the token has to be in Claude Code's environment or every hook
@@ -493,8 +467,26 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
       )
       .catch(() => undefined);
   };
+  // Codex has no session listing, so its sessions are vouched for by the pid
+  // their hook relay reported — see discovery/pids.ts. Without this nothing
+  // reaps a Codex session that dies without SessionEnd.
+  const codexLister = createPidLister(() => registry.pidCandidates("codex"), createProcessTable());
+  const reconcileCodex = (): void => {
+    void codexLister()
+      .then((found) =>
+        registry.reconcile(found?.sessions ?? null, {
+          complete: found?.complete ?? false,
+          provider: "codex",
+        }),
+      )
+      .catch(() => undefined);
+  };
   reconcile();
-  const discoveryTick = setInterval(reconcile, 5_000);
+  reconcileCodex();
+  const discoveryTick = setInterval(() => {
+    reconcile();
+    reconcileCodex();
+  }, 5_000);
   discoveryTick.unref();
 
   // DMN-09 — slower than local discovery on purpose: each tick is an SSH round

@@ -13,8 +13,10 @@ import type { NormalizeDeps, NormalizeResult } from "../types.js";
 
 export type { NormalizeDeps, NormalizeResult, SidecarMeta } from "../types.js";
 
-import { homedir } from "node:os";
-import { isAbsolute, posix, relative, resolve, sep } from "node:path";
+import { pathArgs, toRepoRelative } from "../paths.js";
+
+export { toRepoRelative } from "../paths.js";
+
 import {
   CONTRACT_VERSION,
   type Kind,
@@ -55,42 +57,14 @@ const NOTIFICATION_KINDS = new Set<string>([
   "agent_completed",
 ]);
 
-/** Path keys Claude uses across its file tools. */
-const PATH_KEYS = ["file_path", "notebook_path", "path"] as const;
-
 export function classifyTool(tool: string, input: unknown): { op: Op; rawPaths: string[] } {
-  const rawPaths: string[] = [];
-  if (typeof input === "object" && input !== null) {
-    const o = input as Record<string, unknown>;
-    for (const k of PATH_KEYS) {
-      const v = o[k];
-      if (typeof v === "string" && v.length > 0) rawPaths.push(v);
-    }
-  }
+  const rawPaths = pathArgs(input);
   if (EDIT.has(tool)) return { op: "edit", rawPaths };
   if (WRITE.has(tool)) return { op: "write", rawPaths };
   if (READ.has(tool)) return { op: "read", rawPaths };
   // CAP-03: keep any paths we found even for `other` — MCP filesystem tools carry
   // real paths and v1 threw them away.
   return { op: "other", rawPaths };
-}
-
-/**
- * CAP-04 — repo-relative, posix-normalized, resolved once at the boundary.
- * Returns null for anything that escapes the root; callers count the drop.
- */
-export function toRepoRelative(cwd: string, raw: string, realpath: (p: string) => string): string | null {
-  if (raw.length === 0) return null;
-  let abs = raw.startsWith("~") ? resolve(homedir(), raw.slice(1).replace(/^[/\\]/, "")) : raw;
-  if (!isAbsolute(abs)) abs = resolve(cwd, abs);
-  // Resolve symlinks so a linked repo root does not produce `../..` paths that the
-  // model then silently drops. Falls back to the literal path when the file does
-  // not exist yet, which is the normal case for a Write.
-  const realCwd = realpath(cwd);
-  const realAbs = realpath(abs);
-  const rel = relative(realCwd, realAbs);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return null;
-  return rel.split(sep).join(posix.sep);
 }
 
 /**

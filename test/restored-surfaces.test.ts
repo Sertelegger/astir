@@ -97,9 +97,10 @@ describe("PSH-16, arriving from the other direction", () => {
    * emits NOTHING, so suppressing until it acts would silence the one thing
    * this product exists to say.
    */
-  const blocked = (restored: boolean) => ({
+  const blocked = (restored: boolean, provider: "claude" | "codex" = "claude") => ({
     sessionId: "s1",
     agentId: "a1",
+    provider,
     cwd: "/repo",
     reason: "permission_prompt",
     blockedForMs: 840_000,
@@ -121,7 +122,6 @@ describe("PSH-16, arriving from the other direction", () => {
           },
         } as never,
         now: nowMs,
-        notifyAfterMs: 5_000,
       }),
     };
   }
@@ -140,6 +140,20 @@ describe("PSH-16, arriving from the other direction", () => {
     const { loop, sent } = await loopWith([blocked(true)], () => t);
     await loop.pulse();
     t += 6_000;
+    await loop.pulse();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("re-measures a restored Codex block with Codex's dwell, not the default", async () => {
+    // The restore path computes its own elapsed time, so it is a second place
+    // the per-provider dwell has to reach. At 6s Claude's would fire here.
+    let t = 1_000;
+    const { loop, sent } = await loopWith([blocked(true, "codex")], () => t);
+    await loop.pulse();
+    t += 6_000;
+    await loop.pulse();
+    expect(sent).toEqual([]);
+    t += 24_001;
     await loop.pulse();
     expect(sent).toHaveLength(1);
   });

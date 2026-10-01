@@ -21,6 +21,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const STAMPS = [
   { file: "package.json", find: /("version":\s*")[^"]+(")/, label: "npm manifest" },
   { file: ".claude-plugin/plugin.json", find: /("version":\s*")[^"]+(")/, label: "plugin manifest" },
+  { file: ".codex-plugin/plugin.json", find: /("version":\s*")[^"]+(")/, label: "Codex plugin manifest" },
   {
     file: ".claude-plugin/marketplace.json",
     find: /("version":\s*")[^"]+(")/,
