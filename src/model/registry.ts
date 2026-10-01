@@ -117,6 +117,8 @@ export interface AgentRecord {
 export interface BlockedAgent {
   sessionId: string;
   agentId: string;
+  /** PSH-16 — how long a block must last before it is real depends on who sent it. */
+  provider: Provider;
   cwd: string;
   reason: string;
   /**
@@ -345,6 +347,7 @@ export class Registry {
           out.push({
             sessionId: s.sessionId,
             agentId: a.id,
+            provider: s.provider,
             cwd: s.cwd,
             reason: a.blockedReason ?? "blocked",
             blockedForMs: Math.max(0, this.nowMs() - a.stateSince),

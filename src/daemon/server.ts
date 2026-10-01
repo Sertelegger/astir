@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultNewId, normalizeClaudeHook } from "../adapters/claude/normalize.js";
 import { watchPathsFor } from "../adapters/claude/watch.js";
+import { normalizeCodexHook } from "../adapters/codex/normalize.js";
 import type { Normalizer, SidecarMeta } from "../adapters/types.js";
 import { validateEvent } from "../contract/event.js";
 import { candidateConfigDirs } from "../discovery/profiles.js";
@@ -135,6 +136,7 @@ export interface DaemonOpts {
  */
 const NORMALIZERS: Record<string, Normalizer> = {
   claude: normalizeClaudeHook,
+  codex: normalizeCodexHook,
 };
 
 /** CAP-05 route 1 — read `<session>/subagents/agent-<id>.meta.json`. */
@@ -683,7 +685,11 @@ export class Daemon {
     // matcher naming directories would also filter events to files whose names
     // contain those words. So astir registers a matcher-less entry, which fires
     // for every watched change, and supplies the paths here instead.
-    if (valid.event.kind === "session_start") {
+    //
+    // Claude only: `watchPaths` and `FileChanged` are Claude's mechanism, and
+    // walking a repo to answer a Codex hook would cost a directory scan on a
+    // synchronous hook path for a field nothing on the other side reads.
+    if (valid.event.kind === "session_start" && valid.event.provider === "claude") {
       const watch = this.watchPathsFor(valid.event.sessionId, cwd);
       if (watch !== null) {
         // `this.json` returns void; returning its result from a void method is

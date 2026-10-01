@@ -148,3 +148,90 @@ describe("PSH-16 — a block must prove it is real before interrupting anyone", 
     expect(h.sent.filter((e) => e.kind === "blocked")).toHaveLength(1);
   });
 });
+
+describe("PSH-16 — the dwell belongs to the provider", () => {
+  /**
+   * "Long enough that an auto-resolved permission never reaches it" depends on
+   * who auto-resolves. Claude's classifier answers in hundreds of milliseconds;
+   * the one Codex request captured was answered by its reviewer after ~11.9s
+   * (test/fixtures/codex/capture.json). One dwell cannot be right for both.
+   */
+  const codexBlocked = (h: ReturnType<typeof harness>) =>
+    h.registry.apply(
+      ev("notification", {
+        provider: "codex",
+        sessionId: "c1",
+        agentId: "c1",
+        notificationKind: "permission_prompt",
+      }),
+      "/repo",
+    );
+
+  it("never interrupts about a Codex permission its reviewer answered at ~12s", async () => {
+    // The captured case, replayed: at 5s this was a false alarm.
+    const h = harness(5_000);
+    codexBlocked(h);
+    h.advance(11_957);
+    await h.loop.pulse();
+    h.registry.apply(ev("pre_tool", { provider: "codex", sessionId: "c1", agentId: "c1" }), "/repo");
+    h.advance(30_000);
+    await h.loop.pulse();
+
+    expect(h.sent).toEqual([]);
+  });
+
+  it("does interrupt once a Codex block outlasts 30s", async () => {
+    const h = harness(5_000);
+    codexBlocked(h);
+    h.advance(29_999);
+    await h.loop.pulse();
+    expect(h.sent).toEqual([]);
+
+    h.advance(1);
+    await h.loop.pulse();
+    expect(h.sent.filter((e) => e.kind === "blocked").map((e) => e.session.sessionId)).toEqual(["c1"]);
+  });
+
+  it("leaves Claude on its own dwell while a Codex block waits", async () => {
+    const h = harness(5_000);
+    h.blocked();
+    codexBlocked(h);
+    h.advance(6_000);
+    await h.loop.pulse();
+
+    expect(h.sent.filter((e) => e.kind === "blocked").map((e) => e.session.sessionId)).toEqual(["s1"]);
+  });
+
+  it("lets a caller override a provider's dwell", async () => {
+    let t = 0;
+    const sent: NotifyEnvelope[] = [];
+    const registry = new Registry({ nowMs: () => t });
+    const loop = new NotifyLoop({
+      registry,
+      policy: new NotifyPolicy(),
+      dispatcher: new Dispatcher([
+        {
+          name: "test",
+          deliver: async (e) => {
+            sent.push(e);
+            return { ok: true };
+          },
+        },
+      ]),
+      now: () => t,
+      notifyAfterMsByProvider: { codex: 1_000 },
+    });
+    registry.apply(
+      ev("notification", {
+        provider: "codex",
+        sessionId: "c1",
+        agentId: "c1",
+        notificationKind: "permission_prompt",
+      }),
+      "/repo",
+    );
+    t += 1_000;
+    await loop.pulse();
+    expect(sent).toHaveLength(1);
+  });
+});

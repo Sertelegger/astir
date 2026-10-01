@@ -13,12 +13,12 @@ const manifest = JSON.parse(
 ) as { version: string };
 
 describe("every version stamp moves together", () => {
-  // There are four, and the fourth is why this test exists: a
+  // There are five, and the SwiftBar one is why this test exists: a
   // `<bitbar.version>` comment in a shell script, which no JSON tooling would
-  // find and an audit reading carefully still missed. Three agreeing while the
-  // fourth lags is a state nothing else detects — SwiftBar would go on
-  // reporting the old version indefinitely.
-  const json = [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"];
+  // find and an audit reading carefully still missed. Four agreeing while one
+  // lags is a state nothing else detects — SwiftBar would go on reporting the
+  // old version indefinitely.
+  const json = [".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", ".codex-plugin/plugin.json"];
 
   for (const file of json) {
     it(`${file} matches package.json`, async () => {

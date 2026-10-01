@@ -1,0 +1,13 @@
+{
+  "name": "astir",
+  "version": "0.2.0",
+  "description": "Live activity view for AI coding sessions — know when an agent is blocked on you, and where in the repo work is happening.",
+  "author": {
+    "name": "Sascha Sertel",
+    "email": "sascha@needforgeek.com"
+  },
+  "homepage": "https://github.com/Sertelegger/astir",
+  "repository": "https://github.com/Sertelegger/astir",
+  "license": "MIT",
+  "hooks": "./hooks/codex-hooks.json"
+}

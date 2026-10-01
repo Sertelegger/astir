@@ -9,6 +9,7 @@
  * event — an agent that has been blocked for thirty minutes generates nothing.
  */
 
+import type { Provider } from "../contract/event.js";
 import type { Registry } from "../model/registry.js";
 import { debug } from "../obs/debug.js";
 import type { Dispatcher } from "./dispatch.js";
@@ -32,7 +33,20 @@ export interface NotifyLoopOpts {
    * to be invisible against the reminder cadence.
    */
   notifyAfterMs?: number;
+  /**
+   * PSH-16, per provider, overriding `notifyAfterMs` for the ones listed.
+   *
+   * "Long enough that an auto-resolved permission never reaches it" is a
+   * property of the provider's auto-resolver, not a constant. Claude's
+   * classifier answers in hundreds of milliseconds. Codex's reviewer took
+   * ~11.9s on the one captured request (test/fixtures/codex/capture.json),
+   * so a 5s dwell would announce a block that nobody needed to answer.
+   */
+  notifyAfterMsByProvider?: Partial<Record<Provider, number>>;
 }
+
+/** PSH-16 — see `notifyAfterMsByProvider`. 30s clears the observed ~11.9s with room. */
+export const DEFAULT_DWELL_BY_PROVIDER: Partial<Record<Provider, number>> = { codex: 30_000 };
 
 export class NotifyLoop {
   private readonly now: () => number;
@@ -47,10 +61,16 @@ export class NotifyLoop {
    */
   private restoredSeen = new Map<string, number>();
   private readonly notifyAfterMs: number;
+  private readonly dwellByProvider: Partial<Record<Provider, number>>;
 
   constructor(private opts: NotifyLoopOpts) {
     this.now = opts.now ?? (() => Date.now());
     this.notifyAfterMs = opts.notifyAfterMs ?? 5_000;
+    this.dwellByProvider = opts.notifyAfterMsByProvider ?? DEFAULT_DWELL_BY_PROVIDER;
+  }
+
+  private dwellFor(provider: Provider): number {
+    return this.dwellByProvider[provider] ?? this.notifyAfterMs;
   }
 
   /**
@@ -65,6 +85,7 @@ export class NotifyLoop {
 
     for (const b of blocked) {
       const key = keyOf(b.sessionId, b.agentId);
+      const dwell = this.dwellFor(b.provider);
       // PSH-16 — let a block prove it is real before interrupting anyone.
       //
       // A permission EVENT is not evidence that a human is needed. Under
@@ -106,9 +127,9 @@ export class NotifyLoop {
       if (!this.announced.has(key) && b.restored) {
         const first = this.restoredSeen.get(key) ?? now;
         this.restoredSeen.set(key, first);
-        if (now - first < this.notifyAfterMs) continue;
+        if (now - first < dwell) continue;
       }
-      if (!this.announced.has(key) && b.blockedForMs < this.notifyAfterMs) continue;
+      if (!this.announced.has(key) && b.blockedForMs < dwell) continue;
       if (!this.opts.policy.shouldNotify(key, "blocked", now)) continue;
 
       const envelope = buildEnvelope({
