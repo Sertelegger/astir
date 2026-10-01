@@ -19,6 +19,9 @@
 set -u
 
 [ "${ASTIR_NO_AUTOSTART:-0}" = "1" ] && exit 0
+# `set -u` would otherwise turn an unset HOME into an error on stderr — the
+# one thing this script exists not to produce.
+[ -n "${HOME:-}" ] || exit 0
 
 PORT="${ASTIR_PORT:-47000}"
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"

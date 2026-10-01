@@ -9,14 +9,15 @@
  * a stray byte on stdout.
  */
 
-import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { normalizeCodexHook } from "../src/adapters/codex/normalize.js";
 import { Daemon } from "../src/daemon/server.js";
 import { Registry } from "../src/model/registry.js";
 
@@ -48,6 +49,7 @@ interface Received {
   method: string | undefined;
   url: string | undefined;
   authorization: string | undefined;
+  pid: string | undefined;
   body: Record<string, unknown>;
 }
 
@@ -74,6 +76,7 @@ async function fakeDaemon(): Promise<{ port: number; received: Received[] }> {
       method: req.method,
       url: req.url,
       authorization: req.headers.authorization,
+      pid: req.headers["x-astir-agent-pid"] as string | undefined,
       body: JSON.parse(body) as Record<string, unknown>,
     });
   });
@@ -121,7 +124,12 @@ describe("the Codex relay", () => {
     expect(d.received[0]?.method).toBe("POST");
     expect(d.received[0]?.url).toBe("/hook/codex");
     expect(d.received[0]?.authorization).toBe(`Bearer ${TOKEN}`);
-    expect(d.received[0]?.body).toEqual(capture.events.SessionStart);
+    const start = capture.events.SessionStart ?? {};
+    expect(d.received[0]?.body).toEqual({
+      session_id: start.session_id,
+      hook_event_name: "SessionStart",
+      cwd: start.cwd,
+    });
   });
 
   it("prefers $ASTIR_TOKEN, as every other astir client does", async () => {
@@ -134,24 +142,98 @@ describe("the Codex relay", () => {
     expect(d.received[0]?.authorization).toBe(`Bearer ${other}`);
   });
 
-  it("SEC-01 — strips the prompt, the model's reply and the tool's output before sending", async () => {
+  it("SEC-01 — sends no content: not the prompt, the reply, a command, a patch body or a tool's output", async () => {
+    // An allowlist. The capture's markers stand in for the real text, so
+    // finding one on the wire is finding content on the wire.
     const d = await fakeDaemon();
-    const payload = {
-      ...capture.events.Stop,
-      prompt: "a prompt",
-      tool_response: "a file's contents",
-    };
-    expect(payload).toHaveProperty("last_assistant_message");
-    await relay(JSON.stringify(payload), envFor(home(), d.port));
+    const payloads = [
+      { ...capture.events.Stop, prompt: "<redacted: x>", tool_response: "<redacted: y>" },
+      capture.events["PreToolUse:Bash"],
+      capture.events["PostToolUse:apply_patch"],
+      capture.permissionSequence[0]?.payload,
+    ];
+    for (const p of payloads) await relay(JSON.stringify(p), envFor(home(), d.port));
 
-    const sent = d.received[0]?.body ?? {};
-    expect(sent).not.toHaveProperty("prompt");
-    expect(sent).not.toHaveProperty("last_assistant_message");
-    expect(sent).not.toHaveProperty("tool_response");
-    // Everything the adapter reads survives.
-    expect(sent.session_id).toBe(capture.events.Stop?.session_id);
-    expect(sent.hook_event_name).toBe("Stop");
+    expect(d.received).toHaveLength(payloads.length);
+    for (const r of d.received) expect(JSON.stringify(r.body)).not.toContain("<redacted");
   });
+
+  it("sends everything the adapter reads: the same event comes out either way", async () => {
+    // The allowlist's other edge. Cutting a field the adapter needs would not
+    // fail loudly — the event would just quietly lose its paths or its agent.
+    const declared = JSON.parse(
+      readFileSync(join(root, "test", "fixtures", "codex", "declared.json"), "utf8"),
+    ) as {
+      events: Record<string, Record<string, unknown>>;
+    };
+    const all = [
+      ...Object.values(capture.events),
+      ...capture.permissionSequence.map((s) => s.payload),
+      ...Object.values(declared.events),
+    ];
+    const d = await fakeDaemon();
+    const dir = home();
+    for (const p of all) await relay(JSON.stringify(p), envFor(dir, d.port));
+
+    const deps = { readSidecar: () => null, newId: () => "e", realpath: (x: string) => x, now: () => 1 };
+    expect(d.received).toHaveLength(all.length);
+    all.forEach((full, i) => {
+      expect(normalizeCodexHook(d.received[i]?.body, deps), String(full.hook_event_name)).toEqual(
+        normalizeCodexHook(full, deps),
+      );
+    });
+  });
+
+  it("delivers a permission riding with a patch too big for the daemon's body limit", async () => {
+    // It used to forward the whole patch, so a large generated file breached
+    // 1 MiB and the PermissionRequest that came with it was rejected — the one
+    // event this product exists to deliver.
+    const registry = new Registry({ nowMs: () => 1_000 });
+    const daemon = new Daemon({ token: TOKEN, registry });
+    cleanup.push(() => daemon.close());
+    const port = await daemon.listen(0);
+    const request = capture.permissionSequence[1]?.payload ?? {};
+    const huge = `*** Begin Patch\n*** Add File: /home/user/repo/big.txt\n${"+x\n".repeat(600_000)}*** End Patch\n`;
+    const r = await relay(
+      JSON.stringify({ ...request, tool_name: "apply_patch", tool_input: { command: huge } }),
+      envFor(home(), port),
+    );
+
+    expect(r.code).toBe(0);
+    expect(registry.blockedAgents()).toHaveLength(1);
+  });
+
+  it("never sends the token through a proxy", async () => {
+    // Node honours HTTP_PROXY when NODE_USE_ENV_PROXY is set, and
+    // NO_PROXY=localhost does not cover 127.0.0.1.
+    const d = await fakeDaemon();
+    const proxied: string[] = [];
+    const proxy = await listen((req) => {
+      proxied.push(String(req.headers.authorization));
+    });
+    await relay(JSON.stringify(capture.events.SessionStart), {
+      ...envFor(home(), d.port),
+      NODE_USE_ENV_PROXY: "1",
+      HTTP_PROXY: `http://127.0.0.1:${proxy}`,
+      http_proxy: `http://127.0.0.1:${proxy}`,
+      NO_PROXY: "localhost",
+    });
+    expect(proxied).toEqual([]);
+    expect(d.received).toHaveLength(1);
+  });
+
+  it("ends within budget even if stdin never closes", async () => {
+    // A synchronous read would block the timer meant to end it.
+    const started = Date.now();
+    const { ASTIR_TOKEN: _drop, ...inherited } = process.env;
+    const child = spawn(process.execPath, [RELAY], {
+      env: { ...inherited, ...envFor(home(), await closedPort()) },
+      stdio: "pipe",
+    });
+    const code = await new Promise<number | null>((r) => child.on("close", r));
+    expect(code).toBe(0);
+    expect(Date.now() - started).toBeLessThan(4_000);
+  }, 10_000);
 
   it("never prints — a PermissionRequest hook's stdout can be read as the decision", async () => {
     const d = await fakeDaemon();
@@ -246,5 +328,81 @@ describe("the Codex relay", () => {
     expect(blocked).toHaveLength(1);
     expect(blocked[0]?.provider).toBe("codex");
     expect(blocked[0]?.sessionId).toBe(capture.permissionSequence[1]?.payload.session_id);
+  });
+});
+
+describe("the relay says which Codex process it runs under", () => {
+  /**
+   * Codex has no session listing, so this pid is the daemon's only way to tell
+   * a live session from a dead one. A process named `codex` stands in for the
+   * real one: a symlink to node, which on Linux is named after the link.
+   */
+  const fake = join(tmpdir(), "astir-fake-codex", "codex");
+  const named = (): boolean => {
+    if (process.platform === "win32") return false;
+    try {
+      mkdirSync(dirname(fake), { recursive: true });
+      try {
+        symlinkSync(process.execPath, fake);
+      } catch {
+        // already there
+      }
+      const comm = execFileSync(
+        fake,
+        [
+          "-e",
+          "process.stdout.write(require('child_process').execFileSync('ps',['-o','comm=','-p',String(process.pid)]).toString())",
+        ],
+        { encoding: "utf8" },
+      );
+      return basename(comm.trim()) === "codex";
+    } catch {
+      return false;
+    }
+  };
+  const canName = named();
+
+  /** Run the relay as Codex would: a `codex` process, a shell, the wrapper. */
+  async function underCodex(payload: unknown, env: Record<string, string>): Promise<number> {
+    const script = `
+      const { spawn } = require("child_process");
+      const c = spawn("sh", ["-c", process.argv[1]], { stdio: ["pipe", "inherit", "inherit"] });
+      c.stdin.end(process.argv[2]);
+      c.on("close", () => process.stdout.write(String(process.pid)));
+    `;
+    const command = `sh "${join(root, "hooks", "codex-relay.sh")}" 2>/dev/null || true`;
+    const { ASTIR_TOKEN: _drop, ...inherited } = process.env;
+    // Async: a synchronous spawn would block this process's event loop, and
+    // with it the fake daemon the relay is trying to reach.
+    const child = spawn(fake, ["-e", script, command, JSON.stringify(payload)], {
+      env: { ...inherited, ...env },
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    let out = "";
+    child.stdout.on("data", (c) => {
+      out += c;
+    });
+    await new Promise((r) => child.on("close", r));
+    return Number(out.trim());
+  }
+
+  it.skipIf(!canName)("sends the codex pid on a PermissionRequest", async () => {
+    const d = await fakeDaemon();
+    const codexPid = await underCodex(capture.permissionSequence[1]?.payload, envFor(home(), d.port));
+    expect(d.received[0]?.pid).toBe(String(codexPid));
+  });
+
+  it.skipIf(!canName)("does not pay for the process table on the per-tool hot path", async () => {
+    const d = await fakeDaemon();
+    await underCodex(capture.events["PreToolUse:Bash"], envFor(home(), d.port));
+    expect(d.received).toHaveLength(1);
+    expect(d.received[0]?.pid).toBeUndefined();
+  });
+
+  it("sends no pid when there is no codex process to find", async () => {
+    const d = await fakeDaemon();
+    await relay(JSON.stringify(capture.permissionSequence[1]?.payload), envFor(home(), d.port));
+    expect(d.received).toHaveLength(1);
+    expect(d.received[0]?.pid).toBeUndefined();
   });
 });

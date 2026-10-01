@@ -1,0 +1,66 @@
+{
+  "_declared": {
+    "note": "NOT CAPTURED. These payloads are built from the input schemas Codex declares, because no captured session has produced these events yet. Every field below is one the schema marks REQUIRED (or, for the subagent PreToolUse, declares optional and sets only for spawned subagents). Ids and paths reuse the captured fixture's fakes so the two files describe one session. Replace each with a capture as soon as one exists; until then, these are the first thing to suspect.",
+    "provider": "codex",
+    "declaredBy": "openai/codex rust-v0.154.0",
+    "sources": {
+      "Interrupt": "codex-rs/hooks/schema/generated/interrupt.input.schema.json; fired on root turn interrupts including Esc at an approval prompt (core/src/session/handlers.rs:199-214), never for subagents (core/src/hook_runtime.rs:491)",
+      "SubagentStart": "codex-rs/hooks/schema/generated/subagent-start.input.schema.json; agent_id is the subagent's thread id (core/src/hook_runtime.rs:1018-1037), session_id is the root's (core/src/agent/control.rs:123)",
+      "SubagentStop": "codex-rs/hooks/schema/generated/subagent-stop.input.schema.json; no success or failure field",
+      "PreToolUse:subagent": "codex-rs/hooks/src/schema.rs:278-342 — agent_id/agent_type optional, set only for spawned subagents"
+    },
+    "illustrative": "agent_type's value is not fixed by the schema; \"worker\" is illustrative."
+  },
+  "events": {
+    "Interrupt": {
+      "session_id": "91d72c60-ed9a-f395-626e-0529089bec4f",
+      "turn_id": "8ca7b44d-27ad-1862-6ab1-21dcd9780376",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-91d72c60-ed9a-f395-626e-0529089bec4f.jsonl",
+      "cwd": "/home/user/repo",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "bypassPermissions",
+      "hook_event_name": "Interrupt"
+    },
+    "SubagentStart": {
+      "session_id": "91d72c60-ed9a-f395-626e-0529089bec4f",
+      "turn_id": "8ca7b44d-27ad-1862-6ab1-21dcd9780376",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-91d72c60-ed9a-f395-626e-0529089bec4f.jsonl",
+      "cwd": "/home/user/repo",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "bypassPermissions",
+      "hook_event_name": "SubagentStart",
+      "agent_id": "7d1e9c40-5b3a-4f2e-9a61-0c8d2b7e4f15",
+      "agent_type": "worker"
+    },
+    "PreToolUse:subagent": {
+      "session_id": "91d72c60-ed9a-f395-626e-0529089bec4f",
+      "turn_id": "8ca7b44d-27ad-1862-6ab1-21dcd9780376",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-91d72c60-ed9a-f395-626e-0529089bec4f.jsonl",
+      "cwd": "/home/user/repo",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "bypassPermissions",
+      "hook_event_name": "PreToolUse",
+      "agent_id": "7d1e9c40-5b3a-4f2e-9a61-0c8d2b7e4f15",
+      "agent_type": "worker",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "<redacted>"
+      },
+      "tool_use_id": "exec-5f0c2a9e-81d4-4c3b-b2e7-6a9d0f1e3c27"
+    },
+    "SubagentStop": {
+      "session_id": "91d72c60-ed9a-f395-626e-0529089bec4f",
+      "turn_id": "8ca7b44d-27ad-1862-6ab1-21dcd9780376",
+      "transcript_path": "/home/user/.codex/sessions/2026/09/23/rollout-2026-09-23T10-00-00-91d72c60-ed9a-f395-626e-0529089bec4f.jsonl",
+      "cwd": "/home/user/repo",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "bypassPermissions",
+      "hook_event_name": "SubagentStop",
+      "agent_id": "7d1e9c40-5b3a-4f2e-9a61-0c8d2b7e4f15",
+      "agent_type": "worker",
+      "agent_transcript_path": null,
+      "stop_hook_active": false,
+      "last_assistant_message": "<redacted: the subagent's reply>"
+    }
+  }
+}

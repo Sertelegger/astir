@@ -311,6 +311,38 @@ describe("built daemon artifact", () => {
     expect(agent?.agentType).toBe("general-purpose");
   });
 
+  it.skipIf(process.platform === "win32")(
+    "reaps a Codex session once the process its relay named is gone",
+    async () => {
+      // The wiring, not the logic: pids.test.ts proves the lister, and only
+      // the built daemon proves anything runs it. A child that lives until we
+      // kill it stands in for the Codex process.
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e6)"], { stdio: "ignore" });
+      const sessionId = "codex-liveness-artifact";
+      const sent = await fetch(`${base}/hook/codex`, {
+        method: "POST",
+        headers: { ...auth, "x-astir-agent-pid": String(child.pid) },
+        body: JSON.stringify({ session_id: sessionId, hook_event_name: "SessionStart", cwd: REPO }),
+      });
+      expect(sent.status).toBe(200);
+
+      const present = async () =>
+        (await json<StateBody>(await fetch(`${base}/state`, { headers: auth }))).sessions.some(
+          (s) => s.sessionId === sessionId,
+        );
+      // Survives a discovery tick while its process lives...
+      await new Promise((r) => setTimeout(r, 6_000));
+      expect(await present()).toBe(true);
+
+      // ...and is gone within one after it dies, with no SessionEnd.
+      child.kill("SIGKILL");
+      const deadline = Date.now() + 12_000;
+      while ((await present()) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 500));
+      expect(await present()).toBe(false);
+    },
+    30_000,
+  );
+
   it("counts state reads, so a watching surface is observable (OBS-01)", async () => {
     const before = (await json<{ counters: { statePolls: number } }>(await fetch(`${base}/healthz`))).counters
       .statePolls;

@@ -140,6 +140,19 @@ const NORMALIZERS: Record<string, Normalizer> = {
   codex: normalizeCodexHook,
 };
 
+/**
+ * The agent's own pid, from a hook relay that runs inside its process.
+ *
+ * A header rather than a payload field, because it is not the provider's to
+ * say: the relay measures it, and only a relay can (see `discovery/pids.ts`).
+ */
+function agentPid(req: IncomingMessage): number | null {
+  const raw = req.headers["x-astir-agent-pid"];
+  if (typeof raw !== "string" || !/^\d{1,10}$/.test(raw)) return null;
+  const pid = Number(raw);
+  return pid > 1 ? pid : null;
+}
+
 /** CAP-05 route 1 — read `<session>/subagents/agent-<id>.meta.json`. */
 /**
  * Which build is in memory, as the mtime of the running module.
@@ -440,7 +453,7 @@ export class Daemon {
         this.counters.rejected++;
         return this.json(res, 400, { error: "bad body" });
       }
-      return this.ingest(normalizer, body.value, res);
+      return this.ingest(normalizer, body.value, res, agentPid(req));
     }
 
     // PSH-10 — "I have seen it." Clears the badge without claiming the agent is
@@ -604,7 +617,7 @@ export class Daemon {
     push();
   }
 
-  private ingest(normalize: Normalizer, payload: unknown, res: ServerResponse): void {
+  private ingest(normalize: Normalizer, payload: unknown, res: ServerResponse, pid: number | null): void {
     const { event, droppedPaths, claimedSessionId, cwd } = normalize(payload, {
       now: this.nowSeconds,
       newId: defaultNewId,
@@ -669,6 +682,8 @@ export class Daemon {
     }
     if (result.applied) this.counters.ingested++;
     else if (result.reason === "duplicate") this.counters.duplicates++;
+    // After apply, which is what creates the session the pid belongs to.
+    if (result.applied && pid !== null) this.opts.registry.observePid(valid.event.sessionId, pid);
 
     if (result.becameBlocked) {
       this.counters.blocked++;

@@ -18,5 +18,8 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 command -v node >/dev/null 2>&1 || exit 0
 
-node "$ROOT/hooks/codex-relay.mjs"
+# NODE_OPTIONS and NODE_USE_ENV_PROXY are the user's settings for their own
+# Node programs. Either can make node print a warning to stderr before the
+# relay runs a line, and the second can route the token through a proxy.
+NODE_OPTIONS= NODE_USE_ENV_PROXY= node "$ROOT/hooks/codex-relay.mjs" 2>/dev/null
 exit 0

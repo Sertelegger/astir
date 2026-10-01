@@ -8,6 +8,7 @@
  * instead of silently agreeing with a stale comment.
  */
 
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -30,6 +31,17 @@ const fixture = (name: string): Record<string, unknown> => {
   return p;
 };
 const sequence = capture.permissionSequence.map((s) => s.payload);
+const declared = JSON.parse(
+  readFileSync(join(root, "test", "fixtures", "codex", "declared.json"), "utf8"),
+) as {
+  _declared: Record<string, unknown>;
+  events: Record<string, Record<string, unknown>>;
+};
+const decl = (name: string): Record<string, unknown> => {
+  const p = declared.events[name];
+  if (p === undefined) throw new Error(`no declared fixture ${name}`);
+  return p;
+};
 
 const deps = {
   readSidecar: () => null,
@@ -116,19 +128,53 @@ describe("every captured event normalizes to a valid contract event, or to nothi
     });
   }
 
-  it("an event Codex declares but nobody has captured stays unmapped", () => {
-    // §14: SubagentStart, SubagentStop and Interrupt have no fixture, so
-    // mapping them would mean inventing their payloads.
-    for (const hook of ["SubagentStart", "SubagentStop", "Interrupt"]) {
-      expect(normalize({ ...fixture("SessionStart"), hook_event_name: hook }).event).toBeNull();
-    }
-  });
-
   it("refuses what is not a payload at all", () => {
     expect(normalize(null).event).toBeNull();
     expect(normalize("x").event).toBeNull();
     expect(normalize({ hook_event_name: "Stop" }).event).toBeNull();
     expect(normalize({ session_id: "s" }).event).toBeNull();
+  });
+});
+
+describe("events mapped from Codex's declared schema, not yet a capture", () => {
+  it("says so, and says where the shape came from", () => {
+    // A declared fixture that passes for a captured one is how §14 erodes.
+    expect(declared._declared.note).toMatch(/^NOT CAPTURED/);
+    expect(declared._declared.declaredBy).toMatch(/rust-v\d+\.\d+\.\d+/);
+    for (const name of Object.keys(declared.events)) {
+      expect((declared._declared.sources as Record<string, string>)[name], name).toBeDefined();
+    }
+  });
+
+  it("Interrupt ends the turn", () => {
+    const r = normalize(decl("Interrupt"));
+    expect(r.event?.kind).toBe("stop");
+    expect(r.event?.agentId).toBe(decl("Interrupt").session_id);
+    expect(validateEvent(r.event).ok).toBe(true);
+  });
+
+  it("SubagentStart names the subagent, attached to the root and marked inferred", () => {
+    const r = normalize(decl("SubagentStart"));
+    expect(r.event).toMatchObject({
+      kind: "subagent_start",
+      agentId: decl("SubagentStart").agent_id,
+      agentType: "worker",
+      parentAgentId: null,
+      parentSource: "inferred",
+    });
+    expect(validateEvent(r.event).ok).toBe(true);
+  });
+
+  it("a subagent's tool call is the subagent's, not the root's", () => {
+    const r = normalize(decl("PreToolUse:subagent"));
+    expect(r.event?.agentId).toBe(decl("PreToolUse:subagent").agent_id);
+    expect(r.event?.agentId).not.toBe(r.event?.sessionId);
+  });
+
+  it("SubagentStop ends the subagent without inventing a verdict", () => {
+    const r = normalize(decl("SubagentStop"));
+    expect(r.event).toMatchObject({ kind: "subagent_stop", ok: null });
+    expect(JSON.stringify(r)).not.toContain("<redacted: the subagent's reply>");
   });
 });
 
@@ -204,6 +250,11 @@ describe("patchTargets — the apply_patch grammar", () => {
     expect(patchTargets(p)).toEqual({ op: "edit", rawPaths: ["new.ts"] });
   });
 
+  it("a move after an added file renames nothing — it belongs to an Update File", () => {
+    const p = patch("*** Update File: a.ts", "*** Add File: b.ts", "*** Move to: c.ts");
+    expect(patchTargets(p).rawPaths).toEqual(["a.ts", "b.ts"]);
+  });
+
   it("a move with no file above it moves nothing", () => {
     expect(patchTargets(patch("*** Move to: new.ts"))).toEqual({ op: "other", rawPaths: [] });
   });
@@ -258,6 +309,43 @@ describe("a Codex permission blocks, and the agent's next move unblocks it", () 
   });
 });
 
+describe("what unblocks a Codex agent, and what must not", () => {
+  function replay() {
+    let n = 0;
+    const registry = new Registry({ nowMs: () => 0 });
+    const apply = (payload: unknown) => {
+      const r = normalizeCodexHook(payload, { ...deps, newId: () => `e${++n}` });
+      if (r.event === null) throw new Error("expected an event");
+      expect(registry.apply(r.event, r.cwd).applied).toBe(true);
+    };
+    return { registry, apply };
+  }
+
+  it("Esc at the approval prompt — Interrupt — ends the block", () => {
+    // No Stop and no PostToolUse follow an interrupted approval, so without
+    // this the agent would stay blocked and keep reminding you.
+    const { registry, apply } = replay();
+    apply(sequence[0]);
+    apply(sequence[1]);
+    expect(registry.blockedAgents()).toHaveLength(1);
+    apply(decl("Interrupt"));
+    expect(registry.blockedAgents()).toEqual([]);
+  });
+
+  it("a subagent's activity does not clear the root agent's block", () => {
+    // Every agent in a Codex tree shares the root's session_id. Treating them
+    // all as the root let any subagent tool call answer the root's prompt.
+    const { registry, apply } = replay();
+    apply(sequence[0]);
+    apply(sequence[1]);
+    apply(decl("SubagentStart"));
+    apply(decl("PreToolUse:subagent"));
+    const blocked = registry.blockedAgents();
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]?.agentId).toBe(sequence[1]?.session_id);
+  });
+});
+
 describe("the daemon speaks Codex", () => {
   const TOKEN = "t".repeat(48);
   const open: Daemon[] = [];
@@ -289,6 +377,30 @@ describe("the daemon speaks Codex", () => {
     expect(res.body.applied).toBe(true);
     const session = registry.list().find((s) => s.sessionId === fixture("SessionStart").session_id);
     expect(session?.provider).toBe("codex");
+  });
+
+  it("takes the agent's pid from the relay's header, and nothing that is not one", async () => {
+    // Codex's only liveness signal (discovery/pids.ts). A header, because it is
+    // the relay's measurement rather than anything the provider said.
+    const { registry, port } = await daemon();
+    const send = (sessionId: string, pid: string) =>
+      fetch(`http://127.0.0.1:${port}/hook/codex`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+          "x-astir-agent-pid": pid,
+        },
+        body: JSON.stringify({ ...fixture("SessionStart"), session_id: sessionId }),
+      });
+    await send("good", "4242");
+    await send("hex", "0x10");
+    await send("init", "1");
+    await send("neg", "-5");
+    expect(registry.get("good")?.pid).toBe(4242);
+    expect(registry.get("hex")?.pid).toBeNull();
+    expect(registry.get("init")?.pid).toBeNull();
+    expect(registry.get("neg")?.pid).toBeNull();
   });
 
   it("routes only to a provider astir speaks, not to whatever an object inherits", async () => {
@@ -346,10 +458,67 @@ describe("the Codex plugin is wired to what exists", () => {
     // nothing; registering an unmapped event costs a process per occurrence.
     const hooks = read("hooks/codex-hooks.json").hooks as Record<string, unknown>;
     expect(Object.keys(hooks).sort()).toEqual(
-      ["PermissionRequest", "PostToolUse", "PreToolUse", "SessionEnd", "SessionStart", "Stop"].sort(),
+      [
+        "Interrupt",
+        "PermissionRequest",
+        "PostToolUse",
+        "PreToolUse",
+        "SessionEnd",
+        "SessionStart",
+        "Stop",
+        "SubagentStart",
+        "SubagentStop",
+      ].sort(),
     );
     for (const name of Object.keys(hooks)) {
       expect(normalize({ ...fixture("SessionStart"), hook_event_name: name }).event).not.toBeNull();
+    }
+  });
+
+  it("can never exit 2 — which would deny the permission, block the tool, or replace its result", () => {
+    // If the script is missing — an upgrade deletes the old plugin folder
+    // mid-turn — `sh` exits 2 with an error on stderr, and Codex reads exit 2
+    // plus stderr as a decision. Every command is guarded so it cannot.
+    const hooks = read("hooks/codex-hooks.json").hooks as Record<
+      string,
+      Array<{ hooks: Array<{ command: string; commandWindows?: string; timeout: number; async?: boolean }> }>
+    >;
+    for (const [event, entries] of Object.entries(hooks)) {
+      for (const h of entries.flatMap((e) => e.hooks)) {
+        expect(h.command, event).toMatch(/2>\/dev\/null \|\| true$|>\/dev\/null 2>&1 \|\| true$/);
+        // Windows replaces `command` with this; without it every hook fails.
+        expect(h.commandWindows, event).toBeDefined();
+      }
+    }
+    // Codex clamps these two to 3s and warns at every session start otherwise.
+    for (const event of ["SessionEnd", "Interrupt"]) {
+      for (const h of hooks[event]?.flatMap((e) => e.hooks) ?? []) expect(h.timeout).toBeLessThanOrEqual(3);
+    }
+    // Starting the daemon must not hold up the session coming up.
+    const ensure = hooks.SessionStart?.flatMap((e) => e.hooks).find((h) =>
+      h.command.includes("ensure-daemon"),
+    );
+    expect(ensure?.async).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("exits 0 and says nothing when the script is not there", () => {
+    const hooks = read("hooks/codex-hooks.json").hooks as Record<
+      string,
+      Array<{ hooks: Array<{ command: string }> }>
+    >;
+    const command = hooks.PermissionRequest?.[0]?.hooks[0]?.command ?? "";
+    const empty = mkdtempSync(join(tmpdir(), "astir-missing-plugin-"));
+    try {
+      const r = spawnSync("sh", ["-c", command], {
+        env: { ...process.env, CLAUDE_PLUGIN_ROOT: empty },
+        input: "{}",
+        encoding: "utf8",
+      });
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe("");
+      expect(r.stderr).toBe("");
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
     }
   });
 

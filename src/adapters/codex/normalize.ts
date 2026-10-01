@@ -12,10 +12,18 @@
  * it wrote, never what it looked at. Guessing paths out of a command line would
  * put tiles on the map for words that merely look like files.
  *
- * **No subagents, no interrupt.** `SubagentStart`, `SubagentStop` and
- * `Interrupt` are declared but no session ever produced one, and no payload
- * carried an `agent_id`. They stay unmapped until one is captured (§14:
- * fixtures are captured, never invented), and every event is the root agent's.
+ * **Three events are mapped from Codex's declared schema, not a capture.**
+ * `Interrupt`, `SubagentStart` and `SubagentStop` never occurred in a captured
+ * session, but leaving them unmapped is worse than §14's risk: without
+ * `Interrupt`, Esc at an approval prompt leaves the agent "blocked" and
+ * reminding you forever; without `agent_id`, a subagent's events land on the
+ * root agent and clear its real block. So they read only the fields the
+ * rust-v0.154.0 schema declares REQUIRED (`fixtures/codex/declared.json`
+ * cites the lines), and they are the first thing to re-check against a capture.
+ *
+ * **No parentage.** Every agent in a Codex tree shares the root's
+ * `session_id`, and the hooks name a subagent but not its parent, so every
+ * subagent is attached to the root and marked inferred (CAP-05 route 3).
  *
  * ## SEC-01
  *
@@ -30,8 +38,7 @@ import type { NormalizeDeps, NormalizeResult } from "../types.js";
 
 /**
  * Deliberately unmapped: `UserPromptSubmit` (it carries the prompt and nothing
- * else astir uses), `PreCompact`/`PostCompact` (bookkeeping, not activity), and
- * the three events no capture has ever produced.
+ * else astir uses) and `PreCompact`/`PostCompact` (bookkeeping, not activity).
  */
 const KIND_BY_HOOK: Record<string, Kind> = {
   SessionStart: "session_start",
@@ -39,6 +46,11 @@ const KIND_BY_HOOK: Record<string, Kind> = {
   PostToolUse: "post_tool",
   PermissionRequest: "notification",
   Stop: "stop",
+  // A turn the user cut short ended as surely as one that finished — and Esc
+  // at an approval prompt fires this, never Stop and never PostToolUse.
+  Interrupt: "stop",
+  SubagentStart: "subagent_start",
+  SubagentStop: "subagent_stop",
   SessionEnd: "session_end",
 };
 
@@ -64,14 +76,17 @@ const DIRECTIVE = /^\*\*\* (Add File|Update File|Delete File|Move to): (.+)$/;
 export function patchTargets(patch: string): { op: Op; rawPaths: string[] } {
   const updated: string[] = [];
   const added: string[] = [];
+  let previous: string | null = null;
   for (const line of patch.split("\n")) {
     const m = DIRECTIVE.exec(line.trimEnd());
     if (m === null) continue;
     const [, verb, path] = m as unknown as [string, string, string];
     if (verb === "Update File") updated.push(path);
     else if (verb === "Add File") added.push(path);
-    // A move belongs to the `Update File` directly above it.
-    else if (verb === "Move to" && updated.length > 0) updated[updated.length - 1] = path;
+    // A move belongs to the `Update File` directly above it, and to nothing
+    // else — after an `Add File` it would rename the wrong file.
+    else if (verb === "Move to" && previous === "Update File") updated[updated.length - 1] = path;
+    previous = verb;
   }
   const op: Op = updated.length > 0 ? "edit" : added.length > 0 ? "write" : "other";
   return { op, rawPaths: [...updated, ...added] };
@@ -98,6 +113,12 @@ export function normalizeCodexHook(payload: unknown, deps: NormalizeDeps): Norma
   if (raw === null || claimedSessionId === null || typeof raw.hook_event_name !== "string") return nothing();
   const kind = KIND_BY_HOOK[raw.hook_event_name];
   if (kind === undefined) return nothing();
+
+  // Set only on a subagent's events. The root agent's id IS the session id,
+  // the same convention as Claude.
+  const agentId = typeof raw.agent_id === "string" ? raw.agent_id : claimedSessionId;
+  const agentType = typeof raw.agent_type === "string" ? raw.agent_type : null;
+  const subagentStart = kind === "subagent_start";
 
   let op: Op | null = null;
   const paths: string[] = [];
@@ -132,12 +153,12 @@ export function normalizeCodexHook(payload: unknown, deps: NormalizeDeps): Norma
       sessionId: claimedSessionId,
       ts: deps.now(),
       kind,
-      // No capture has carried an `agent_id`, so every event is the root
-      // agent's, whose id IS the session id — the same convention as Claude.
-      agentId: claimedSessionId,
-      agentType: null,
+      agentId,
+      agentType,
       parentAgentId: null,
-      parentSource: null,
+      // SubagentStop carries no success signal either, so `ok` stays null and
+      // the agent ends `done`, never `error`.
+      parentSource: subagentStart ? "inferred" : null,
       tool,
       description: null,
       paths,
