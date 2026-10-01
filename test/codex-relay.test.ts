@@ -186,12 +186,41 @@ describe("the Codex relay", () => {
     expect(r.ms).toBeLessThan(4_000);
   }, 10_000);
 
+  it("gives up on a daemon that trickles a response forever", async () => {
+    // Never idle, so a socket timeout would never fire. Only a budget on the
+    // whole process ends this one.
+    const server = createServer((_req, res) => {
+      res.writeHead(200);
+      const tick = setInterval(() => res.write(" "), 200);
+      res.on("close", () => clearInterval(tick));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    cleanup.push(() => {
+      server.closeAllConnections();
+      return new Promise((r) => server.close(r));
+    });
+    const { port } = server.address() as AddressInfo;
+
+    const r = await relay(JSON.stringify(capture.events.SessionStart), envFor(home(), port));
+    expect(r).toMatchObject({ code: 0, stdout: "" });
+    expect(r.ms).toBeLessThan(4_000);
+  }, 10_000);
+
   it("sends nothing for input that is not a JSON object", async () => {
     const d = await fakeDaemon();
     for (const stdin of ["", "not json", "[1,2]", "null", "3"]) {
       const r = await relay(stdin, envFor(home(), d.port));
       expect(r).toMatchObject({ code: 0, stdout: "" });
     }
+    expect(d.received).toEqual([]);
+  });
+
+  it("does not send a token too short to be one, as readTokenIfPresent refuses it", async () => {
+    // A truncated or hand-edited file would only add to the daemon's
+    // unauthorized count, which `astir doctor` then reports as a wiring fault.
+    const d = await fakeDaemon();
+    const r = await relay(JSON.stringify(capture.events.SessionStart), envFor(home("short"), d.port));
+    expect(r.code).toBe(0);
     expect(d.received).toEqual([]);
   });
 

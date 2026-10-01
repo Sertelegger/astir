@@ -122,7 +122,6 @@ describe("PSH-16, arriving from the other direction", () => {
           },
         } as never,
         now: nowMs,
-        notifyAfterMs: 5_000,
       }),
     };
   }

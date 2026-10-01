@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CAPABILITIES } from "../adapters/capabilities.js";
 import { defaultNewId, normalizeClaudeHook } from "../adapters/claude/normalize.js";
 import { watchPathsFor } from "../adapters/claude/watch.js";
 import { normalizeCodexHook } from "../adapters/codex/normalize.js";
@@ -430,7 +431,9 @@ export class Daemon {
     // shared, so adding one is adding a table entry — not a second copy of the
     // validate/apply/count/respond tail.
     const provider = path.startsWith("/hook/") ? path.slice("/hook/".length) : null;
-    const normalizer = provider === null ? undefined : NORMALIZERS[provider];
+    // `hasOwn`, because `/hook/constructor` would otherwise find Object's.
+    const normalizer =
+      provider !== null && Object.hasOwn(NORMALIZERS, provider) ? NORMALIZERS[provider] : undefined;
     if (normalizer !== undefined && req.method === "POST") {
       const body = await this.body(req);
       if (!body.ok) {
@@ -686,10 +689,9 @@ export class Daemon {
     // contain those words. So astir registers a matcher-less entry, which fires
     // for every watched change, and supplies the paths here instead.
     //
-    // Claude only: `watchPaths` and `FileChanged` are Claude's mechanism, and
-    // walking a repo to answer a Codex hook would cost a directory scan on a
-    // synchronous hook path for a field nothing on the other side reads.
-    if (valid.event.kind === "session_start" && valid.event.provider === "claude") {
+    // Only for a provider that declares it watches: for any other, this is a
+    // repo walk on a synchronous hook for a field nothing reads.
+    if (valid.event.kind === "session_start" && CAPABILITIES[valid.event.provider].fileWatch) {
       const watch = this.watchPathsFor(valid.event.sessionId, cwd);
       if (watch !== null) {
         // `this.json` returns void; returning its result from a void method is

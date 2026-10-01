@@ -13,9 +13,10 @@
  * reads a hook's stdout — a `PermissionRequest` hook's output can be taken as
  * the DECISION — so this file writes nothing there, ever.
  *
- * **Never stall it.** Codex hooks are synchronous. The request is bounded, and
- * a backstop timer ends the process even if a socket hangs in a way the request
- * timeout does not cover.
+ * **Never stall it.** Codex hooks are synchronous, so the whole process has
+ * one budget and is ended when it runs out — whatever the socket is doing. A
+ * per-request timeout would not be enough: it measures IDLE time, and a daemon
+ * trickling bytes is never idle.
  *
  * **SEC-01 starts here.** The prompt, the model's reply and the tool's output
  * are stripped before anything is sent. The adapter never reads them either;
@@ -31,9 +32,10 @@ import { join } from "node:path";
 
 /** Content, not activity. See SEC-01 above. */
 const STRIP = ["prompt", "last_assistant_message", "tool_response"];
-const TIMEOUT_MS = 2_000;
+const BUDGET_MS = 2_000;
 
-setTimeout(() => process.exit(0), TIMEOUT_MS + 500).unref();
+// Unref'd, so a relay that finishes early is not kept alive waiting for it.
+setTimeout(() => process.exit(0), BUDGET_MS).unref();
 
 /** The same order every other astir client uses: the environment, then the file. */
 function token() {
@@ -67,7 +69,6 @@ function relay() {
     port: Number(process.env.ASTIR_PORT) || 47000,
     path: "/hook/codex",
     method: "POST",
-    timeout: TIMEOUT_MS,
     headers: {
       authorization: `Bearer ${bearer}`,
       "content-type": "application/json",
@@ -75,7 +76,6 @@ function relay() {
     },
   });
   req.on("response", (res) => res.resume());
-  req.on("timeout", () => req.destroy());
   // A daemon that is down refuses at once. That is the normal state between
   // sessions, not an error worth anyone's attention.
   req.on("error", () => {});

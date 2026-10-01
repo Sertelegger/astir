@@ -9,6 +9,7 @@
  * event — an agent that has been blocked for thirty minutes generates nothing.
  */
 
+import { CAPABILITIES } from "../adapters/capabilities.js";
 import type { Provider } from "../contract/event.js";
 import type { Registry } from "../model/registry.js";
 import { debug } from "../obs/debug.js";
@@ -28,25 +29,13 @@ export interface NotifyLoopOpts {
   now?: () => number;
   onDelivered?: (summary: string) => void;
   /**
-   * PSH-16 — how long a block must last before it is worth interrupting anyone.
-   * Long enough that an auto-resolved permission never reaches it, short enough
-   * to be invisible against the reminder cadence.
+   * PSH-16 — how long a block must last before it is worth interrupting
+   * anyone, per provider. Defaults to what each provider declares
+   * (`CAPABILITIES`), because "long enough that an auto-resolved permission
+   * never reaches it" depends on who does the auto-resolving.
    */
-  notifyAfterMs?: number;
-  /**
-   * PSH-16, per provider, overriding `notifyAfterMs` for the ones listed.
-   *
-   * "Long enough that an auto-resolved permission never reaches it" is a
-   * property of the provider's auto-resolver, not a constant. Claude's
-   * classifier answers in hundreds of milliseconds. Codex's reviewer took
-   * ~11.9s on the one captured request (test/fixtures/codex/capture.json),
-   * so a 5s dwell would announce a block that nobody needed to answer.
-   */
-  notifyAfterMsByProvider?: Partial<Record<Provider, number>>;
+  dwellMs?: (provider: Provider) => number;
 }
-
-/** PSH-16 — see `notifyAfterMsByProvider`. 30s clears the observed ~11.9s with room. */
-export const DEFAULT_DWELL_BY_PROVIDER: Partial<Record<Provider, number>> = { codex: 30_000 };
 
 export class NotifyLoop {
   private readonly now: () => number;
@@ -60,17 +49,11 @@ export class NotifyLoop {
    * and proves nothing about now.
    */
   private restoredSeen = new Map<string, number>();
-  private readonly notifyAfterMs: number;
-  private readonly dwellByProvider: Partial<Record<Provider, number>>;
+  private readonly dwellFor: (provider: Provider) => number;
 
   constructor(private opts: NotifyLoopOpts) {
     this.now = opts.now ?? (() => Date.now());
-    this.notifyAfterMs = opts.notifyAfterMs ?? 5_000;
-    this.dwellByProvider = opts.notifyAfterMsByProvider ?? DEFAULT_DWELL_BY_PROVIDER;
-  }
-
-  private dwellFor(provider: Provider): number {
-    return this.dwellByProvider[provider] ?? this.notifyAfterMs;
+    this.dwellFor = opts.dwellMs ?? ((provider) => CAPABILITIES[provider].blockDwellMs);
   }
 
   /**

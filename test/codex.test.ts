@@ -8,7 +8,8 @@
  * instead of silently agreeing with a stale comment.
  */
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -264,26 +265,68 @@ describe("the daemon speaks Codex", () => {
     await Promise.all(open.splice(0).map((d) => d.close()));
   });
 
-  it("ingests a Codex hook at /hook/codex", async () => {
+  async function daemon() {
     const registry = new Registry({ nowMs: () => 1_000 });
-    const daemon = new Daemon({ token: TOKEN, registry });
-    open.push(daemon);
-    const port = await daemon.listen(0);
+    const d = new Daemon({ token: TOKEN, registry });
+    open.push(d);
+    const port = await d.listen(0);
+    const post = async (provider: string, payload: unknown) => {
+      const res = await fetch(`http://127.0.0.1:${port}/hook/${provider}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    };
+    return { registry, post, port };
+  }
 
-    const res = await fetch(`http://127.0.0.1:${port}/hook/codex`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-      body: JSON.stringify(fixture("SessionStart")),
-    });
-    const body = (await res.json()) as Record<string, unknown>;
+  it("ingests a Codex hook at /hook/codex", async () => {
+    const { registry, post } = await daemon();
+    const res = await post("codex", fixture("SessionStart"));
 
     expect(res.status).toBe(200);
-    expect(body.applied).toBe(true);
-    // `watchPaths` is Claude's FileChanged mechanism. Codex has no reader for
-    // it, and computing it means walking the repo on a synchronous hook.
-    expect(body).not.toHaveProperty("hookSpecificOutput");
+    expect(res.body.applied).toBe(true);
     const session = registry.list().find((s) => s.sessionId === fixture("SessionStart").session_id);
     expect(session?.provider).toBe("codex");
+  });
+
+  it("routes only to a provider astir speaks, not to whatever an object inherits", async () => {
+    // `NORMALIZERS[segment]` on a plain object finds `Object` itself at
+    // `/hook/constructor` and calls it as a normalizer.
+    const { port } = await daemon();
+    for (const segment of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      const res = await fetch(`http://127.0.0.1:${port}/hook/${segment}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(fixture("SessionStart")),
+      });
+      expect(res.status, segment).toBe(404);
+    }
+  });
+
+  it("hands watchPaths to Claude only — Codex has no FileChanged to read them", async () => {
+    // A real directory, so the scan has something to find; with a cwd that
+    // does not exist both providers would get nothing and this would prove
+    // nothing. The Claude half is the control.
+    const repo = mkdtempSync(join(tmpdir(), "astir-codex-watch-"));
+    mkdirSync(join(repo, "src"));
+    try {
+      const { post } = await daemon();
+      const claude = await post("claude", {
+        session_id: "claude-1",
+        hook_event_name: "SessionStart",
+        cwd: repo,
+        source: "startup",
+      });
+      const codex = await post("codex", { ...fixture("SessionStart"), cwd: repo });
+
+      expect(claude.body).toHaveProperty("hookSpecificOutput");
+      expect(codex.body.applied).toBe(true);
+      expect(codex.body).not.toHaveProperty("hookSpecificOutput");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 

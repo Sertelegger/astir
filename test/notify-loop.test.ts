@@ -47,7 +47,7 @@ function harness(notifyAfterMs?: number) {
     policy: new NotifyPolicy(),
     dispatcher: new Dispatcher([target]),
     now,
-    ...(notifyAfterMs === undefined ? {} : { notifyAfterMs }),
+    ...(notifyAfterMs === undefined ? {} : { dwellMs: () => notifyAfterMs }),
   });
   return {
     registry,
@@ -154,7 +154,8 @@ describe("PSH-16 — the dwell belongs to the provider", () => {
    * "Long enough that an auto-resolved permission never reaches it" depends on
    * who auto-resolves. Claude's classifier answers in hundreds of milliseconds;
    * the one Codex request captured was answered by its reviewer after ~11.9s
-   * (test/fixtures/codex/capture.json). One dwell cannot be right for both.
+   * (test/fixtures/codex/capture.json). One dwell cannot be right for both, so
+   * each provider declares its own and these tests use the declared values.
    */
   const codexBlocked = (h: ReturnType<typeof harness>) =>
     h.registry.apply(
@@ -169,7 +170,7 @@ describe("PSH-16 — the dwell belongs to the provider", () => {
 
   it("never interrupts about a Codex permission its reviewer answered at ~12s", async () => {
     // The captured case, replayed: at 5s this was a false alarm.
-    const h = harness(5_000);
+    const h = harness();
     codexBlocked(h);
     h.advance(11_957);
     await h.loop.pulse();
@@ -181,7 +182,7 @@ describe("PSH-16 — the dwell belongs to the provider", () => {
   });
 
   it("does interrupt once a Codex block outlasts 30s", async () => {
-    const h = harness(5_000);
+    const h = harness();
     codexBlocked(h);
     h.advance(29_999);
     await h.loop.pulse();
@@ -193,7 +194,7 @@ describe("PSH-16 — the dwell belongs to the provider", () => {
   });
 
   it("leaves Claude on its own dwell while a Codex block waits", async () => {
-    const h = harness(5_000);
+    const h = harness();
     h.blocked();
     codexBlocked(h);
     h.advance(6_000);
@@ -219,7 +220,7 @@ describe("PSH-16 — the dwell belongs to the provider", () => {
         },
       ]),
       now: () => t,
-      notifyAfterMsByProvider: { codex: 1_000 },
+      dwellMs: (provider) => (provider === "codex" ? 1_000 : 5_000),
     });
     registry.apply(
       ev("notification", {
