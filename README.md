@@ -5,7 +5,7 @@ Know when an AI coding agent is blocked on you — and where in your repo it's w
 *astir* — awake, in motion, stirring. Which is the question: **is anything astir,
 and does any of it need me?**
 
-> **Status: early.** The daemon receives live events from real Claude Code sessions, raises notifications, and drives a macOS menu bar — including sessions on other machines. `astir view` opens the web view: a live repo map, a cross-session overview, and panels you arrange. See [ROADMAP.md](ROADMAP.md).
+> **Status: early.** The daemon receives live events from real Claude Code and Codex sessions, raises notifications, and drives a macOS menu bar — including sessions on other machines. `astir view` opens the web view: a live repo map, a cross-session overview, and panels you arrange. See [ROADMAP.md](ROADMAP.md).
 >
 > An earlier version of this project existed and had never actually run — its hook entrypoint exported a `main()` that nothing called, so no event ever reached it, and 214 passing tests never noticed. That version's design also normalized heat colour against the *current maximum*, which is invariant under decay, so its map could never cool. Both defects were in the design, not just the code. This is the rebuild.
 
@@ -18,6 +18,7 @@ Astir's first job is to make that not happen. Everything else is secondary.
 ## What works today
 
 - A single daemon on a fixed port, receiving hook events from live sessions
+- **Claude Code and Codex**, side by side — see [Codex](#codex) for what differs
 - Deterministic subagent parentage — no guessing (see below)
 - Per-agent state including `blocked`, and time accounting that separates **working** from **waiting on a human**
 - An OS notification when an agent becomes blocked, re-reminding every minute for
@@ -32,7 +33,7 @@ Astir's first job is to make that not happen. Everything else is secondary.
 
 ## Install
 
-Requires Node.js ≥ 20 and Claude Code.
+Requires Node.js ≥ 20 and Claude Code, Codex, or both.
 
 ```bash
 npm install && npm run build
@@ -42,7 +43,8 @@ astir install           # registers the hooks, creates ~/.astir/token (0600)
 
 `astir install` runs `claude plugin marketplace add` and `claude plugin install`
 for you, so the hooks are registered without typing slash commands or editing
-any config by hand. Pass `--no-plugin` to skip that and do it yourself.
+any config by hand — and, if `codex` is on your PATH, the same for Codex. Pass
+`--no-plugin` to skip that and do it yourself.
 
 It also installs the daemon token. The hooks are `type: "http"` — Claude Code
 POSTs to the daemon from its own process, so nothing of astir's runs at hook time
@@ -58,6 +60,35 @@ from the desktop app or an IDE extension would never have seen it.
 Claude Code watches `settings.json`, so a session that is already running
 generally picks the token up within a tool call or two — no restart needed. If
 `unauthorizedIngest` keeps climbing (see below), restart it.
+
+### Codex
+
+`astir install` registers the plugin with Codex when it finds `codex` on your
+PATH. By hand, from the checkout:
+
+```bash
+codex plugin marketplace add "$(pwd)"
+codex plugin add astir@astir-marketplace
+```
+
+The next interactive `codex` session asks you to **review the plugin's hooks**.
+Until you trust them astir sees nothing from Codex — that is Codex's safeguard
+working, not a fault. Codex needs none of the token setup above: its hooks are
+astir's own code running, so they read `~/.astir/token` directly.
+
+What differs from Claude Code, all of it measured rather than assumed:
+
+- **A permission alert waits 30 seconds, not 5.** Codex's automatic reviewer
+  answers many requests itself; the one captured took about 12 seconds, and an
+  alert inside that window would be about a decision that was never yours.
+  The menu-bar badge does not wait.
+- **The map shows what Codex wrote, not what it read.** Codex reads through its
+  shell, whose command lines name no paths astir can trust; `apply_patch` does.
+- **Subagents attach to the root.** Codex's hooks name a subagent but not its
+  parent.
+
+The details, and why each is the way it is, are in
+[`hooks/README.md`](hooks/README.md#codex-codex-hooksjson).
 
 ### Keeping it running
 
@@ -336,13 +367,13 @@ a screenshot does not leak it.
 ## How it works
 
 ```
-Claude Code ──http hooks──▶  astir daemon  ──▶  notification
-                             (one, fixed port)  ──▶  astir status
-                                    ▲
-                     claude agents --json (session discovery)
+Claude Code ──http hooks──────▶  astir daemon  ──▶  notification
+Codex ──command hooks──▶ relay ─▶ (one, fixed port)  ──▶  astir status
+                                        ▲
+              claude agents --json, Codex process liveness (session discovery)
 ```
 
-Hooks are `type: "http"`, posting the payload straight to the daemon — no process spawned per tool call. Provider-specific code lives only in `src/adapters/`; everything downstream branches on declared *capabilities*, never on provider name.
+Claude Code's hooks are `type: "http"`, posting the payload straight to the daemon — no process spawned per tool call. Codex has command hooks only, so a small relay posts for it. Provider-specific code lives only in `src/adapters/`; everything downstream branches on declared *capabilities* (`src/adapters/capabilities.ts`), never on provider name.
 
 **Subagent parentage is exact, not inferred.** Claude Code writes an `agent-<id>.meta.json` sidecar beside each subagent transcript carrying the spawning `toolUseId`, plus `parentAgentId`/`spawnDepth` on recent versions. An absent `parentAgentId` isn't missing data — it means the parent is the main session. Other tools in this space either guess from event ordering or hardcode every agent under one root; this reads the sidecar.
 
