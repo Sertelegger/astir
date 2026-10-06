@@ -436,147 +436,155 @@ describe("runBounded — a command the caller's budget can kill", () => {
    * in for the server with a process the command starts, which inherits its
    * stdout and outlives it — no tmux needed.
    */
-  describe("when something the command started still holds its output", () => {
-    let dir = "";
-    const strays: number[] = [];
-    beforeEach(() => {
-      dir = mkdtempSync(join(tmpdir(), "astir-bounded-"));
-    });
-    afterEach(() => {
-      for (const pid of strays.splice(0)) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // Already gone.
+  // POSIX: a child that inherits the command's stdout and outlives it holds the
+  // pipe open. Windows hands pipes on differently, and the focus probe these
+  // guard (tmux, ps) never runs there.
+  describe.skipIf(process.platform === "win32")(
+    "when something the command started still holds its output",
+    () => {
+      let dir = "";
+      const strays: number[] = [];
+      beforeEach(() => {
+        dir = mkdtempSync(join(tmpdir(), "astir-bounded-"));
+      });
+      afterEach(() => {
+        for (const pid of strays.splice(0)) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // Already gone.
+          }
         }
-      }
-      rmSync(dir, { recursive: true, force: true });
-    });
+        rmSync(dir, { recursive: true, force: true });
+      });
 
-    /** What the holder does by default: hold the pipe, and print nothing. */
-    const HOLDS = "setTimeout(() => {}, 10000)";
+      /** What the holder does by default: hold the pipe, and print nothing. */
+      const HOLDS = "setTimeout(() => {}, 10000)";
 
-    /**
-     * Starts a holder — a process that inherits stdout, outlives the command,
-     * runs `holder` with the command's pid as `process.argv[1]` — and writes
-     * "<command pid> <holder pid>" to `ready` once it exists; then waits,
-     * exits 0, or exits 3.
-     */
-    const sharing = (ready: string, then: "waits" | "exits" | "fails", holder = HOLDS): string[] => [
-      "-e",
-      [
-        "const fs = require('node:fs');",
-        "const c = require('node:child_process').spawn(process.execPath,",
-        `  ['-e', ${JSON.stringify(holder)}, String(process.pid)], { stdio: ['ignore', 'inherit', 'ignore'] });`,
-        `fs.writeFileSync(${JSON.stringify(`${ready}.tmp`)}, process.pid + ' ' + c.pid);`,
-        `fs.renameSync(${JSON.stringify(`${ready}.tmp`)}, ${JSON.stringify(ready)});`,
-        { waits: "setTimeout(() => {}, 10000);", exits: "process.exit(0);", fails: "process.exit(3);" }[then],
-      ].join("\n"),
-    ];
+      /**
+       * Starts a holder — a process that inherits stdout, outlives the command,
+       * runs `holder` with the command's pid as `process.argv[1]` — and writes
+       * "<command pid> <holder pid>" to `ready` once it exists; then waits,
+       * exits 0, or exits 3.
+       */
+      const sharing = (ready: string, then: "waits" | "exits" | "fails", holder = HOLDS): string[] => [
+        "-e",
+        [
+          "const fs = require('node:fs');",
+          "const c = require('node:child_process').spawn(process.execPath,",
+          `  ['-e', ${JSON.stringify(holder)}, String(process.pid)], { stdio: ['ignore', 'inherit', 'ignore'] });`,
+          `fs.writeFileSync(${JSON.stringify(`${ready}.tmp`)}, process.pid + ' ' + c.pid);`,
+          `fs.renameSync(${JSON.stringify(`${ready}.tmp`)}, ${JSON.stringify(ready)});`,
+          { waits: "setTimeout(() => {}, 10000);", exits: "process.exit(0);", fails: "process.exit(3);" }[
+            then
+          ],
+        ].join("\n"),
+      ];
 
-    /**
-     * The pids `sharing` wrote, once it has. The holder is killed after the
-     * test; both give up on their own after 10s if a run is cut short.
-     */
-    const started = async (ready: string): Promise<{ command: number; holder: number }> => {
-      for (const deadline = Date.now() + 5_000; Date.now() < deadline; ) {
-        try {
-          const [command, holder] = readFileSync(ready, "utf8").split(" ").map(Number);
-          strays.push(holder as number);
-          return { command: command as number, holder: holder as number };
-        } catch {
-          await pause(10);
+      /**
+       * The pids `sharing` wrote, once it has. The holder is killed after the
+       * test; both give up on their own after 10s if a run is cut short.
+       */
+      const started = async (ready: string): Promise<{ command: number; holder: number }> => {
+        for (const deadline = Date.now() + 5_000; Date.now() < deadline; ) {
+          try {
+            const [command, holder] = readFileSync(ready, "utf8").split(" ").map(Number);
+            strays.push(holder as number);
+            return { command: command as number, holder: holder as number };
+          } catch {
+            await pause(10);
+          }
         }
-      }
-      throw new Error("the command never started its holder");
-    };
+        throw new Error("the command never started its holder");
+      };
 
-    /**
-     * Pipes this process has open. Only its own: the line resolving is not the
-     * line's process exiting, and an open pipe keeps node's event loop alive
-     * for as long as whatever holds the other end lives.
-     */
-    const pipes = (): number => process.getActiveResourcesInfo().filter((r) => r === "PipeWrap").length;
+      /**
+       * Pipes this process has open. Only its own: the line resolving is not the
+       * line's process exiting, and an open pipe keeps node's event loop alive
+       * for as long as whatever holds the other end lives.
+       */
+      const pipes = (): number => process.getActiveResourcesInfo().filter((r) => r === "PipeWrap").length;
 
-    /** Pipes open now, once anything an earlier test let go of has finished closing. */
-    const baseline = async (): Promise<number> => {
-      await pause(20);
-      return pipes();
-    };
+      /** Pipes open now, once anything an earlier test let go of has finished closing. */
+      const baseline = async (): Promise<number> => {
+        await pause(20);
+        return pipes();
+      };
 
-    /** Waits for the open pipes to come back down to `n`, and says how many there are. */
-    const settled = async (n: number): Promise<number> => {
-      for (const deadline = Date.now() + 1_000; pipes() > n && Date.now() < deadline; ) await pause(10);
-      return pipes();
-    };
+      /** Waits for the open pipes to come back down to `n`, and says how many there are. */
+      const settled = async (n: number): Promise<number> => {
+        for (const deadline = Date.now() + 1_000; pipes() > n && Date.now() < deadline; ) await pause(10);
+        return pipes();
+      };
 
-    it("answers when the budget runs out, not when the pipe closes — and lets go of the pipe", async () => {
-      const before = await baseline();
-      const ready = join(dir, "ready");
-      const stop = new AbortController();
-      const pending = runBounded(node, sharing(ready, "waits"), stop.signal);
-      await started(ready);
-      expect(pipes()).toBe(before + 1);
-      stop.abort();
-      expect(await within(pending, 2_000)).toBeNull();
-      expect(await settled(before)).toBe(before);
-    }, 10_000);
-
-    it("answers when the budget runs out after the command itself has exited", async () => {
-      // Node stops listening to the signal once the child exits, so this
-      // abort reaches nothing of node's: only runBounded can hear it.
-      const before = await baseline();
-      const ready = join(dir, "ready");
-      const stop = new AbortController();
-      const pending = runBounded(node, sharing(ready, "exits"), stop.signal);
-      const { command } = await started(ready);
-      // Gone and reaped: signal 0 still reaches a zombie.
-      for (const deadline = Date.now() + 5_000; alive(command) && Date.now() < deadline; ) await pause(10);
-      expect(alive(command)).toBe(false);
-      stop.abort();
-      expect(await within(pending, 2_000)).toBeNull();
-      expect(await settled(before)).toBe(before);
-    }, 10_000);
-
-    it("is null at once, reading no further, when what the command left behind prints past 4 MB", async () => {
-      // The limit bounds what is read, not only what the command prints: once
-      // the command has exited there is nothing to kill, and reading on until
-      // the holder stops would let it fill this process's memory.
-      const floods = [
-        "const command = Number(process.argv[1]);",
-        "const gone = () => { try { process.kill(command, 0); return false; } catch { return true; } };",
-        // Only once the command has been reaped, so the flood always comes after its exit.
-        "const t = setInterval(() => { if (!gone()) return; clearInterval(t);",
-        `  process.stdout.write("x".repeat(${4 * 1024 * 1024 + 1})); setTimeout(() => {}, 10000); }, 10);`,
-      ].join("\n");
-      const before = await baseline();
-      const ready = join(dir, "ready");
-      const stop = new AbortController();
-      try {
-        const pending = runBounded(node, sharing(ready, "exits", floods), stop.signal);
+      it("answers when the budget runs out, not when the pipe closes — and lets go of the pipe", async () => {
+        const before = await baseline();
+        const ready = join(dir, "ready");
+        const stop = new AbortController();
+        const pending = runBounded(node, sharing(ready, "waits"), stop.signal);
         await started(ready);
+        expect(pipes()).toBe(before + 1);
+        stop.abort();
         expect(await within(pending, 2_000)).toBeNull();
         expect(await settled(before)).toBe(before);
-      } finally {
-        stop.abort();
-      }
-    }, 10_000);
+      }, 10_000);
 
-    it("answers a command that failed at once, without waiting for the pipe or the budget", async () => {
-      // Its answer is null whatever else it printed, so there is nothing to wait for.
-      const before = await baseline();
-      const ready = join(dir, "ready");
-      const stop = new AbortController();
-      try {
-        const pending = runBounded(node, sharing(ready, "fails"), stop.signal);
-        await started(ready);
+      it("answers when the budget runs out after the command itself has exited", async () => {
+        // Node stops listening to the signal once the child exits, so this
+        // abort reaches nothing of node's: only runBounded can hear it.
+        const before = await baseline();
+        const ready = join(dir, "ready");
+        const stop = new AbortController();
+        const pending = runBounded(node, sharing(ready, "exits"), stop.signal);
+        const { command } = await started(ready);
+        // Gone and reaped: signal 0 still reaches a zombie.
+        for (const deadline = Date.now() + 5_000; alive(command) && Date.now() < deadline; ) await pause(10);
+        expect(alive(command)).toBe(false);
+        stop.abort();
         expect(await within(pending, 2_000)).toBeNull();
         expect(await settled(before)).toBe(before);
-      } finally {
-        stop.abort();
-      }
-    }, 10_000);
-  });
+      }, 10_000);
+
+      it("is null at once, reading no further, when what the command left behind prints past 4 MB", async () => {
+        // The limit bounds what is read, not only what the command prints: once
+        // the command has exited there is nothing to kill, and reading on until
+        // the holder stops would let it fill this process's memory.
+        const floods = [
+          "const command = Number(process.argv[1]);",
+          "const gone = () => { try { process.kill(command, 0); return false; } catch { return true; } };",
+          // Only once the command has been reaped, so the flood always comes after its exit.
+          "const t = setInterval(() => { if (!gone()) return; clearInterval(t);",
+          `  process.stdout.write("x".repeat(${4 * 1024 * 1024 + 1})); setTimeout(() => {}, 10000); }, 10);`,
+        ].join("\n");
+        const before = await baseline();
+        const ready = join(dir, "ready");
+        const stop = new AbortController();
+        try {
+          const pending = runBounded(node, sharing(ready, "exits", floods), stop.signal);
+          await started(ready);
+          expect(await within(pending, 2_000)).toBeNull();
+          expect(await settled(before)).toBe(before);
+        } finally {
+          stop.abort();
+        }
+      }, 10_000);
+
+      it("answers a command that failed at once, without waiting for the pipe or the budget", async () => {
+        // Its answer is null whatever else it printed, so there is nothing to wait for.
+        const before = await baseline();
+        const ready = join(dir, "ready");
+        const stop = new AbortController();
+        try {
+          const pending = runBounded(node, sharing(ready, "fails"), stop.signal);
+          await started(ready);
+          expect(await within(pending, 2_000)).toBeNull();
+          expect(await settled(before)).toBe(before);
+        } finally {
+          stop.abort();
+        }
+      }, 10_000);
+    },
+  );
 });
 
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
