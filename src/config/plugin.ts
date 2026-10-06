@@ -203,7 +203,7 @@ export function describeDaemonBuild(
  * tested, and what counts as a healthy notifier is a judgement worth pinning.
  */
 export function describeNotifier(
-  probe: { found: boolean; reason?: string | undefined },
+  probe: { found: boolean; reason?: string | undefined; canShow?: boolean | undefined },
   supervised: boolean,
   rosters: number | null,
 ): string[] {
@@ -222,6 +222,13 @@ export function describeNotifier(
   }
 
   lines.push(`  ${"notifier".padEnd(16)}running`);
+  if (probe.canShow === false) {
+    // #78 — found is not able. A notifier on a headless box answers the
+    // probe like any other and refuses every doorbell, so "running" alone
+    // would read as a way to reach you. Absent is an older notifier that did
+    // not say, and is left alone.
+    lines.push(`${pad}but it cannot show notifications — it refuses every doorbell sent to it`);
+  }
   // Running and never contacted is a DIFFERENT failure from not running, and
   // the two need different fixes — one is a process, the other is a tunnel.
   if (rosters === 0) {
@@ -234,6 +241,92 @@ export function describeNotifier(
     lines.push(`${pad}not supervised — it will not survive a reboot; \`astir autostart\` fixes that`);
   }
   return lines;
+}
+
+/**
+ * #78 / PSH-07 — the local delivery path, and whether anything can reach you.
+ *
+ * `doctor` used to report the notifier and say nothing about the floor beneath
+ * it, which the daemon described as `delivery paths: local` on a container
+ * with no `notify-send` and no display. That line was true about the
+ * configuration and false about the machine.
+ *
+ * Two witnesses, because they can disagree. `local` is probed from the
+ * terminal doctor runs in; `daemonLive` is the daemon's own `/healthz`
+ * answer, from ITS environment — and a supervised daemon can lack the session
+ * bus that an interactive shell has, or have one a shell reached over SSH
+ * does not. Where they differ, the daemon wins, in BOTH directions: it is the
+ * one that delivers. `null` means the daemon could not be asked, and then
+ * only the local probe is graded — and nothing is said about whether anyone
+ * will be told, because nobody asked the one that would tell them.
+ *
+ * Pure for the reason `describeNotifier` is.
+ */
+export function describeDelivery(
+  local: { name: string; available: boolean; unavailableReason?: string | undefined },
+  daemonLive: readonly string[] | null,
+): string[] {
+  const label = `  ${"local alerts".padEnd(16)}`;
+  const pad = `  ${"".padEnd(16)}`;
+  const why = local.unavailableReason ?? `${local.name} unavailable`;
+
+  if (daemonLive?.includes("local") === true) {
+    // The daemon's environment can show one, whatever this terminal can.
+    // Calling that DEAD — and then "no one will be told" — because doctor ran
+    // over SSH or under `env -i` would contradict the witness that matters.
+    return local.available
+      ? [`${label}${local.name} — live`]
+      : [`${label}live in the daemon`, `${pad}this terminal cannot show one (${why}); the daemon can`];
+  }
+
+  const lines: string[] = [];
+  if (!local.available) {
+    lines.push(`${label}DEAD — ${why}`);
+    lines.push(`${pad}this machine cannot show a notification itself`);
+  } else if (daemonLive !== null) {
+    // Two causes, and nothing here tells them apart. The daemon may lack the
+    // display or bus this terminal has — or both have one and nothing on it
+    // can show a notification, so every run exits 1 (a headless systemd host,
+    // where pam_systemd exports the bus to everything). Round two named only
+    // the first, "works here", which is false on that host and sends the user
+    // to restart a daemon that restarting cannot fix. The test send can tell
+    // them apart: it runs from here.
+    lines.push(`${label}DEAD in the daemon — its ${local.name} is not getting through`);
+    lines.push(`${pad}it may lack this terminal's display or session bus, or nothing on the bus`);
+    lines.push(`${pad}can show one; \`astir doctor --notify\` tries one from here to tell which`);
+  } else {
+    lines.push(`${label}${local.name} — live`);
+    return lines;
+  }
+
+  if (daemonLive === null) return lines;
+  // The sentence the whole issue is about. Saying it plainly is the fix.
+  // `local` is not in the list here: the branch above returned if it was.
+  lines.push(
+    daemonLive.length > 0
+      ? `${pad}reaching you through: ${daemonLive.join(", ")}`
+      : `${pad}the daemon has NO live delivery path — no one will be told`,
+  );
+  return lines;
+}
+
+/**
+ * #78 — the daemon's own answer to "what can deliver", from its `/healthz`
+ * body, for `describeDelivery`.
+ *
+ * Null for anything that is not a list: a daemon older than #78 has no
+ * `delivery` at all, and "it did not say" must never be read as "nothing is
+ * live" — that would print "no one will be told" about a daemon that may be
+ * delivering perfectly well. Non-string entries are dropped rather than
+ * trusted.
+ */
+export function daemonDeliveryLive(healthz: unknown): string[] | null {
+  if (typeof healthz !== "object" || healthz === null) return null;
+  const delivery = (healthz as { delivery?: unknown }).delivery;
+  if (typeof delivery !== "object" || delivery === null) return null;
+  const live = (delivery as { live?: unknown }).live;
+  if (!Array.isArray(live)) return null;
+  return live.filter((n): n is string => typeof n === "string");
 }
 
 /**

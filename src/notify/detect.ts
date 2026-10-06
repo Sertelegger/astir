@@ -17,6 +17,13 @@ export interface DetectResult {
   found: boolean;
   url: string;
   reason?: string;
+  /**
+   * #78 — what the notifier says about its own screen: false when it cannot
+   * show a notification (a headless box), so a daemon never counts it as a
+   * way to reach anyone. Absent from a notifier older than the field, which
+   * is "did not say", not "cannot".
+   */
+  canShow?: boolean;
 }
 
 /**
@@ -31,11 +38,13 @@ export async function detectNotifier(port: number, timeoutMs = 1_500): Promise<D
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return { found: false, url, reason: `HTTP ${res.status}` };
-    const body = (await res.json()) as { role?: string };
+    const body = (await res.json()) as { role?: string; canShow?: unknown };
     if (body.role !== "notifier") {
       return { found: false, url, reason: "something else is listening on this port" };
     }
-    return { found: true, url };
+    return typeof body.canShow === "boolean"
+      ? { found: true, url, canShow: body.canShow }
+      : { found: true, url };
   } catch {
     return { found: false, url, reason: "no tunnel" };
   }

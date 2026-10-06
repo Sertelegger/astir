@@ -33,7 +33,7 @@
  * otherwise would be worse than landing the user on the right window.
  */
 
-import { execFileSync } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { homedir } from "node:os";
 
 export interface FocusResult {
@@ -54,6 +54,17 @@ export interface FocusDeps {
   home: string;
 }
 
+/** True if a pid exists on this machine. */
+function pidAlive(pid: number): boolean {
+  try {
+    // Signal 0 checks existence and permission without delivering anything.
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function defaultFocusDeps(): FocusDeps {
   return {
     selfPid: process.pid,
@@ -69,17 +80,108 @@ export function defaultFocusDeps(): FocusDeps {
         return null;
       }
     },
-    pidAlive: (pid) => {
-      try {
-        // Signal 0 checks existence and permission without delivering anything.
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    pidAlive,
     platform: process.platform,
   };
+}
+
+/**
+ * What `status --line --json` needs to decide `focusable` (#80), and nothing
+ * more: it asks, and never acts.
+ *
+ * Not `FocusDeps`, because that `run` blocks. `focusSession` is a click a
+ * person made and waits on; the line runs on a host's five-second loop under a
+ * budget, and a wedged tmux held its `execFileSync` for the full 5s — past
+ * astir-tui's 3s kill, which then orphaned the `tmux list-panes` it had
+ * started. Here every command runs under the caller's signal and dies with it.
+ */
+export interface ProbeDeps {
+  /** As `runBounded`: stdout, or null when it fails, is missing, or is killed. */
+  run: (file: string, args: string[], signal: AbortSignal) => Promise<string | null>;
+  pidAlive: (pid: number) => boolean;
+  platform: string;
+}
+
+export function defaultProbeDeps(): ProbeDeps {
+  return { run: runBounded, pidAlive, platform: process.platform };
+}
+
+/** More than any process table or pane list; a command printing past it is not one we asked. */
+const PROBE_OUTPUT_LIMIT = 4 * 1024 * 1024;
+
+/**
+ * Run a command until it exits or `signal` aborts, whichever is first.
+ * Resolves to its stdout, or null when it exits non-zero, cannot be started,
+ * prints past the limit, or is killed. Never rejects.
+ *
+ * Killed with SIGKILL, not SIGTERM: these are read-only queries with nothing
+ * to clean up, and a stopped process does not act on SIGTERM until it is
+ * continued — which, for a wedged tmux, may be never. A killed command is
+ * answered once it has exited, so the command itself never outlives the line.
+ *
+ * Its EXIT, not its pipe closing: the pipe can outlive it. A tmux client hands
+ * its stdout to the tmux server, and a wedged server never reads it, so after
+ * the client is killed the server still holds the other end — `close` never
+ * comes, and the open pipe kept the line's process alive past astir-tui's 3s
+ * kill, though the line itself had printed in time. So whenever the answer
+ * is null this lets go of the pipe and answers; only a command that exited 0
+ * is waited on for the rest of its output, and the budget still ends that
+ * wait. What holds the other end is not ours to kill.
+ */
+export function runBounded(file: string, args: string[], signal: AbortSignal): Promise<string | null> {
+  // Nothing is started once the budget is spent.
+  if (signal.aborted) return Promise.resolve(null);
+  let child: ChildProcess;
+  try {
+    child = spawn(file, args, {
+      stdio: ["ignore", "pipe", "ignore"],
+      signal,
+      killSignal: "SIGKILL",
+      windowsHide: true,
+    });
+  } catch {
+    // Refused before anything started — a NUL in an argument, say. Most
+    // failures to start arrive as an `error`; these are thrown.
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    let out = "";
+    let failed = false;
+    let exited = false;
+    const answer = (value: string | null): void => {
+      signal.removeEventListener("abort", giveUp);
+      child.stdout?.destroy();
+      resolve(value);
+    };
+    // Past the budget or past the limit, the answer is null. A command still
+    // running is killed — node does that on abort, reporting it as an
+    // `error` — and answered when it exits. Once it has exited there is
+    // nothing to kill (node stops listening to the signal then), so it is
+    // answered now, whoever still holds its pipe, and nothing more is read.
+    const giveUp = (): void => {
+      failed = true;
+      if (exited) answer(null);
+    };
+    signal.addEventListener("abort", giveUp, { once: true });
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      out += chunk;
+      if (out.length > PROBE_OUTPUT_LIMIT) {
+        child.kill("SIGKILL");
+        giveUp();
+      }
+    });
+    // A command that never started has no exit to wait for.
+    child.on("error", () => {
+      failed = true;
+      if (child.pid === undefined) answer(null);
+    });
+    child.on("exit", (code) => {
+      exited = true;
+      if (failed || code !== 0) answer(null);
+    });
+    child.on("close", (code) => answer(failed || code !== 0 ? null : out));
+  });
 }
 
 /** The pid's ancestry, nearest first, including the pid itself. */

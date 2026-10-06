@@ -18,7 +18,9 @@ import {
   writeSecret,
 } from "../config/paths.js";
 import {
+  daemonDeliveryLive,
   describeDaemonBuild,
+  describeDelivery,
   describeHosts,
   describeNotifier,
   describePlugins,
@@ -37,16 +39,17 @@ import { createClaudeLister } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
 import { parseSnapshot } from "../model/snapshot.js";
 import { detectNotifier } from "../notify/detect.js";
-import { Dispatcher, localTarget, remoteTarget } from "../notify/dispatch.js";
+import { Dispatcher, localTarget, NotifierWatch, remoteTarget } from "../notify/dispatch.js";
 import { buildEnvelope } from "../notify/envelope.js";
 import { NotifyLoop } from "../notify/loop.js";
-import { backendFromNotifier, createNotifier, createNotifierBackend } from "../notify/notify.js";
+import { createNotifierBackend } from "../notify/notify.js";
 import { NotifyPolicy } from "../notify/policy.js";
 import { dropSelfSessions, pushRoster, rosterUrlFrom } from "../notify/roster.js";
 import { NotifierServer } from "../notify/server.js";
 import { fetchRemote, fetchStatus } from "../status/fetch.js";
+import { runStatusLine } from "../status/line.js";
 import { menuJson } from "../status/menu.js";
-import { buildMenu, renderMenubar } from "../status/menubar.js";
+import { buildMenu, remoteForMenu, renderMenubar } from "../status/menubar.js";
 import type { RemoteSession } from "../status/types.js";
 import { defaultPairDeps, pair, pairedHosts, sshConfigPath } from "./pair.js";
 import {
@@ -94,6 +97,8 @@ function usage(): void {
       "  daemon [--port N] [--token T]   run the activity daemon\n" +
       "  install [--no-plugin]           register the hooks, install the token, report the rest\n" +
       "  status [--json]                 show live sessions and who is waiting on you\n" +
+      "  status --line [--session <id>] [--json]\n" +
+      "                                  one line or nothing, for a tmux segment or astir-tui\n" +
       "  menubar                         SwiftBar/xbar plugin output\n" +
       "  notifier [--port N]             receive doorbells from another host and notify here\n" +
       "  doctor [--notify]               check the setup; --notify sends a test notification\n" +
@@ -286,7 +291,9 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   // with a minimal PATH, where the shebang alone cannot find node.
   const invocation = [process.execPath, process.argv[1] ?? ""];
   const targets = [localTarget(backend, invocation)];
-  if (!backend.capabilities.click) {
+  // Only advice that helps: terminal-notifier is a macOS tool, and a backend
+  // that cannot show anything at all is named on the `delivery paths:` line.
+  if (process.platform === "darwin" && backend.available && !backend.capabilities.click) {
     process.stdout.write(
       `notifications via ${backend.name}: not clickable, and cannot be replaced or dismissed.\n` +
         "  install terminal-notifier for click-to-focus and self-clearing alerts:\n" +
@@ -377,6 +384,8 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
     registry,
     remoteSessions: () => remoteDiscovery.list(),
     pushedSessions: () => pushed,
+    // #78 — read per request: the notifier attaches and detaches below.
+    deliveryLive: () => dispatcher.live(),
   });
 
   // A bind that fails is the moment somebody is actually present and looking,
@@ -419,7 +428,9 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   }
   // The artifact test parses this line; keep the format stable.
   process.stdout.write(`astir daemon listening on 127.0.0.1:${bound}\n`);
-  process.stdout.write(`delivery paths: ${dispatcher.names().join(", ")}\n`);
+  // PSH-07 / #78 — what can deliver, and what cannot and why. Listing every
+  // configured path printed `local` on a machine that could show nothing.
+  process.stdout.write(`delivery paths: ${dispatcher.describe()}\n`);
 
   const tick = setInterval(() => {
     registry.tick();
@@ -430,21 +441,15 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   // PSH-14 — find the notifier rather than being told where it is. Re-checked on
   // a slow timer because an `ssh -R` tunnel comes and goes with the connection,
   // so a one-shot probe at startup would be wrong for most of the daemon's life.
+  // Every tick reports to the attached path too (#78): whether the notifier
+  // can show anything, and that it is reachable — which lifts a failure left
+  // by one POST that fell into a restart.
   if (typeof notifyUrl !== "string") {
-    let attached = false;
+    const watch = new NotifierWatch(dispatcher, remoteToken);
     const probe = async (): Promise<void> => {
-      const found = await detectNotifier(notifyPort);
-      if (found.found && !attached) {
-        attached = true;
-        notifierUrl = found.url;
-        dispatcher.add(remoteTarget(found.url, remoteToken));
-        process.stdout.write(`notifier detected on 127.0.0.1:${notifyPort} — delivering there too\n`);
-      } else if (!found.found && attached) {
-        attached = false;
-        notifierUrl = null;
-        dispatcher.remove(`remote(${found.url})`);
-        process.stdout.write(`notifier on 127.0.0.1:${notifyPort} went away (${found.reason ?? "gone"})\n`);
-      }
+      const said = watch.observe(await detectNotifier(notifyPort));
+      notifierUrl = watch.url;
+      if (said !== null) process.stdout.write(`${said}\n`);
     };
     void probe();
     const probeTimer = setInterval(() => void probe(), 15_000);
@@ -583,8 +588,46 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
  * Kept as a plain command deliberately: if the tray approach changes, the same
  * output still feeds a shell prompt, a statusline, or a different implementation.
  */
+/**
+ * Whether this machine has a notifier it should be able to reach (#79).
+ *
+ * A notifier that does not answer means "other machines' blocks cannot reach
+ * you" only where one was set up: the supervised service is installed, or
+ * `astir pair` wrote a RemoteForward for its port. On a machine that never
+ * paired anything, no notifier is the normal state, and a warning about it
+ * would be permanent noise — the menu bar's first version of #79 did exactly
+ * that to a single-machine Mac.
+ */
+function notifierExpected(notifyPort: number): boolean {
+  if (serviceInstalled("notifier")) return true;
+  try {
+    return pairedHosts(readFileSync(sshConfigPath(), "utf8"), notifyPort).length > 0;
+  } catch {
+    // No ssh config is the normal single-machine case.
+    return false;
+  }
+}
+
 async function runStatus(flags: Args["flags"]): Promise<void> {
   const port = Number(flags.get("port") ?? process.env.ASTIR_PORT ?? DEFAULT_PORT);
+
+  // #80 — one line or nothing, for a tmux segment or the astir-tui mod. It
+  // decides everything itself (src/status/line.ts) and never fails loudly: a
+  // status bar draws an exit code as nothing, and nothing reads as calm.
+  if (flags.get("line") === true) {
+    const notifyPort = Number(flags.get("notify-port") ?? process.env.ASTIR_NOTIFY_PORT ?? port + 1);
+    const session = flags.get("session");
+    const text = await runStatusLine({
+      session: typeof session === "string" ? session : null,
+      json: flags.get("json") === true,
+      port,
+      notifyPort,
+      notifierExpected: notifierExpected(notifyPort),
+    });
+    process.stdout.write(text === "" ? "" : `${text}\n`);
+    return;
+  }
+
   const result = await fetchStatus(port);
 
   if (!result.ok) {
@@ -685,10 +728,10 @@ async function runMenubar(flags: Args["flags"]): Promise<void> {
   const invocation = [process.execPath, process.argv[1] ?? ""];
   // PSH-12 — one surface for every machine. Fetched together so a slow notifier
   // cannot delay the local view.
-  const [status, remote] = await Promise.all([
-    fetchStatus(port),
-    fetchRemote(Number(flags.get("notify-port") ?? process.env.ASTIR_NOTIFY_PORT ?? port + 1)),
-  ]);
+  const notifyPort = Number(flags.get("notify-port") ?? process.env.ASTIR_NOTIFY_PORT ?? port + 1);
+  const [status, fetched] = await Promise.all([fetchStatus(port), fetchRemote(notifyPort)]);
+  // #79 — an unreachable notifier is a warning only where one is expected.
+  const remote = remoteForMenu(fetched, notifierExpected(notifyPort));
   // DMN-08 — the daemon cannot detect this: the whole symptom is that nothing
   // arrives from these sessions. Their own project settings can, so the surface
   // that has the cwd does the reading.
@@ -717,9 +760,19 @@ async function runNotifier(flags: Args["flags"]): Promise<void> {
   const port = Number(flags.get("port") ?? process.env.ASTIR_NOTIFY_PORT ?? DEFAULT_PORT + 1);
   const token = String(flags.get("token") ?? process.env.ASTIR_NOTIFY_TOKEN ?? readOrCreateToken());
 
+  const backend = createNotifierBackend();
+  if (!backend.available) {
+    process.stdout.write(
+      `this machine cannot show notifications (${backend.unavailableReason ?? "no notifier"}): ` +
+        "doorbells will be refused, so the daemon sending them knows no one was told\n",
+    );
+  }
   const server = new NotifierServer({
     token,
-    notify: createNotifier(),
+    // #78 — the backend answers with what its run did, so a notify-send that
+    // exits 1 here is refused to the sender rather than counted as shown.
+    notify: backend.notify,
+    ...(backend.available ? {} : { cannotShow: backend.unavailableReason ?? "no notifier" }),
     onEvent: (line) => process.stdout.write(`delivered: ${line}\n`),
   });
 
@@ -874,6 +927,21 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
   }
   for (const line of describeNotifier(notifier, serviceInstalled("notifier"), rosters)) out(line);
 
+  // #78 — the floor beneath the notifier, which doctor never graded. The
+  // daemon's own answer comes from its environment, which may not be this
+  // terminal's; null when it could not be asked.
+  let daemonLive: string[] | null = null;
+  if (probe.kind === "mine") {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(1_500) });
+      // An older daemon has no answer; that is "cannot tell", not "nothing".
+      daemonLive = daemonDeliveryLive(await res.json());
+    } catch {
+      // Unreachable now is reported above, by the daemon line.
+    }
+  }
+  for (const line of describeDelivery(createNotifierBackend(), daemonLive)) out(line);
+
   // #65 — and the hosts it polls, which nothing reported either.
   const watched = readWatchedHosts();
   const reporting = new Set(
@@ -886,7 +954,10 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
   if (flags.get("notify") === true) {
     out("");
     out("  sending a test notification...");
-    const dispatcher = new Dispatcher([localTarget(backendFromNotifier(createNotifier()))]);
+    // The real backend, not a wrapped `createNotifier()`: wrapping erased
+    // whether the path is live, so a machine with no `notify-send` printed
+    // `local sent` — #78 in doctor's own words.
+    const dispatcher = new Dispatcher([localTarget(createNotifierBackend())]);
     const envelope = buildEnvelope({
       kind: "blocked",
       reason: "doctor_test",

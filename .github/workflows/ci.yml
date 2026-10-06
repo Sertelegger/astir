@@ -58,6 +58,15 @@ jobs:
       # dist/ output. A green unit suite is not evidence the thing runs — that
       # is the specific failure this project exists downstream of.
       - run: npm test
+      # astir-tui is a Claude Code mod, and its tests run against the engine
+      # itself, which ships inside the CLI — so they need the CLI, not a login.
+      # Pinned to the build the mod was written against: the mods API is early
+      # access and moves between releases, and a red build should mean the mod
+      # changed, not that the engine did overnight. Once is enough.
+      - if: matrix.node == 24
+        run: npm install -g @anthropic-ai/claude-code@2.1.291
+      - if: matrix.node == 24
+        run: claude plugin validate tui && claude plugin test tui
 
   macos:
     # The primary development platform, and the only one where the notification

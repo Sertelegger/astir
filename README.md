@@ -30,6 +30,8 @@ Astir's first job is to make that not happen. Everything else is secondary.
 - **Agent state survives a daemon restart** — what was blocked, and for how long,
   rather than starting from nothing
 - A **cross-session overview**: everything on every machine, worst first
+- **In the terminal**: `astir status --line` for a tmux bar, and the opt-in
+  `astir-tui` plugin for Claude Code's own TUI
 
 ## Install
 
@@ -201,6 +203,59 @@ Astir will not edit that file for you, for the same reason it ships no npm
 `postinstall`: reaching into another tool's configuration as a side effect is how
 you end up surprised by your own machine. You may well want those ports
 forwarded — it just cannot be astir that decides.
+
+## In the terminal
+
+On a machine with no menu bar — a Linux box you reach over SSH, say — the
+place you are looking is the terminal. `astir status --line` prints **one line
+or nothing**: nothing when all is well, and otherwise first anything that means
+you would not be told, then how many blocks are waiting on you.
+
+```
+$ astir status --line
+astir: nothing can notify you — no notifier is reachable · 1 waiting on you · oldest 14s
+```
+
+| It says | Which means |
+|---|---|
+| `daemon not running — no one will be told` | Start it (`astir daemon`, or `astir autostart` on macOS). |
+| `port 47000 is <host>'s daemon, not this machine's` | Something forwarded another machine's daemon onto this port (VS Code Remote-SSH does; see above). |
+| `the daemon is older than this astir — restart it` | You rebuilt astir but the running daemon is the old build. Its blocks are still shown, just not filtered to the ones it announced. |
+| `nothing can notify you — no notifier is reachable` | No delivery path is live: this machine cannot show a notification (no `notify-send`, or no desktop session to show it on) **and** your Mac's notifier is not reachable — typically the `ssh -R` tunnel is down. |
+| `notifier not answering` | A notifier is set up for this machine and did not answer, so blocks on other machines cannot reach you. |
+| `lost contact with 1 machine where an agent was waiting` | Your notifier had a doorbell from another machine and has stopped hearing from it — the agent is probably still waiting. |
+| `hears nothing from this session` | (only with `--session`) This session's hooks are not reaching the daemon. |
+| `2 waiting on you · oldest 3m` | Agents blocked on you that astir has announced. A block answered automatically inside the alert delay never appears here. |
+
+It counts, never names: a surface that names a session has to be able to take
+you to it, and a status line cannot.
+
+### A tmux status segment
+
+```tmux
+# ~/.tmux.conf
+set -g status-interval 5
+set -g status-right '#(astir status --line)'
+```
+
+tmux runs that through `sh` with its own `PATH`; if `astir` is not on it, give
+the full command (`node /path/to/astir/dist/cli/main.js status --line`). astir
+does not edit your tmux config.
+
+### Inside Claude Code: astir-tui
+
+`astir-tui` is a separate, opt-in plugin: a Claude Code **mod** that draws the
+same line under the prompt and an `astir <n>` label in the footer.
+
+```bash
+claude plugin install astir-tui@astir-marketplace   # after `astir install`
+```
+
+It is display only and asks nothing of the session; see
+[`tui/README.md`](tui/README.md) for what it draws, how it finds astir, and how
+to check what it hooks with `claude plugin validate tui`. Mods are an early
+access Claude Code feature (2.1.287 and later), drawn in the terminal and the
+desktop app's Code tab.
 
 ## Sessions on another machine
 

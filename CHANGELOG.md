@@ -14,6 +14,20 @@ release is cut, named and published is in
 
 ### Added
 
+- **astir in the terminal**
+  ([#80](https://github.com/Sertelegger/astir/issues/80)).
+  - `astir status --line` prints one line or nothing, for a tmux status bar
+    on a machine with no menu bar. It shows what would keep you from being
+    told (no daemon, another machine's daemon on the port, no notifier
+    reachable), then how many announced blocks are waiting and for how long.
+    It shows counts only, never session names.
+  - `astir-tui` is a separate, opt-in plugin in the same marketplace. It is a
+    Claude Code mod that draws that line under the prompt and an `astir <n>`
+    label in the footer, and does nothing else.
+- `/state` 2.2: every agent carries `announcedAt`, the moment the notify loop
+  decided to interrupt you about it. It is not persisted: a block restored
+  after a restart proves itself again before it is announced.
+
 - **Codex is a second provider**
   ([#24](https://github.com/Sertelegger/astir/issues/24)). A Codex session shows
   up beside your Claude Code ones: in the menu bar, in `astir status`, in the
@@ -33,6 +47,24 @@ release is cut, named and published is in
 
 ### Fixed
 
+- **A machine that cannot show a notification no longer reports that it did**
+  ([#78](https://github.com/Sertelegger/astir/issues/78)).
+  - On a Linux box with no `notify-send` or no desktop session, the local
+    path was listed as live and every block counted as delivered. On a
+    container whose only real path is an `ssh -R` tunnel, that meant nobody
+    was told whenever the tunnel dropped.
+  - Each path now says whether it can deliver. `/healthz` lists the live
+    ones, and the daemon's startup line, its tunnel-loss line and
+    `astir doctor` name a dead one and why.
+  - A notifier that cannot show a doorbell refuses it, and says so on its
+    `/healthz`, so the sending daemon knows too. A local notifier that runs
+    and fails (a headless box with a session bus but nothing to show on) is
+    a failed delivery, not a delivered one.
+- **A notifier astir cannot reach is no longer shown as "no remote agents"**
+  ([#79](https://github.com/Sertelegger/astir/issues/79)). Where one is
+  expected (the notifier service is installed, or `astir pair` set up a
+  forward), the menu says it is unreachable. A machine that never paired
+  anything stays calm.
 - `hooks/hooks.json` no longer carries a `_comment` key, which Claude Code
   reported as an unknown key on every session start. JSON has no comments; the
   prose moved to `hooks/README.md`.

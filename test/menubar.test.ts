@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderMenubar } from "../src/status/menubar.js";
+import { remoteForMenu, renderMenubar } from "../src/status/menubar.js";
 import type { StatusBody, StatusSession } from "../src/status/types.js";
 
 const agent = (state: string, over: Partial<StatusBody["sessions"][0]["agents"][0]> = {}) => ({
@@ -1207,5 +1207,215 @@ describe("opening the web view from the menu", () => {
     );
     expect(out).toContain("No local daemon");
     expect(out).not.toContain("Open the web view");
+  });
+});
+
+describe("a notifier astir cannot reach is not calm (#79)", () => {
+  // `fetchRemote` answers `null` when the notifier on 127.0.0.1:47001 cannot be
+  // reached. On a container that is the moment the `ssh -R` tunnel dropped or
+  // the Mac went to sleep — the moment blocks elsewhere stop reaching you. The
+  // menu used to fold that into "no remote agents" and go calm, so the surface
+  // was quietest exactly when it knew least.
+  const idle = {
+    ok: true as const,
+    body: { blockedCount: 0, sessions: [session({ agents: [agent("idle")] })] },
+  };
+  const empty = { ok: true as const, body: { blockedCount: 0, sessions: [] } };
+  /** The SF Symbol drawn in the bar, which is what "calm" actually looks like. */
+  const barSymbol = (out: string): string | undefined => bar(out).match(/sfimage=(\S+)/)?.[1];
+
+  /**
+   * One SwiftBar parameter's value. `color=` must not be found inside
+   * `sfcolor=`, which is what a substring check on the row does.
+   */
+  const param = (line: string, key: string): string | undefined =>
+    (line.split(" | ")[1] ?? "")
+      .split(" ")
+      .find((p) => p.startsWith(`${key}=`))
+      ?.slice(key.length + 1);
+
+  it("does not draw the calm badge over a session when the notifier is unreachable", () => {
+    const out = renderMenubar(idle, { ...OPTS, remote: null });
+    expect(barSymbol(out)).not.toBe("circle");
+    expect(barSymbol(out)).toBe("exclamationmark.triangle");
+    // A symbol, not a sentence: the bar is a count or a dot, and the stale-
+    // remote tier this mirrors carries no text either.
+    expect(barText(out)).toBe("");
+    expect(out).toMatch(/notifier unreachable/i);
+  });
+
+  it("does not draw the empty-and-calm badge either", () => {
+    const out = renderMenubar(empty, { ...OPTS, remote: null });
+    expect(barSymbol(out)).not.toBe("circle.dotted");
+    expect(barSymbol(out)).toBe("exclamationmark.triangle");
+    expect(barText(out)).toBe("");
+    expect(out).toMatch(/notifier unreachable/i);
+  });
+
+  it("still says there are no live sessions here", () => {
+    // `null` makes the OTHER machines unknown, not this one. The daemon
+    // answered, so "no live sessions" is a fact about this machine and stays;
+    // the warning beside it says why the rest cannot be known.
+    const out = renderMenubar(empty, { ...OPTS, remote: null });
+    expect(out).toContain("No live sessions");
+  });
+
+  it("keeps an empty answer calm — no remote agents is not an unreachable notifier", () => {
+    const out = renderMenubar(idle, { ...OPTS, remote: { agents: [] } });
+    expect(barSymbol(out)).toBe("circle");
+    expect(out).not.toMatch(/notifier unreachable/i);
+  });
+
+  it("leaves the no-notifier-asked case exactly as it was", () => {
+    // `undefined` means the caller never asked, which says nothing about the
+    // notifier — so it must not claim one is down.
+    for (const result of [idle, empty]) {
+      expect(renderMenubar(result, OPTS)).toBe(renderMenubar(result, { ...OPTS, remote: { agents: [] } }));
+      expect(renderMenubar(result, OPTS)).not.toMatch(/notifier unreachable/i);
+    }
+  });
+
+  it("still lets a blocked agent win the badge, and still warns below it", () => {
+    const out = renderMenubar(
+      { ok: true, body: { blockedCount: 1, sessions: [session({ agents: [agent("blocked")] })] } },
+      { ...OPTS, remote: null },
+    );
+    expect(barText(out)).toBe("1");
+    expect(barSymbol(out)).toBe("bell.badge.fill");
+    expect(out).toMatch(/notifier unreachable/i);
+  });
+
+  it("ranks like a machine whose contact was lost: below working, above calm", () => {
+    // The same tier a stale remote entry already has. Work in progress still
+    // shows; the dropdown carries the warning.
+    const out = renderMenubar(
+      { ok: true, body: { blockedCount: 0, sessions: [session({ agents: [agent("thinking")] })] } },
+      { ...OPTS, remote: null },
+    );
+    expect(barSymbol(out)).toBe("circle.fill");
+    expect(out).toMatch(/notifier unreachable/i);
+  });
+
+  it("colours the warning as lost contact, in both appearances", () => {
+    const out = renderMenubar(idle, { ...OPTS, remote: null });
+    const row = out.split("\n").find((l) => /notifier unreachable/i.test(l)) ?? "";
+    expect(row).not.toBe("");
+    expect(row).not.toMatch(/^--/);
+    // The TEXT and the icon, separately: a dim row behind a red triangle
+    // reads as a footnote, and `sfcolor=` alone would hide that.
+    expect(param(row, "color")).toBe("#d70015,#ff6961");
+    expect(param(row, "sfimage")).toBe("exclamationmark.triangle");
+    expect(param(row, "sfcolor")).toBe("#d70015,#ff6961");
+    expect(param(bar(out), "color")).toBe("#d70015,#ff6961");
+  });
+
+  it("says what follows from it and where to look, beneath the row", () => {
+    // The row alone says something is wrong. These say what it costs and what
+    // to run — the only next step it offers, since the fix differs by machine.
+    const lines = renderMenubar(idle, { ...OPTS, remote: null }).split("\n");
+    const at = lines.findIndex((l) => /notifier unreachable/i.test(l));
+    expect(lines.slice(at + 1, at + 3)).toEqual([
+      "-- Blocks on other machines cannot reach you until it is back | color=#6c6c70,#98989d",
+      "-- `astir doctor` says why | color=#6c6c70,#98989d",
+    ]);
+  });
+
+  it("still lists the sessions the daemon itself polled over ssh", () => {
+    // `body.remote` comes from the DAEMON, not the notifier, so it survives the
+    // notifier going away and must not be hidden along with it.
+    const out = renderMenubar(
+      {
+        ok: true,
+        body: {
+          blockedCount: 0,
+          sessions: [],
+          remote: [
+            {
+              host: "megabrain-dev",
+              sessionId: "r1",
+              cwd: "/home/dev/repos/tzun",
+              name: null,
+              status: "busy",
+              source: "ssh",
+              lastSeen: 1,
+            },
+          ],
+        },
+      },
+      { ...OPTS, remote: null },
+    );
+    expect(out).toContain("Other machines");
+    expect(out).toContain("tzun");
+    expect(out).toMatch(/notifier unreachable/i);
+    expect(out).not.toContain("---\n---");
+    // At the head of the section, directly under its title: it qualifies every
+    // row below it, and read after them it would be a footnote to a list that
+    // already looked complete.
+    const lines = out.split("\n");
+    const header = lines.findIndex((l) => l.startsWith("Other machines"));
+    const warning = lines.findIndex((l) => /notifier unreachable/i.test(l));
+    const polled = lines.findIndex((l) => l.includes("tzun"));
+    expect(warning).toBe(header + 1);
+    expect(polled).toBeGreaterThan(warning);
+  });
+
+  it("names the notifier too when the local daemon is down as well", () => {
+    const down = { ok: false as const, reason: "no daemon on 127.0.0.1:47000" };
+    const out = renderMenubar(down, { ...OPTS, remote: null });
+    expect(barSymbol(out)).toBe("exclamationmark.triangle");
+    expect(out).toContain("no daemon on 127.0.0.1:47000");
+    expect(out).toContain("Start the daemon");
+    expect(out).toMatch(/notifier unreachable/i);
+    expect(out).not.toContain("---\n---");
+    // Its own group, ruled off from "Start the daemon" above and "Refresh"
+    // below: run together, the notifier rows read as more about the daemon.
+    const lines = out.split("\n");
+    const at = lines.findIndex((l) => /notifier unreachable/i.test(l));
+    expect(lines[at - 2]).toMatch(/^Start the daemon/);
+    expect(lines[at - 1]).toBe("---");
+    expect(lines[at + 3]).toBe("---");
+    expect(lines[at + 4]).toMatch(/^Refresh/);
+    // The badge is the dead daemon's, unchanged: that is the bigger fault and
+    // its badge already warns. The second fault is named in the dropdown.
+    expect(bar(out)).toBe(bar(renderMenubar(down, OPTS)));
+    // And a dead daemon alone still says nothing about the notifier.
+    expect(renderMenubar(down, OPTS)).not.toMatch(/notifier unreachable/i);
+  });
+
+  it("stays distinguishable from a dead daemon (PSH-04)", () => {
+    const dead = renderMenubar({ ok: false, reason: "no daemon on 127.0.0.1:47000" }, OPTS);
+    const deaf = renderMenubar(empty, { ...OPTS, remote: null });
+    expect(bar(deaf)).not.toBe(bar(dead));
+  });
+
+  describe("a silence means 'down' only where a notifier was expected", () => {
+    // `fetchRemote` answers `null` for every failure, so a Mac that never
+    // paired anything — no notifier, nothing listening on 47001 — got the same
+    // `null` as one whose tunnel just dropped, and a permanent red triangle
+    // over an idle menu saying blocks elsewhere could not reach it.
+    const answer = { agents: [], sessions: [] };
+
+    it("passes an answer through whether or not one was expected", () => {
+      // A notifier somebody started by hand is still a notifier.
+      expect(remoteForMenu(answer, true)).toBe(answer);
+      expect(remoteForMenu(answer, false)).toBe(answer);
+    });
+
+    it("keeps a silence as unreachable where a notifier was set up", () => {
+      expect(remoteForMenu(null, true)).toBeNull();
+      const out = renderMenubar(idle, { ...OPTS, remote: remoteForMenu(null, true) });
+      expect(barSymbol(out)).toBe("exclamationmark.triangle");
+      expect(out).toMatch(/notifier unreachable/i);
+    });
+
+    it("leaves a machine with no notifier set up exactly as calm as before", () => {
+      expect(remoteForMenu(null, false)).toBeUndefined();
+      for (const result of [idle, empty]) {
+        const out = renderMenubar(result, { ...OPTS, remote: remoteForMenu(null, false) });
+        expect(out).toBe(renderMenubar(result, OPTS));
+        expect(out).not.toMatch(/notifier unreachable/i);
+      }
+      expect(barSymbol(renderMenubar(idle, { ...OPTS, remote: remoteForMenu(null, false) }))).toBe("circle");
+    });
   });
 });

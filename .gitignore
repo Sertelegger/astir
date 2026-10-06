@@ -21,3 +21,7 @@ docs
 
 # Swift build output for the menu-bar app
 macos/.build/
+
+# Laid beside the astir-tui mod by Claude Code at every load from a folder:
+# the API declarations for the build that loaded it. Regenerated, never edited.
+tui/.claude-plugin/types/

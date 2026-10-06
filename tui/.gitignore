@@ -1,0 +1,4 @@
+# Claude Code lays its API declarations here each time it loads this plugin
+# from a folder you own. They are regenerated per Claude Code version, so they
+# are not source.
+.claude-plugin/types/

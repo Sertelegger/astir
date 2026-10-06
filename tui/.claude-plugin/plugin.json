@@ -1,0 +1,28 @@
+{
+  "name": "astir-tui",
+  "displayName": "astir-tui",
+  "version": "0.2.0",
+  "description": "astir inside Claude Code's terminal: a footer count of agents waiting on you, and a warning line when no one would be told.",
+  "author": {
+    "name": "Sascha Sertel",
+    "email": "sascha@needforgeek.com"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/Sertelegger/astir",
+  "repository": "https://github.com/Sertelegger/astir",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "node": {
+      "type": "string",
+      "title": "Node",
+      "description": "The node executable that runs the astir CLI entry. Empty means `node` on PATH. Unused when the entry is empty.",
+      "default": ""
+    },
+    "entry": {
+      "type": "string",
+      "title": "astir CLI entry",
+      "description": "Path to astir's dist/cli/main.js. Empty means `astir` on PATH.",
+      "default": ""
+    }
+  }
+}

@@ -61,11 +61,12 @@ Cutting one:
    `[Unreleased]` at the new tag's compare range. **Every version needs a
    definition** or it renders with visible brackets.
 3. Open a fresh empty `## [Unreleased]`.
-4. `node scripts/bump-version.mjs X.Y.Z`. There are **five** version stamps
-   (npm, both Claude manifests, the Codex manifest, SwiftBar) and one of them is
-   a `<bitbar.version>` comment in a shell script, which no JSON tooling would
-   ever find — the script exists so four can never agree while one lags. It
-   fails loudly if any stamp does not match.
+4. `node scripts/bump-version.mjs X.Y.Z`. There are **seven** version stamps
+   (npm, the astir and astir-tui plugin manifests, both marketplace entries,
+   the Codex manifest, SwiftBar) and one of them is a `<bitbar.version>` comment
+   in a shell script, which no JSON tooling would ever find — the script exists
+   so six can never agree while one lags. It fails loudly if any stamp does
+   not match.
 5. Commit, tag `vX.Y.Z`, push both. Tagging triggers
    `.github/workflows/release.yml`, which refuses to publish unless the tag, the
    manifest version and a non-empty changelog section all agree.

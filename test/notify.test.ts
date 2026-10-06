@@ -7,7 +7,12 @@ import {
   reasonText,
   validateEnvelope,
 } from "../src/notify/envelope.js";
-import { backendFromNotifier, type Notification } from "../src/notify/notify.js";
+import {
+  backendFromNotifier,
+  type Notification,
+  type Notifier,
+  type NotifyOutcome,
+} from "../src/notify/notify.js";
 import { NotifyPolicy } from "../src/notify/policy.js";
 import { RemoteView } from "../src/notify/remote.js";
 import { NotifierServer } from "../src/notify/server.js";
@@ -197,7 +202,12 @@ describe("PSH-06 — cross-boundary delivery", () => {
     // Loopback is exactly what an `ssh -R` tunnel presents to the sender, so this
     // exercises the real path rather than a stand-in.
     const seen: Notification[] = [];
-    server = new NotifierServer({ token: "shared", notify: (n) => seen.push(n) });
+    server = new NotifierServer({
+      token: "shared",
+      notify: (n) => {
+        seen.push(n);
+      },
+    });
     const port = await server.listen(0);
 
     const dispatcher = new Dispatcher([remoteTarget(`http://127.0.0.1:${port}/notify`, "shared")]);
@@ -208,9 +218,204 @@ describe("PSH-06 — cross-boundary delivery", () => {
     expect(seen[0]?.title).toBe("An agent needs you");
   });
 
+  it("#78 — refuses a doorbell it cannot show, so the sender does not count it delivered", async () => {
+    const seen: Notification[] = [];
+    server = new NotifierServer({
+      token: "shared",
+      notify: (n) => {
+        seen.push(n);
+      },
+      cannotShow: "notify-send not found",
+    });
+    const port = await server.listen(0);
+
+    const target = remoteTarget(`http://127.0.0.1:${port}/notify`, "shared");
+    const outcomes = await new Dispatcher([target]).send(envelope);
+
+    expect(outcomes[0]?.ok).toBe(false);
+    expect(seen).toHaveLength(0);
+    // ...and the sending daemon stops naming this path as live.
+    expect(target.live()).toBe(false);
+  });
+
+  it("#78 — refuses a resolution too, after applying it to its view", async () => {
+    // Round one accepted it — nothing to display — and that 200 erased the
+    // 503 before it: the sender read a path that refuses every block as live
+    // again the moment the user answered. A machine that cannot show refuses
+    // every POST, whatever it is; its menu still lists and clears entries.
+    server = new NotifierServer({ token: "shared", notify: () => undefined, cannotShow: "no session bus" });
+    const port = await server.listen(0);
+    const resolved = buildEnvelope({
+      kind: "resolved",
+      reason: "permission_prompt",
+      sessionId: "s1",
+      agentId: "a1",
+      cwd: "/repo",
+      host: "devbox",
+    });
+    const blocked = { ...resolved, id: `${resolved.id}-b`, kind: "blocked" as const };
+    const target = remoteTarget(`http://127.0.0.1:${port}/notify`, "shared");
+    const dispatcher = new Dispatcher([target]);
+    const listed = async () =>
+      (
+        (await (
+          await fetch(`http://127.0.0.1:${port}/state`, { headers: { Authorization: "Bearer shared" } })
+        ).json()) as { agents: unknown[] }
+      ).agents.length;
+
+    expect((await dispatcher.send(blocked))[0]?.ok).toBe(false);
+    expect(await listed(), "the block is still listed here").toBe(1);
+
+    const outcomes = await dispatcher.send(resolved);
+    expect(outcomes[0]?.ok).toBe(false);
+    expect(outcomes[0]?.reason).toBe("HTTP 503");
+    expect(await listed(), "and still cleared here").toBe(0);
+    expect(server.snapshot().resolved).toBe(1);
+    expect(target.live()).toBe(false);
+  });
+
+  it("#78 — refuses a retried doorbell too, rather than answering it as a duplicate", async () => {
+    // The dedupe answer is `200 ok`, and any 200 is what revived a dead path.
+    server = new NotifierServer({ token: "shared", notify: () => undefined, cannotShow: "no session bus" });
+    const port = await server.listen(0);
+    const post = () =>
+      fetch(`http://127.0.0.1:${port}/notify`, {
+        method: "POST",
+        headers: { Authorization: "Bearer shared", "content-type": "application/json" },
+        body: JSON.stringify(envelope),
+      });
+    expect((await post()).status).toBe(503);
+    expect((await post()).status).toBe(503);
+    expect(server.snapshot().duplicates).toBe(1);
+  });
+
+  it("#78 — says in /healthz whether it can show one, and nothing more", async () => {
+    const health = async (s: NotifierServer) => {
+      const port = await s.listen(0);
+      try {
+        return (await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()) as Record<string, unknown>;
+      } finally {
+        await s.close();
+      }
+    };
+    expect((await health(new NotifierServer({ token: "t", notify: () => undefined }))).canShow).toBe(true);
+    const dead = await health(
+      new NotifierServer({ token: "t", notify: () => undefined, cannotShow: "notify-send not found" }),
+    );
+    expect(dead.canShow).toBe(false);
+    // Unauthenticated: a boolean, never the reason.
+    expect(JSON.stringify(dead)).not.toContain("notify-send");
+  });
+
+  it("#78 — refuses a doorbell its notifier tried and failed to show", async () => {
+    // `astir notifier` on a headless systemd host: notify-send is installed
+    // and a session bus is exported, so nothing is known to be wrong until a
+    // notification is tried — and exits 1.
+    let answer: NotifyOutcome = { ok: false, reason: "notify-send failed (exit 1)" };
+    server = new NotifierServer({ token: "shared", notify: () => Promise.resolve(answer) });
+    const port = await server.listen(0);
+    const healthz = async () =>
+      ((await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()) as { canShow?: unknown }).canShow;
+    const target = remoteTarget(`http://127.0.0.1:${port}/notify`, "shared");
+    const dispatcher = new Dispatcher([target]);
+    const second = { ...envelope, id: `${envelope.id}-2` };
+    const resolved = { ...envelope, id: `${envelope.id}-r`, kind: "resolved" as const };
+
+    expect(await healthz(), "nothing tried, nothing known").toBe(true);
+    expect((await dispatcher.send(envelope))[0]).toMatchObject({ ok: false, reason: "HTTP 503" });
+    expect(server.snapshot().delivered).toBe(0);
+    expect(await healthz()).toBe(false);
+    // Nothing it can show, so nothing it accepts — a resolution included.
+    expect((await dispatcher.send(resolved))[0]?.ok).toBe(false);
+
+    // A later doorbell is still tried, and is the one thing that can prove it.
+    answer = { ok: true };
+    expect((await dispatcher.send(second))[0]?.ok).toBe(true);
+    expect(await healthz()).toBe(true);
+  });
+
+  it("#78 — a notifier that throws is a refusal, not a delivery", async () => {
+    server = new NotifierServer({
+      token: "shared",
+      notify: () => {
+        throw new Error("boom");
+      },
+    });
+    const port = await server.listen(0);
+    const outcomes = await new Dispatcher([remoteTarget(`http://127.0.0.1:${port}/notify`, "shared")]).send(
+      envelope,
+    );
+    expect(outcomes[0]?.ok).toBe(false);
+    expect(server.snapshot().delivered).toBe(0);
+  });
+
+  it("#78 — a bare function's return value is not read as an outcome", async () => {
+    // `(n) => seen.push(n)` was how these tests wrote a notifier, and it
+    // compiled: anything returning a value is a `Notifier`. The server read
+    // the 1 that `push` returned as an outcome, found no `ok` on it, and
+    // refused a notification it had just shown — 503 "could not show it
+    // here: undefined", and a `/healthz` that said it cannot show.
+    const seen: Notification[] = [];
+    // Written inline, that shape no longer compiles...
+    // @ts-expect-error — a number is neither "said nothing" nor an outcome
+    void new NotifierServer({ token: "shared", notify: (n) => seen.push(n) });
+    // ...but a `Notifier` from anywhere else still can, so the server checks.
+    const counting: Notifier = (n) => seen.push(n);
+    server = new NotifierServer({ token: "shared", notify: counting });
+    const port = await server.listen(0);
+
+    const target = remoteTarget(`http://127.0.0.1:${port}/notify`, "shared");
+    expect((await new Dispatcher([target]).send(envelope))[0]).toMatchObject({ ok: true });
+    expect(seen).toHaveLength(1);
+    expect(server.snapshot().delivered).toBe(1);
+    const health = (await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()) as { canShow?: unknown };
+    expect(health.canShow).toBe(true);
+  });
+
+  it("#78 — a failure that gives no reason is refused with a fixed one, never 'undefined'", async () => {
+    // Same hole from the other side: a `Notifier` that answers `{ ok: false }`
+    // is a refusal, and the 503's text reaches the sender's log.
+    const refusing: Notifier = () => ({ ok: false });
+    server = new NotifierServer({ token: "shared", notify: refusing });
+    const port = await server.listen(0);
+    const res = await fetch(`http://127.0.0.1:${port}/notify`, {
+      method: "POST",
+      headers: { Authorization: "Bearer shared", "content-type": "application/json" },
+      body: JSON.stringify(envelope),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ ok: false, error: "could not show it here: the notifier failed" });
+  });
+
+  it("#78 — refuses a retry of a doorbell it failed to show, rather than answering it as a duplicate", async () => {
+    // The runtime half of the retry case above: nothing is known to be wrong
+    // until a run fails, and then a retried id must not get the dedupe 200 —
+    // a 200 is what revives the sender's path.
+    server = new NotifierServer({
+      token: "shared",
+      notify: () => Promise.resolve({ ok: false, reason: "notify-send failed (exit 1)" }),
+    });
+    const port = await server.listen(0);
+    const post = () =>
+      fetch(`http://127.0.0.1:${port}/notify`, {
+        method: "POST",
+        headers: { Authorization: "Bearer shared", "content-type": "application/json" },
+        body: JSON.stringify(envelope),
+      });
+    expect((await post()).status).toBe(503);
+    expect((await post()).status).toBe(503);
+    expect(server.snapshot().duplicates).toBe(1);
+    expect(server.snapshot().delivered).toBe(0);
+  });
+
   it("rejects an unauthenticated attempt", async () => {
     const seen: Notification[] = [];
-    server = new NotifierServer({ token: "shared", notify: (n) => seen.push(n) });
+    server = new NotifierServer({
+      token: "shared",
+      notify: (n) => {
+        seen.push(n);
+      },
+    });
     const port = await server.listen(0);
 
     const dispatcher = new Dispatcher([remoteTarget(`http://127.0.0.1:${port}/notify`, "wrong-token")]);
@@ -223,7 +428,12 @@ describe("PSH-06 — cross-boundary delivery", () => {
 
   it("dedupes a retried id so a flaky tunnel cannot double-notify", async () => {
     const seen: Notification[] = [];
-    server = new NotifierServer({ token: "shared", notify: (n) => seen.push(n) });
+    server = new NotifierServer({
+      token: "shared",
+      notify: (n) => {
+        seen.push(n);
+      },
+    });
     const port = await server.listen(0);
 
     const dispatcher = new Dispatcher([remoteTarget(`http://127.0.0.1:${port}/notify`, "shared")]);
@@ -380,9 +590,11 @@ describe("PSH-13 — a notification you can act on", () => {
     const removed: string[] = [];
     const backend = {
       name: "fake",
+      available: true,
       capabilities: { click: true, replace: true, remove: true },
       notify: (n: Notification) => {
         sent.push(n);
+        return Promise.resolve({ ok: true } as const);
       },
       remove: (g: string) => {
         removed.push(g);

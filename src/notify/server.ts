@@ -11,7 +11,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { hostname } from "node:os";
 import { notificationText, validateEnvelope } from "./envelope.js";
-import type { Notifier } from "./notify.js";
+import type { Notification, NotifyOutcome } from "./notify.js";
 import { RemoteView } from "./remote.js";
 import { RosterStore, validateRoster } from "./roster.js";
 
@@ -22,7 +22,18 @@ const SEEN_MAX = 512;
 
 export interface NotifierServerOpts {
   token: string;
-  notify: Notifier;
+  /**
+   * Show it here. A backend answers with what became of it, and a failure is
+   * refused rather than counted; a bare function that answers nothing is
+   * taken at its word.
+   *
+   * Not `Notifier`: a function type returning bare `void` accepts one
+   * returning anything, so `(n) => seen.push(n)` compiled as a notifier and
+   * its 1 was read as an outcome. Unioned with the outcome, `void` no longer
+   * does — and `show` still checks, for a `Notifier` built elsewhere.
+   */
+  // biome-ignore lint/suspicious/noConfusingVoidType: `undefined` would refuse a block-bodied notifier; `void` alone accepts anything
+  notify: (n: Notification) => void | Promise<NotifyOutcome>;
   onEvent?: (line: string) => void;
   /** Injectable per §9 so expiry is testable without waiting half an hour. */
   view?: RemoteView;
@@ -30,6 +41,20 @@ export interface NotifierServerOpts {
   now?: () => number;
   /** This machine's name. Injectable so the self-roster guard is testable. */
   host?: string;
+  /**
+   * #78, one hop on — why this machine cannot show a notification, when it
+   * cannot (a headless Linux box with no notify-send or no session bus).
+   *
+   * Without it the receiver answered `ok: true` to a doorbell it could not
+   * show, so the sending daemon counted the block as delivered and its
+   * `delivery.live` kept naming this path. Refusing tells the sender the truth.
+   *
+   * Every POST to `/notify` is refused while this is set, not only the ones
+   * that would raise a banner: round one accepted a `resolved` — nothing to
+   * display — and that 200 erased the sender's verdict on the 503 before it,
+   * so the path read live again the moment the user answered.
+   */
+  cannotShow?: string;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -57,6 +82,14 @@ export class NotifierServer {
   private readonly roster: RosterStore;
   private readonly host: string;
   private readonly now: () => number;
+  /**
+   * #78 — why the last notification tried here was not shown, or null. The
+   * runtime half of `cannotShow`: a headless systemd host has notify-send and
+   * an exported session bus, so nothing is known to be wrong until a run
+   * exits 1. Cleared by the next doorbell that shows, which is why doorbells
+   * are still tried while it is set.
+   */
+  private showFailure: string | null = null;
 
   constructor(private opts: NotifierServerOpts) {
     this.view = opts.view ?? new RemoteView();
@@ -93,7 +126,15 @@ export class NotifierServer {
     const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
 
     if (path === "/healthz") {
-      return this.json(res, 200, { ok: true, role: "notifier", counters: this.counters });
+      // #78 — `canShow` lets the daemon's PSH-14 probe tell a notifier that can
+      // reach someone from one that will refuse every doorbell, without
+      // sending one. A boolean only: this route takes no token.
+      return this.json(res, 200, {
+        ok: true,
+        role: "notifier",
+        canShow: this.opts.cannotShow === undefined && this.showFailure === null,
+        counters: this.counters,
+      });
     }
 
     const auth = /^Bearer (.+)$/.exec(req.headers.authorization ?? "");
@@ -181,6 +222,10 @@ export class NotifierServer {
     // A tunnel may retry, and a sender may have several transports configured.
     if (this.seen.has(envelope.id)) {
       this.counters.duplicates++;
+      // Refused like anything else while nothing can be shown: a 200 is a 200
+      // to the sender, whatever the body says.
+      const cannot = this.opts.cannotShow ?? this.showFailure;
+      if (cannot !== null) return this.refuse(res, `cannot show notifications here: ${cannot}`);
       return this.json(res, 200, { ok: true, duplicate: true });
     }
     this.seen.add(envelope.id);
@@ -195,18 +240,56 @@ export class NotifierServer {
     this.view.prune(now);
     if (envelope.kind === "resolved") this.counters.resolved++;
 
+    // The remote view above is updated either way — a menu here can still
+    // list and clear the block — but nobody was interrupted, so the sender
+    // must not count it, and must not read any answer as "this path works".
+    if (this.opts.cannotShow !== undefined) {
+      return this.refuse(res, `cannot show notifications here: ${this.opts.cannotShow}`);
+    }
     if (notify) {
-      try {
-        this.opts.notify(notificationText(envelope));
-        this.counters.delivered++;
-        this.opts.onEvent?.(`${envelope.kind} ← ${envelope.body}`);
-      } catch {
-        // A failing notifier must never take down the receiver.
-        this.counters.rejected++;
+      const outcome = await this.show(notificationText(envelope));
+      if (!outcome.ok) {
+        this.showFailure = outcome.reason;
+        return this.refuse(res, `could not show it here: ${outcome.reason}`);
       }
+      this.showFailure = null;
+      this.counters.delivered++;
+      this.opts.onEvent?.(`${envelope.kind} ← ${envelope.body}`);
+    } else if (this.showFailure !== null) {
+      // A resolution, or a reminder already dismissed here. Nothing to show,
+      // so nothing that could prove the last failure wrong.
+      return this.refuse(res, `cannot show notifications here: ${this.showFailure}`);
     }
 
     return this.json(res, 200, { ok: true });
+  }
+
+  /** Show one, and say what became of it. Never throws. */
+  private async show(n: Notification): Promise<NotifyOutcome> {
+    try {
+      // Only an outcome is read as one. Anything else is a bare function
+      // that said nothing — whatever its expression body happened to return —
+      // and refusing a notification it had just shown, as round two did with
+      // `push`'s 1, is the lie this whole route exists to stop.
+      const outcome: unknown = await this.opts.notify(n);
+      if (typeof outcome !== "object" || outcome === null) return { ok: true };
+      const { ok, reason } = outcome as { ok?: unknown; reason?: unknown };
+      if (ok !== false) return { ok: true };
+      // Repeated in the 503 and so in the sender's log: a fixed fallback
+      // rather than `undefined`, and never anything but the backend's own
+      // content-free reason (SEC-01).
+      return { ok: false, reason: typeof reason === "string" ? reason : "the notifier failed" };
+    } catch {
+      // A failing notifier must never take down the receiver — nor be counted
+      // as showing anything.
+      return { ok: false, reason: "the notifier failed to run" };
+    }
+  }
+
+  /** 503: the sender's cue that this path reached no one. */
+  private refuse(res: ServerResponse, error: string): void {
+    this.counters.rejected++;
+    this.json(res, 503, { ok: false, error });
   }
 
   private async readBody(req: IncomingMessage): Promise<unknown> {

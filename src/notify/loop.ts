@@ -69,6 +69,24 @@ export class NotifyLoop {
     for (const b of blocked) {
       const key = keyOf(b.sessionId, b.agentId);
       const dwell = this.dwellFor(b.provider);
+
+      // #80 — the block we announced is over, though we never saw it end.
+      //
+      // `announced` is keyed by agent, and an agent answered and blocked again
+      // between two pulses is in `blocked` at both of them. The registry
+      // cleared `announcedAt` on that state change; this set did not, so the
+      // new block skipped its dwell and then waited out the old one's reminder
+      // backoff — up to fifteen minutes in which a genuinely blocked agent read
+      // as unannounced on every surface and no doorbell went out.
+      //
+      // Treated exactly as if the loop had seen the agent leave: the receiver
+      // was told about a block that has ended, so it is told so, and the new
+      // block proves itself from scratch. Sending nothing would strand that
+      // `resolved` for good if the new block ends inside its own dwell.
+      if (this.announced.has(key) && b.announcedAt === null) {
+        await this.retire(key, b.sessionId, b.agentId, b.reason, b.cwd, now);
+      }
+
       // PSH-16 — let a block prove it is real before interrupting anyone.
       //
       // A permission EVENT is not evidence that a human is needed. Under
@@ -124,6 +142,19 @@ export class NotifyLoop {
         now,
       });
       this.announced.add(key);
+      // #80 — record the decision where every surface can read it. Before the
+      // await, so there is no window in which the doorbell is out and `/state`
+      // still says nobody was told — and so a block that ends while its own
+      // delivery is in flight is not marked after the fact. `blocked` and
+      // `now` date from the start of the pulse, and an earlier sibling's
+      // delivery may have taken seconds; the registry refuses a mark older
+      // than the block it would land on, and keeps the first time, so a
+      // reminder does not move it.
+      //
+      // Marked whether or not any path delivers. This is "astir decided you
+      // should know", which the terminal surfaces need even — especially — when
+      // no desktop path is live; `/healthz.delivery` (#78) says that part.
+      this.opts.registry.markAnnounced(b.sessionId, b.agentId, now);
       const outcomes = await this.opts.dispatcher.send(envelope);
       const ok = outcomes.filter((o) => o.ok).map((o) => o.target);
       this.opts.onDelivered?.(`${envelope.body} → ${ok.length > 0 ? ok.join(", ") : "NO PATH DELIVERED"}`);
@@ -148,21 +179,40 @@ export class NotifyLoop {
         const key = keyOf(session.sessionId, agent.id);
         if (live.has(key)) continue;
 
-        // Only announce a resolution for something we actually announced.
-        this.restoredSeen.delete(key);
-        if (this.announced.delete(key)) {
-          const envelope = buildEnvelope({
-            kind: "resolved",
-            reason: agent.blockedReason ?? "resolved",
-            sessionId: session.sessionId,
-            agentId: agent.id,
-            cwd: session.cwd,
-            now,
-          });
-          await this.opts.dispatcher.send(envelope);
-        }
-        this.opts.policy.resolve(key);
+        await this.retire(
+          key,
+          session.sessionId,
+          agent.id,
+          agent.blockedReason ?? "resolved",
+          session.cwd,
+          now,
+        );
       }
     }
+  }
+
+  /**
+   * Forget a key: a clean slate for its next block, and a `resolved` to
+   * whoever was told about this one. Only for something actually announced —
+   * a bare `resolved` would be a reply to a message the receiver never got.
+   */
+  private async retire(
+    key: string,
+    sessionId: string,
+    agentId: string,
+    reason: string,
+    cwd: string,
+    now: number,
+  ): Promise<void> {
+    this.restoredSeen.delete(key);
+    if (this.announced.delete(key)) {
+      // #80 — the field follows the key. A state change has usually cleared
+      // it already; an acknowledged block has not changed state, and is no
+      // longer one the loop is announcing.
+      this.opts.registry.clearAnnounced(sessionId, agentId);
+      const envelope = buildEnvelope({ kind: "resolved", reason, sessionId, agentId, cwd, now });
+      await this.opts.dispatcher.send(envelope);
+    }
+    this.opts.policy.resolve(key);
   }
 }

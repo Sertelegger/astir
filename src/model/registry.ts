@@ -112,6 +112,21 @@ export interface AgentRecord {
    * any state change, so an agent that blocks again is a fresh interruption.
    */
   acknowledgedAt: number | null;
+  /**
+   * #80 — wall ms at which the notify loop first sent `blocked` for this
+   * block, or null.
+   *
+   * The loop is the one place that decides a block has proved itself (PSH-16,
+   * with each provider's dwell — CAP-02), so it records the decision here and
+   * every in-terminal surface counts only announced blocks rather than
+   * re-deriving the dwell and disagreeing with the desktop. Set through
+   * `markAnnounced`, cleared by `clearAnnounced` and by any state change: a new
+   * block is a new interruption and must be announced afresh.
+   *
+   * Never persisted (DMN-06): a restored block has not proved itself to the
+   * daemon now running, so it restores as null and earns it again.
+   */
+  announcedAt: number | null;
 }
 
 /** A currently-blocked agent, with the context a notification envelope needs. */
@@ -142,6 +157,16 @@ export interface BlockedAgent {
    * it is real.
    */
   blockedForMs: number;
+  /**
+   * #80 — `AgentRecord.announcedAt` for THIS block, or null.
+   *
+   * The loop's own memory of what it announced is keyed by agent, and an agent
+   * can be answered and block again between two pulses without the loop ever
+   * seeing it leave `blocked`. The registry clears this on that state change,
+   * so a key the loop holds with this null means the block it announced is
+   * over and the one in front of it has not proved itself yet.
+   */
+  announcedAt: number | null;
 }
 
 /**
@@ -365,6 +390,7 @@ export class Registry {
             reason: a.blockedReason ?? "blocked",
             blockedForMs: Math.max(0, this.nowMs() - a.stateSince),
             restored: s.restored === true,
+            announcedAt: a.announcedAt,
           });
         }
       }
@@ -403,6 +429,35 @@ export class Registry {
       }
     }
     return n;
+  }
+
+  /**
+   * #80 — the notify loop sent `blocked` for this agent at `atMs`.
+   *
+   * Keeps the FIRST time: a reminder is not a new announcement, and "oldest
+   * 3m" means three minutes since the user was first told. Ignored for an
+   * agent that is not blocked, so a late call can never mark a block that
+   * ended while the doorbell was in flight. Unknown ids are a no-op — the
+   * session may have been forgotten under the loop.
+   *
+   * And ignored for a block that began AFTER `atMs`. The loop reads every
+   * blocked agent once, at the start of a pulse, then awaits each delivery in
+   * turn; while a slow path holds one agent's doorbell, a sibling can be
+   * answered and block again. Marking that new block with the pulse's older
+   * clock would vouch for a block of age zero — PSH-16's dwell skipped — and
+   * date it before it existed, overstating "oldest".
+   */
+  markAnnounced(sessionId: string, agentId: string, atMs: number): void {
+    const a = this.sessions.get(sessionId)?.agents.get(agentId);
+    if (a === undefined || !HUMAN_BLOCKING.has(a.state) || a.announcedAt !== null) return;
+    if (atMs < a.stateSince) return;
+    a.announcedAt = atMs;
+  }
+
+  /** #80 — the loop has resolved or forgotten this agent's block. */
+  clearAnnounced(sessionId: string, agentId: string): void {
+    const a = this.sessions.get(sessionId)?.agents.get(agentId);
+    if (a !== undefined) a.announcedAt = null;
   }
 
   /**
@@ -613,6 +668,10 @@ export class Registry {
     agent.stateSince = now;
     // A new state is a new situation: whatever the human dismissed is over.
     agent.acknowledgedAt = null;
+    // And whatever they were told about. Cleared here rather than left for the
+    // loop's next pulse, so a surface polling in between never shows a block
+    // that has already ended as one the user is waiting on.
+    agent.announcedAt = null;
   }
 
   private ensureSession(sessionId: string, provider: Provider, cwd: string): SessionRecord {
@@ -815,7 +874,10 @@ export class Registry {
     return this.pendingRestore.size;
   }
 
-  /** DMN-06 — agent state only. The map is deliberately not persisted. */
+  /**
+   * DMN-06 — agent state only. The map is deliberately not persisted, and
+   * neither is `announcedAt`: listed field by field below so it cannot leak in.
+   */
   snapshot(): Snapshot {
     return {
       v: SNAPSHOT_VERSION,
@@ -895,6 +957,10 @@ export class Registry {
         tool: a.tool,
         toolPath: a.toolPath,
         acknowledgedAt: a.acknowledgedAt,
+        // DMN-06 — a restored block must prove itself to THIS daemon. Its
+        // `blockedForMs` accrued before the restart, and the loop re-measures
+        // its dwell from the restore before announcing it again.
+        announcedAt: null,
       });
     }
     return s;
@@ -917,6 +983,7 @@ export class Registry {
         stateSince: this.nowMs(),
         lastActivityMs: this.nowMs(),
         acknowledgedAt: null,
+        announcedAt: null,
         blockedReason: null,
         description: null,
         tool: null,

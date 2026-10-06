@@ -51,6 +51,15 @@ export interface StatusAgent {
    * careful about.
    */
   parentSource?: string | null;
+  /**
+   * PSH-16 — epoch ms the notify loop actually announced this block, or null
+   * when it has not (yet). Absent from a daemon older than `/state` v2.2, which
+   * a surface must read as "not announced": the line that gates on it would
+   * rather say nothing about a block than flash one the dwell has not cleared.
+   * Not persisted — a block restored from the snapshot must prove itself again
+   * (DMN-06).
+   */
+  announcedAt?: number | null;
 }
 
 /**
@@ -171,6 +180,14 @@ export interface RemoteSession {
 }
 
 export interface StatusBody {
+  /**
+   * VER-01 — `/state`'s own version. Every astir daemon has sent it (2.0 from
+   * the first); 2.2 added `announcedAt`. `status --line` reads anything below
+   * 2.2 — or a body without one — as an older daemon, whose blocks it cannot
+   * tell announced from not. Typed as the daemon sends it; read off a socket,
+   * so checked before it is compared.
+   */
+  v?: { major: number; minor: number };
   blockedCount: number;
   sessions: StatusSession[];
   /**
@@ -209,8 +226,57 @@ export interface StatusBody {
 }
 
 /**
+ * The daemon's `/healthz`, which answers without a token.
+ *
+ * Every field is optional: this is read off a socket that may be an older
+ * daemon, or not a daemon at all, and VER-01 says an unknown shape is ignored
+ * field-wise rather than rejected.
+ */
+export interface HealthBody {
+  ok?: boolean;
+  role?: string;
+  /** First label of the machine it runs on. See `StatusBody.host`. */
+  host?: string;
+  startedAt?: number;
+  build?: string;
+  /**
+   * PSH-07 / #78 — the delivery paths that can reach a human right now, by
+   * name only. Absent from an older daemon, which means "cannot tell" and must
+   * not be rendered as "nothing can reach you".
+   */
+  delivery?: { live: string[] };
+}
+
+/**
+ * Why `/state` could not be read, as a value a surface can branch on.
+ *
+ * `reason` is prose for a person; this is for code. `astir status --line` must
+ * tell "nothing is listening" from "it timed out" from "another machine's
+ * daemon answered", and parsing that back out of an English sentence is the
+ * coupling #63 removed from the menu bar.
+ */
+export type StatusFailure =
+  /** No token on disk or in the environment — astir is not installed here. */
+  | "no-token"
+  /** The daemon answered 401. */
+  | "rejected"
+  /** Any other non-2xx. */
+  | "http"
+  /** Another machine's daemon, almost always through a forwarded port. */
+  | "foreign"
+  /** Nothing is listening. */
+  | "absent"
+  /** Something accepted the connection and never answered in time. */
+  | "timeout";
+
+/**
  * PSH-04 — "cannot reach the daemon" is a state the surface must render, not an
  * error it may swallow. A menu bar that silently shows "idle" when the daemon is
  * dead is worse than one that shows nothing.
+ *
+ * `kind` and `host` are optional so a hand-built `{ ok: false, reason }` is still
+ * a valid result; `host` is set only for `foreign`.
  */
-export type StatusResult = { ok: true; body: StatusBody } | { ok: false; reason: string };
+export type StatusResult =
+  | { ok: true; body: StatusBody }
+  | { ok: false; reason: string; kind?: StatusFailure; host?: string };
