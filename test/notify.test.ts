@@ -208,6 +208,40 @@ describe("PSH-06 — cross-boundary delivery", () => {
     expect(seen[0]?.title).toBe("An agent needs you");
   });
 
+  it("#78 — refuses a doorbell it cannot show, so the sender does not count it delivered", async () => {
+    const seen: Notification[] = [];
+    server = new NotifierServer({
+      token: "shared",
+      notify: (n) => seen.push(n),
+      cannotShow: "notify-send not found",
+    });
+    const port = await server.listen(0);
+
+    const target = remoteTarget(`http://127.0.0.1:${port}/notify`, "shared");
+    const outcomes = await new Dispatcher([target]).send(envelope);
+
+    expect(outcomes[0]?.ok).toBe(false);
+    expect(seen).toHaveLength(0);
+    // ...and the sending daemon stops naming this path as live.
+    expect(target.live()).toBe(false);
+  });
+
+  it("#78 — still accepts a resolution it cannot show: there is nothing to display", async () => {
+    server = new NotifierServer({ token: "shared", notify: () => undefined, cannotShow: "no session bus" });
+    const port = await server.listen(0);
+    const resolved = buildEnvelope({
+      kind: "resolved",
+      reason: "x",
+      sessionId: "s1",
+      agentId: "a1",
+      cwd: "/repo",
+    });
+    const outcomes = await new Dispatcher([remoteTarget(`http://127.0.0.1:${port}/notify`, "shared")]).send(
+      resolved,
+    );
+    expect(outcomes[0]?.ok).toBe(true);
+  });
+
   it("rejects an unauthenticated attempt", async () => {
     const seen: Notification[] = [];
     server = new NotifierServer({ token: "shared", notify: (n) => seen.push(n) });
@@ -380,6 +414,7 @@ describe("PSH-13 — a notification you can act on", () => {
     const removed: string[] = [];
     const backend = {
       name: "fake",
+      available: true,
       capabilities: { click: true, replace: true, remove: true },
       notify: (n: Notification) => {
         sent.push(n);

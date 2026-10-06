@@ -58,9 +58,16 @@ jobs:
           fi
           # Every stamp, not just the one package.json carries. The fourth lives
           # in a shell comment that no JSON tooling would find.
-          for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json; do
+          for f in .claude-plugin/plugin.json tui/.claude-plugin/plugin.json; do
             grep -q "\"version\": \"$tag\"" "$f" || { echo "$f is not at $tag" >&2; exit 1; }
           done
+          # Every entry, not "some line": with two plugins listed, a grep
+          # passes as long as either one is at the tag.
+          node -e '
+            const m = require("./.claude-plugin/marketplace.json");
+            const behind = m.plugins.filter((p) => p.version !== process.argv[1]).map((p) => p.name);
+            if (behind.length > 0) { console.error(`marketplace entries not at ${process.argv[1]}: ${behind.join(", ")}`); process.exit(1); }
+          ' "$tag"
           grep -q "<bitbar.version>v\?$tag<" contrib/swiftbar/astir.3s.sh \
             || { echo "contrib/swiftbar/astir.3s.sh is not at $tag" >&2; exit 1; }
 

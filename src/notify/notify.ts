@@ -42,16 +42,62 @@ export interface NotifierBackend {
   /** What `doctor` reports, so a missing capability is stated rather than guessed. */
   capabilities: { click: boolean; replace: boolean; remove: boolean };
   name: string;
+  /**
+   * PSH-07 / #78 — can this backend put anything on a screen at all?
+   *
+   * Checked rather than assumed. The Linux path used to pick `notify-send`
+   * unconditionally and fire it with a callback that swallowed the ENOENT, so
+   * a container with no binary and no desktop reported `delivery paths: local`
+   * and answered every doorbell with success. False here makes the local
+   * target refuse to claim a delivery it cannot make.
+   */
+  available: boolean;
+  /**
+   * Why not, when `available` is false. Content-free — it names a missing
+   * binary or a missing display, never anything about a session — so the
+   * startup line and `doctor` can repeat it verbatim.
+   */
+  unavailableReason?: string;
+}
+
+/**
+ * Everything `createNotifierBackend` reads from the machine, injectable so the
+ * platform branches are testable without being on that platform (§9).
+ */
+export interface NotifierProbe {
+  platform?: NodeJS.Platform;
+  env?: Record<string, string | undefined>;
+  /** Does this path exist? Finds binaries and recognises WSL. */
+  exists?: (path: string) => boolean;
+  /** How a command is spawned. Fire and forget. */
+  run?: (cmd: string, args: string[]) => void;
 }
 
 /** WSL is Linux with Windows interop available; it needs the Windows path. */
-function isWsl(): boolean {
-  if (process.platform !== "linux") return false;
+function isWsl(
+  platform: NodeJS.Platform,
+  env: Record<string, string | undefined>,
+  exists: (p: string) => boolean,
+): boolean {
+  if (platform !== "linux") return false;
   try {
-    return existsSync("/proc/sys/fs/binfmt_misc/WSLInterop") || Boolean(process.env.WSL_DISTRO_NAME);
+    return exists("/proc/sys/fs/binfmt_misc/WSLInterop") || Boolean(env.WSL_DISTRO_NAME);
   } catch {
     return false;
   }
+}
+
+/**
+ * Is there anything for `notify-send` to show a notification ON?
+ *
+ * It talks to a notification server over the session bus, and a desktop is
+ * what provides both. Over SSH or in a container with neither, the binary
+ * runs, exits, and nothing appears — so the binary alone proves nothing. An
+ * exported-but-empty variable counts as unset: it is what a stripped
+ * environment usually carries.
+ */
+function hasDesktop(env: Record<string, string | undefined>): boolean {
+  return ["DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY"].some((k) => (env[k] ?? "") !== "");
 }
 
 /** Strip characters that would terminate the AppleScript string literal. */
@@ -59,16 +105,22 @@ function forAppleScript(s: string): string {
   return s.replace(/["\\]/g, " ").slice(0, 200);
 }
 
-function which(cmd: string): string | null {
-  for (const dir of [
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    "/usr/bin",
-    "/bin",
-    `${process.env.HOME ?? ""}/.local/bin`,
-  ]) {
+/**
+ * Find a command. The fixed directories come first because a daemon started
+ * by launchd or systemd gets a minimal PATH that omits Homebrew; PATH itself
+ * follows, because a distribution that installs `notify-send` somewhere else
+ * (NixOS, for one) must not read as "not installed".
+ */
+function which(
+  cmd: string,
+  env: Record<string, string | undefined> = process.env,
+  exists: (p: string) => boolean = existsSync,
+): string | null {
+  const fixed = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", `${env.HOME ?? ""}/.local/bin`];
+  const onPath = (env.PATH ?? "").split(":").filter((d) => d !== "");
+  for (const dir of [...fixed, ...onPath]) {
     const path = `${dir}/${cmd}`;
-    if (existsSync(path)) return path;
+    if (exists(path)) return path;
   }
   return null;
 }
@@ -82,17 +134,23 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-export function createNotifierBackend(): NotifierBackend {
-  const run = (cmd: string, args: string[]): void => {
-    // Fire and forget. A notifier that throws must never reach ingest.
-    execFile(cmd, args, () => undefined);
-  };
+export function createNotifierBackend(probe: NotifierProbe = {}): NotifierBackend {
+  const platform = probe.platform ?? process.platform;
+  const env = probe.env ?? process.env;
+  const exists = probe.exists ?? existsSync;
+  const run =
+    probe.run ??
+    ((cmd: string, args: string[]): void => {
+      // Fire and forget. A notifier that throws must never reach ingest.
+      execFile(cmd, args, () => undefined);
+    });
 
-  if (process.platform === "darwin") {
-    const tn = which("terminal-notifier");
+  if (platform === "darwin") {
+    const tn = which("terminal-notifier", env, exists);
     if (tn !== null) {
       return {
         name: "terminal-notifier",
+        available: true,
         capabilities: { click: true, replace: true, remove: true },
         notify: ({ title, body, group, onClick }) => {
           const args = ["-title", title, "-message", body];
@@ -109,6 +167,9 @@ export function createNotifierBackend(): NotifierBackend {
 
     return {
       name: "osascript",
+      // It ships with macOS, and this is the path the user's Mac has been
+      // delivering through. Degraded is not dead.
+      available: true,
       // Stated, not assumed: everything downstream that offers a click action or
       // a dismissal needs to know it will not work here.
       capabilities: { click: false, replace: false, remove: false },
@@ -120,9 +181,12 @@ export function createNotifierBackend(): NotifierBackend {
     };
   }
 
-  if (isWsl() || process.platform === "win32") {
+  if (isWsl(platform, env, exists) || platform === "win32") {
     return {
       name: "burnt-toast",
+      // Unchanged: whether the BurntToast module is installed is a PowerShell
+      // question with no cheap answer from here.
+      available: true,
       capabilities: { click: false, replace: false, remove: false },
       notify: ({ title, body }) =>
         run("powershell.exe", [
@@ -134,18 +198,34 @@ export function createNotifierBackend(): NotifierBackend {
     };
   }
 
-  if (process.platform === "linux") {
+  if (platform === "linux") {
+    // #78 — both, or nothing will appear. The binary is named first because
+    // it is the first thing to fix: with it missing, a display changes nothing.
+    const bin = which("notify-send", env, exists);
+    const unavailableReason =
+      bin === null ? "notify-send not found" : !hasDesktop(env) ? "no session bus or display" : undefined;
     return {
       name: "notify-send",
+      available: unavailableReason === undefined,
+      ...(unavailableReason === undefined ? {} : { unavailableReason }),
       // `notify-send` replaces by hint, but not portably across every daemon.
       capabilities: { click: false, replace: false, remove: false },
-      notify: ({ title, body }) => run("notify-send", ["-u", "critical", "-a", "astir", title, body]),
+      // The path that was FOUND, not a bare name for execFile to resolve again
+      // against a PATH that may not contain it. Nothing at all when dead: a
+      // spawn whose failure is swallowed is how this lied in the first place.
+      notify: ({ title, body }) => {
+        if (bin !== null && unavailableReason === undefined) {
+          run(bin, ["-u", "critical", "-a", "astir", title, body]);
+        }
+      },
       remove: () => undefined,
     };
   }
 
   return {
     name: "none",
+    available: false,
+    unavailableReason: "no notifier on this platform",
     capabilities: { click: false, replace: false, remove: false },
     notify: () => undefined,
     remove: () => undefined,
@@ -161,12 +241,17 @@ export function createNotifier(): Notifier {
  * Wrap a bare notify function as a backend, for tests and for callers that only
  * care that something was raised. Declares no capabilities, so nothing downstream
  * will attach a click action it cannot honour.
+ *
+ * Available, because a caller handing over a function is asserting it works —
+ * which is also why anything that needs the TRUTH about this machine's local
+ * path must use `createNotifierBackend` rather than wrapping `createNotifier`.
  */
 export function backendFromNotifier(notify: Notifier, name = "custom"): NotifierBackend {
   return {
     name,
     notify,
     remove: () => undefined,
+    available: true,
     capabilities: { click: false, replace: false, remove: false },
   };
 }

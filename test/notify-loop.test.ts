@@ -36,6 +36,7 @@ function harness(notifyAfterMs?: number) {
   const sent: NotifyEnvelope[] = [];
   const target: DeliveryTarget = {
     name: "test",
+    live: () => true,
     deliver: async (envelope) => {
       sent.push(envelope);
       return { ok: true };
@@ -213,6 +214,7 @@ describe("PSH-16 — the dwell belongs to the provider", () => {
       dispatcher: new Dispatcher([
         {
           name: "test",
+          live: () => true,
           deliver: async (e) => {
             sent.push(e);
             return { ok: true };

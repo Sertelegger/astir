@@ -48,6 +48,15 @@ import type { DiscoveredSession } from "../discovery/sessions.js";
  */
 export const SNAPSHOT_VERSION = { major: 1, minor: 0 } as const;
 
+/**
+ * One agent's saved state.
+ *
+ * `announcedAt` (#80) is absent on purpose, and `parseSnapshot` would drop it
+ * if a writer added it. Whether a block has been announced is a decision made
+ * by the daemon now running, after the block proves itself to it — a restored
+ * block has not (see the DMN-06 note in `notify/loop.ts`), so it must not
+ * arrive already vouched for.
+ */
 export interface SnapshotAgent {
   id: string;
   agentType: string | null;

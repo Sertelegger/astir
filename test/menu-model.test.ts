@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { isSeparator, type Menu, toSwiftBar } from "../src/status/menu.js";
+import { isSeparator, MENU_JSON_VERSION, type Menu, menuJson, toSwiftBar } from "../src/status/menu.js";
 import { buildMenu, renderMenubar } from "../src/status/menubar.js";
 
 const OPTS = { invocation: ["/usr/bin/node", "/opt/astir/main.js"], now: 1_787_000_100_000 };
@@ -130,5 +130,82 @@ describe("the split changed nothing a host can see", () => {
     // parameters, which SwiftBar parses as an unordered set of key=value pairs.
     const rendered = renderMenubar(body() as never, OPTS as never);
     expect(rendered).toBe(`${toSwiftBar(buildMenu(body() as never, OPTS as never))}\n`);
+  });
+});
+
+describe("an unreachable notifier is said once, in the model (#79)", () => {
+  // Both hosts draw from `buildMenu`, so the warning has to live in the model:
+  // a SwiftBar-only string would leave the native app calm while SwiftBar
+  // warned, which is the same lie on a different surface.
+  const idle = {
+    ok: true as const,
+    body: {
+      blockedCount: 0,
+      sessions: [
+        {
+          sessionId: "s1",
+          cwd: "/repo/alpha",
+          name: null,
+          status: null,
+          pid: 7,
+          agents: [
+            {
+              id: "s1",
+              state: "idle",
+              agentType: null,
+              activeMs: 0,
+              blockedMs: 0,
+              inStateMs: 0,
+              acknowledged: false,
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const menu = buildMenu(idle as never, { ...OPTS, remote: null } as never);
+  const texts = (nodes: Menu["items"]): string[] => nodes.flatMap((n) => (isSeparator(n) ? [] : [n.text]));
+
+  it("puts the warning in the badge the model hands every host", () => {
+    expect(menu.badge.symbol).toBe("exclamationmark.triangle");
+    expect(menu.badge.symbol).not.toBe("circle");
+  });
+
+  it("carries the same badge and row through --json, without a version change", () => {
+    const json = menuJson(menu);
+    // Existing fields only, so the app (#64) decodes it unchanged (VER-01).
+    expect(json.v).toEqual({ major: 1, minor: 0 });
+    expect(json.v).toEqual(MENU_JSON_VERSION);
+    expect(json.badge.symbol).toBe(menu.badge.symbol);
+    expect(json.badge.colour).toEqual({ light: "#d70015", dark: "#ff6961" });
+    const rows = texts(menu.items).filter((t) => /notifier unreachable/i.test(t));
+    expect(rows.length).toBe(1);
+    expect(texts(json.items as Menu["items"]).filter((t) => /notifier unreachable/i.test(t))).toEqual(rows);
+  });
+
+  it("draws the row as a warning in the model, text as well as icon", () => {
+    // Pinned on the model because the native app draws `colour` and
+    // `symbolColour` separately: a dim row behind a red icon would be a
+    // footnote there, whatever SwiftBar's string happened to contain.
+    const items = menu.items.filter((n): n is Exclude<typeof n, { separator: true }> => !isSeparator(n));
+    const at = items.findIndex((n) => /notifier unreachable/i.test(n.text));
+    expect(items[at]).toMatchObject({
+      depth: 0,
+      colour: "#d70015,#ff6961",
+      symbol: "exclamationmark.triangle",
+      symbolColour: "#d70015,#ff6961",
+    });
+    // Two quiet lines beneath it: what it costs, and where to look.
+    expect(items.slice(at + 1, at + 3).map((n) => [n.depth, n.colour])).toEqual([
+      [1, "#6c6c70,#98989d"],
+      [1, "#6c6c70,#98989d"],
+    ]);
+    expect(items[at + 2]?.text).toBe("`astir doctor` says why");
+  });
+
+  it("serialises to the same SwiftBar text renderMenubar prints", () => {
+    const rendered = renderMenubar(idle as never, { ...OPTS, remote: null } as never);
+    expect(rendered).toBe(`${toSwiftBar(menu)}\n`);
+    expect(rendered).toMatch(/notifier unreachable/i);
   });
 });

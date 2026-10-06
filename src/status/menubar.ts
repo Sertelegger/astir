@@ -51,6 +51,12 @@ export interface RemoteEntry {
   lastSeen?: number;
 }
 
+/** What the local notifier said when it answered: `fetchRemote`'s non-null result. */
+export interface NotifierAnswer {
+  agents: RemoteEntry[];
+  sessions?: RemoteSession[];
+}
+
 export interface MenubarOpts {
   /**
    * How to run astir, as `[interpreter, script]` — NOT the script alone.
@@ -67,11 +73,41 @@ export interface MenubarOpts {
   /**
    * PSH-12 — agents blocked on other machines, from the local notifier. `null`
    * means no notifier is running, which is different from "no remote agents" and
-   * must not be rendered as calm.
+   * must not be rendered as calm (#79): it is drawn as `notifierUnreachable`.
+   * `undefined` means nobody asked, or no notifier is expected on this machine
+   * (`remoteForMenu`), which says nothing about the notifier.
    */
-  remote?: { agents: RemoteEntry[]; sessions?: RemoteSession[] } | null;
+  remote?: NotifierAnswer | null | undefined;
   /** For rendering elapsed time on remote entries. Injectable for tests. */
   now?: number;
+}
+
+/**
+ * #79 — what the notifier's answer means on THIS machine, as `MenubarOpts.remote`.
+ *
+ * `fetchRemote` says `null` for every failure — no token, nothing listening, a
+ * refusal, a timeout — so it cannot tell a notifier that went away from one
+ * that was never here. The menu has to: `null` draws a red triangle and "blocks
+ * on other machines cannot reach you", which is true on a Mac whose paired
+ * container just lost its tunnel and false on a single machine that never
+ * paired anything. A warning painted permanently over an idle install teaches
+ * people to ignore the one colour that means "look".
+ *
+ * So the caller says whether a notifier is expected here, and a silence where
+ * none was becomes `undefined` — nobody to ask, today's behaviour. An answer
+ * always passes through: a notifier somebody started by hand is still a
+ * notifier, and what it knows is real.
+ *
+ * Boolean in, so this file stays free of the filesystem. What "expected" means
+ * — a supervised notifier, a paired host — is the CLI's to decide. `remote`
+ * accepts an explicit `undefined` so the result can be handed straight over.
+ */
+export function remoteForMenu(
+  fetched: NotifierAnswer | null,
+  expected: boolean,
+): NotifierAnswer | null | undefined {
+  if (fetched !== null) return fetched;
+  return expected ? null : undefined;
 }
 
 /**
@@ -226,6 +262,36 @@ function timeText(agent: StatusAgent): string {
 }
 
 /**
+ * #79 — the notifier did not answer, so what other machines are waiting on is
+ * UNKNOWN, not empty.
+ *
+ * On a container that is the moment the `ssh -R` tunnel dropped or the Mac went
+ * to sleep; on the Mac, the moment the notifier service stopped. Either way it
+ * is exactly when blocks elsewhere stop reaching you, and folding it into "no
+ * remote agents" made the menu go calm at the moment it knew least.
+ *
+ * No action, deliberately. The cause differs by machine — a stopped service
+ * here, a dropped tunnel there — and starting a notifier on a machine whose
+ * port 47001 belongs to an `ssh -R` would take the port the tunnel needs. Doctor
+ * can tell which it is (#65); this row can only say that it is.
+ */
+function notifierUnreachable(menu: MenuBuilder): void {
+  menu.push({
+    text: "Notifier unreachable",
+    depth: 0,
+    colour: COLOUR.danger,
+    symbol: "exclamationmark.triangle",
+    symbolColour: COLOUR.danger,
+  });
+  menu.push({
+    text: "Blocks on other machines cannot reach you until it is back",
+    depth: 1,
+    colour: COLOUR.dim,
+  });
+  menu.push({ text: "`astir doctor` says why", depth: 1, colour: COLOUR.dim });
+}
+
+/**
  * DMN-09/DMN-10 — everything running elsewhere.
  *
  * Extracted so it can be rendered when the LOCAL daemon is unreachable too.
@@ -241,6 +307,12 @@ function remoteSection(
   now: number,
   exe: string[],
   separator: () => void,
+  /**
+   * #79 — the notifier did not answer. Said at the head of this section rather
+   * than instead of it: `elsewhere` also carries what the DAEMON polled over
+   * ssh, which survives the notifier going away and must not vanish with it.
+   */
+  notifierDown = false,
 ): void {
   // DMN-09/DMN-10 — everything running elsewhere, from whichever route knows
   // about it. A machine that both pushes a roster and answers an SSH poll
@@ -251,9 +323,10 @@ function remoteSection(
   const blockedIds = new Set(remote.map((r) => r.sessionId));
   const quietElsewhere = elsewhere.filter((s) => !blockedIds.has(s.sessionId) && !background(s));
 
-  if (remote.length > 0 || quietElsewhere.length > 0) {
+  if (remote.length > 0 || quietElsewhere.length > 0 || notifierDown) {
     separator();
     menu.push({ text: `Other machines`, depth: 0, colour: COLOUR.dim });
+    if (notifierDown) notifierUnreachable(menu);
     for (const entry of remote) {
       if (entry.stale === true) {
         // Losing the tunnel does not mean the agent stopped waiting — it means we
@@ -340,6 +413,10 @@ export function buildMenu(result: StatusResult, opts: MenubarOpts): Menu {
   const exe = opts.invocation;
   const now = opts.now ?? Date.now();
   const remote = opts.remote?.agents ?? [];
+  // #79 — strictly `null`: that is what `fetchRemote` says when the notifier did
+  // not answer. `undefined` is a caller that never asked, and must keep reading
+  // as it always has rather than claim a notifier is down.
+  const notifierDown = opts.remote === null;
   // An unreachable entry is not a live alert — we no longer know its state — but
   // it is not nothing either, so it stays listed and gets its own warning.
   const remoteBlocked = remote.filter((r) => !r.acknowledged && r.stale !== true).length;
@@ -370,6 +447,14 @@ export function buildMenu(result: StatusResult, opts: MenubarOpts): Menu {
       menu.push({ text: `${safe(result.reason)}`, depth: 0, colour: COLOUR.dim });
       // terminal=true on purpose: starting the daemon should show its output.
       menu.push(startDaemon);
+      if (notifierDown) {
+        // #79 — the badge already warns, but naming only the daemon would send
+        // someone to start it and leave them believing the other machines can
+        // now reach them.
+        separator();
+        notifierUnreachable(menu);
+        separator();
+      }
       menu.push({ text: "Refresh", depth: 0, refresh: true });
       return finish(menu);
     }
@@ -417,7 +502,11 @@ export function buildMenu(result: StatusResult, opts: MenubarOpts): Menu {
     });
   } else if (working > 0) {
     menu.push({ text: `${working}`, depth: 0, colour: COLOUR.busy, symbol: "circle.fill", monospace: true });
-  } else if (remoteUnreachable > 0) {
+  } else if (remoteUnreachable > 0 || notifierDown) {
+    // Contact lost — with one machine, or (#79) with the notifier that hears
+    // from all of them. The same tier for both: neither is a live alert, but
+    // both mean we stopped being told, and the calm badges below would say
+    // there was nothing to be told.
     menu.push({ text: "", depth: 0, colour: COLOUR.danger, symbol: "exclamationmark.triangle" });
   } else if (body.sessions.length > 0 || remote.length > 0) {
     menu.push({ text: "", depth: 0, colour: COLOUR.dim, symbol: "circle" });
@@ -641,7 +730,7 @@ export function buildMenu(result: StatusResult, opts: MenubarOpts): Menu {
   }
 
   const elsewhere = mergeRemoteSessions(opts.remote?.sessions ?? [], body.remote ?? []);
-  remoteSection(menu, remote, elsewhere, now, exe, separator);
+  remoteSection(menu, remote, elsewhere, now, exe, separator, notifierDown);
 
   // DMN-11 — sessions a program launched, kept out of the way of the ones you
   // are working in. Listed rather than hidden: they are real work and a machine

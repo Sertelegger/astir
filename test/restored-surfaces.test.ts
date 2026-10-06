@@ -105,6 +105,7 @@ describe("PSH-16, arriving from the other direction", () => {
     reason: "permission_prompt",
     blockedForMs: 840_000,
     restored,
+    announcedAt: null as number | null,
   });
 
   async function loopWith(agents: ReturnType<typeof blocked>[], nowMs: () => number) {
@@ -113,7 +114,22 @@ describe("PSH-16, arriving from the other direction", () => {
     return {
       sent,
       loop: new NotifyLoop({
-        registry: { blockedAgents: () => agents, list: () => [] } as never,
+        registry: {
+          blockedAgents: () => agents,
+          list: () => [],
+          // #80 — the loop records each announcement on the registry, and
+          // reads it back: a key it holds whose block reads unannounced is a
+          // block that ended between pulses. Faithful here so a later pulse
+          // does not mistake this stub for one.
+          markAnnounced: (sessionId: string, agentId: string, at: number) => {
+            for (const a of agents) {
+              if (a.sessionId === sessionId && a.agentId === agentId && a.announcedAt === null) {
+                a.announcedAt = at;
+              }
+            }
+          },
+          clearAnnounced: () => {},
+        } as never,
         policy: { shouldNotify: () => true, resolved: () => {}, prune: () => {} } as never,
         dispatcher: {
           send: async (e: { kind: string }) => {

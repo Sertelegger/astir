@@ -1,7 +1,17 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
   "files": {
-    "includes": ["src/**/*.ts", "test/**/*.ts", "view/**/*.ts", "view/**/*.tsx", "*.ts", "*.json"]
+    "includes": [
+      "src/**/*.ts",
+      "test/**/*.ts",
+      "view/**/*.ts",
+      "view/**/*.tsx",
+      "*.ts",
+      "*.json",
+      "tui/**/*.ts",
+      "tui/**/*.json",
+      "!tui/.claude-plugin/types"
+    ]
   },
   "formatter": {
     "enabled": true,

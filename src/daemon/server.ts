@@ -111,6 +111,13 @@ export interface DaemonOpts {
    * reads the notifier itself, could do both.
    */
   pushedSessions?: () => RemoteSession[];
+  /**
+   * PSH-07 / #78 — the delivery paths that can reach a human right now
+   * (`Dispatcher.live()`). A getter because the notifier attaches and detaches
+   * as its tunnel comes and goes, and `/healthz` must say which is true NOW.
+   * Absent means nothing was wired, which is reported as nothing live.
+   */
+  deliveryLive?: () => string[];
   nowSeconds?: () => number;
   /** Where the built view lives. Injectable so tests need no build output. */
   viewRoot?: string;
@@ -378,6 +385,11 @@ export class Daemon {
         // uptime cannot tell you how long the wrong one has been up.
         startedAt: this.startedAt,
         build: BUILD_STAMP,
+        // #78 — whether anything can notify anyone. Names only: which paths,
+        // never why or about what, since this route answers without a token.
+        // A surface reading an empty list can say "no one will be told", which
+        // is the one thing silence cannot.
+        delivery: { live: this.opts.deliveryLive?.() ?? [] },
         counters: this.counters,
       });
     }
@@ -755,7 +767,9 @@ export class Daemon {
     // measured against the same instant.
     const now = Date.now();
     return {
-      v: { major: 2, minor: 1 },
+      // VER-01 — minor 2 added `announcedAt` to each agent. Additive: a reader
+      // that ignores it loses nothing it had.
+      v: { major: 2, minor: 2 },
       blockedCount: this.opts.registry.blockedCount(),
       // DMN-07 — sessions the provider says are running that have sent us
       // nothing, plus whether we have ever received anything at all. Together
@@ -826,6 +840,11 @@ export class Daemon {
           // and a surface reading a cached response should not silently age it.
           inStateMs: Math.max(0, now - a.stateSince),
           acknowledged: a.acknowledgedAt !== null,
+          // #80 — when the notify loop first interrupted someone about this
+          // block, or null. Surfaces count only announced blocks, so they
+          // inherit PSH-16's dwell from the one place that decides it instead
+          // of re-deriving per-provider numbers (CAP-02) and disagreeing.
+          announcedAt: a.announcedAt,
           description: a.description,
           tool: a.tool,
           toolPath: a.toolPath,

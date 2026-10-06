@@ -30,6 +30,15 @@ export interface NotifierServerOpts {
   now?: () => number;
   /** This machine's name. Injectable so the self-roster guard is testable. */
   host?: string;
+  /**
+   * #78, one hop on — why this machine cannot show a notification, when it
+   * cannot (a headless Linux box with no notify-send or no session bus).
+   *
+   * Without it the receiver answered `ok: true` to a doorbell it could not
+   * show, so the sending daemon counted the block as delivered and its
+   * `delivery.live` kept naming this path. Refusing tells the sender the truth.
+   */
+  cannotShow?: string;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -195,6 +204,15 @@ export class NotifierServer {
     this.view.prune(now);
     if (envelope.kind === "resolved") this.counters.resolved++;
 
+    if (notify && this.opts.cannotShow !== undefined) {
+      // The remote view above is still updated — a menu here can list the
+      // block — but nobody was interrupted, so the sender must not count it.
+      this.counters.rejected++;
+      return this.json(res, 503, {
+        ok: false,
+        error: `cannot show notifications here: ${this.opts.cannotShow}`,
+      });
+    }
     if (notify) {
       try {
         this.opts.notify(notificationText(envelope));
