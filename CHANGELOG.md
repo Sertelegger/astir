@@ -24,6 +24,17 @@ release is cut, named and published is in
   - `astir-tui` is a separate, opt-in plugin in the same marketplace. It is a
     Claude Code mod that draws that line under the prompt and an `astir <n>`
     label in the footer, and does nothing else.
+- **`/astir`**, a pane in astir-tui
+  ([#81](https://github.com/Sertelegger/astir/issues/81)).
+  - It lists every session, blocked first, with how long each has waited.
+  - `g` takes you to the session that has waited longest: it selects that
+    session's tmux pane, which on Linux nothing else could do.
+  - `d` dismisses it, on any machine.
+  - Remote sessions get no Go, because there is nothing here to raise.
+  - It opens mid-turn without interrupting it, and never shows rows from a
+    reading astir could not vouch for.
+- `astir` takes `--` to end its options, so an id passed after it is never read
+  as a flag.
 - `/state` 2.2: every agent carries `announcedAt`, the moment the notify loop
   decided to interrupt you about it. It is not persisted: a block restored
   after a restart proves itself again before it is announced.
