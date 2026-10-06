@@ -200,6 +200,21 @@ describe("a Codex session's liveness, end to end through the registry", () => {
     expect(h.registry.blockedAgents()).toHaveLength(1);
   });
 
+  it("never sweeps a blocked Codex session it has no pid for — silence is what blocked looks like", async () => {
+    // A pid-less Codex session (Windows; `ps` failing; or the first turn
+    // before any pid-bearing event, when SessionStart lost its race with the
+    // daemon starting) is one discovery could never have vouched for. The
+    // undiscovered sweep is for sessions discovery COULD see and did not; on
+    // this one it would delete a real block after ten quiet minutes and send
+    // a `resolved` for it.
+    const h = codex();
+    h.registry.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
+    await h.tick();
+    h.advance(11 * 60_000);
+    await h.tick();
+    expect(h.registry.blockedAgents()).toHaveLength(1);
+  });
+
   it("reaps it when its pid is recycled by something else", async () => {
     const h = codex();
     h.registry.apply(ev("session_start"), "/repo");

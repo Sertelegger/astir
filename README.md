@@ -373,7 +373,7 @@ Codex ──command hooks──▶ relay ─▶ (one, fixed port)  ──▶  as
               claude agents --json, Codex process liveness (session discovery)
 ```
 
-Claude Code's hooks are `type: "http"`, posting the payload straight to the daemon — no process spawned per tool call. Codex has command hooks only, so a small relay posts for it. Provider-specific code lives only in `src/adapters/`; everything downstream branches on declared *capabilities* (`src/adapters/capabilities.ts`), never on provider name.
+Claude Code's hooks are `type: "http"`, posting the payload straight to the daemon — no process spawned per tool call. Codex has command hooks only, so a small relay posts for it. Provider-specific code lives only in `src/adapters/`; everything downstream branches on declared *capabilities* (`src/contract/capabilities.ts`), never on provider name.
 
 **Subagent parentage is exact, not inferred.** Claude Code writes an `agent-<id>.meta.json` sidecar beside each subagent transcript carrying the spawning `toolUseId`, plus `parentAgentId`/`spawnDepth` on recent versions. An absent `parentAgentId` isn't missing data — it means the parent is the main session. Other tools in this space either guess from event ordering or hardcode every agent under one root; this reads the sidecar.
 

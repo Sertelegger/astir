@@ -9,7 +9,7 @@
  * event — an agent that has been blocked for thirty minutes generates nothing.
  */
 
-import { CAPABILITIES } from "../adapters/capabilities.js";
+import { CAPABILITIES } from "../contract/capabilities.js";
 import type { Provider } from "../contract/event.js";
 import type { Registry } from "../model/registry.js";
 import { debug } from "../obs/debug.js";

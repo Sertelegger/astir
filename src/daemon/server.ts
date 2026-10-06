@@ -6,11 +6,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CAPABILITIES } from "../adapters/capabilities.js";
 import { defaultNewId, normalizeClaudeHook } from "../adapters/claude/normalize.js";
 import { watchPathsFor } from "../adapters/claude/watch.js";
 import { normalizeCodexHook } from "../adapters/codex/normalize.js";
 import type { Normalizer, SidecarMeta } from "../adapters/types.js";
+import { CAPABILITIES } from "../contract/capabilities.js";
 import { validateEvent } from "../contract/event.js";
 import { candidateConfigDirs } from "../discovery/profiles.js";
 import type { Registry } from "../model/registry.js";

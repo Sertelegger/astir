@@ -86,7 +86,10 @@ under and sends that pid in an `X-Astir-Agent-Pid` header. The daemon then
 treats "that pid still belongs to a process with the same start time" as
 discovery for Codex (`src/discovery/pids.ts`), so a session that dies without
 `SessionEnd` is reaped, a block survives a daemon restart, and focus has a pid
-to act on. The per-tool events skip the walk: they are the hot path.
+to act on. The per-tool events skip the walk: they are the hot path. A
+session that has not reported a pid yet is left alone rather than swept for
+being quiet — discovery could never have seen it, and quiet is what a blocked
+agent looks like.
 
 ### The token, and the proxy
 

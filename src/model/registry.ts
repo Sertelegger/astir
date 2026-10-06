@@ -1,5 +1,6 @@
 /** MOD-04/05/06 — session + agent state, and the active-vs-blocked accounting. */
 
+import { CAPABILITIES } from "../contract/capabilities.js";
 import type { AstirEvent, ParentSource, Provider } from "../contract/event.js";
 import type { DiscoveredSession } from "../discovery/sessions.js";
 import { debug } from "../obs/debug.js";
@@ -518,8 +519,17 @@ export class Registry {
       // false so `reconcile` refuses to touch it. Gated on discovery having
       // worked at least once, so a machine with no `claude` on PATH does not
       // silently delete every live session it knows about.
+      //
+      // And only a session discovery could have vouched for. A provider that
+      // vouches by pid never saw a session that has not reported one — the
+      // first turn before any pid-bearing event, or a machine with no `ps` —
+      // so its silence is not evidence, and silence is exactly what a blocked
+      // agent sounds like. Sweeping it would delete a real block and send a
+      // `resolved` for it.
+      const couldHaveSeen = CAPABILITIES[s.provider].liveness === "listing" || s.pid !== null;
       if (
         this.discoveryEverWorked.has(s.provider) &&
+        couldHaveSeen &&
         !s.everDiscovered &&
         now - s.lastEventTs >= this.undiscoveredTtlMs
       ) {

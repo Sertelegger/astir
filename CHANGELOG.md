@@ -64,7 +64,10 @@ release is cut, named and published is in
   events astir waits up to 15 minutes before calling a silent one idle.
   Claude's discovery answers that within seconds.
 - **Codex on Windows is untested.** The hooks carry a PowerShell command, but
-  nothing has run it.
+  nothing has run it. Without `ps` the relay cannot name the Codex process, so
+  a Codex session there that dies without `SessionEnd` is not cleaned up —
+  the same is true anywhere for one that dies in its first turn, before any
+  event that carries the pid.
 
 ## [0.2.0] — 2026-09-11 (Bagel)
 

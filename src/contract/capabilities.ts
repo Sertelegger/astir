@@ -8,7 +8,7 @@
  * Measured, not assumed: every value here cites what it was measured from.
  */
 
-import type { Provider } from "../contract/event.js";
+import type { Provider } from "./event.js";
 
 export interface ProviderCapabilities {
   /**
@@ -24,6 +24,14 @@ export interface ProviderCapabilities {
    * field nothing on the other side reads.
    */
   fileWatch: boolean;
+  /**
+   * DMN-05 — how astir learns a session is still running. `listing`: the
+   * provider lists its sessions (`claude agents --json`). `pid`: it cannot,
+   * so a session is vouched for by the pid its hook relay reported
+   * (`discovery/pids.ts`) — and one with no pid yet is one discovery could
+   * never have seen, so its silence proves nothing.
+   */
+  liveness: "listing" | "pid";
 }
 
 export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
@@ -31,11 +39,14 @@ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
     // The `defaultMode: auto` classifier answers in hundreds of milliseconds.
     blockDwellMs: 5_000,
     fileWatch: true,
+    liveness: "listing",
   },
   codex: {
     // Its automatic reviewer answered the one captured request after ~11.9s
     // (test/fixtures/codex/capture.json). 5s would have alerted on it.
     blockDwellMs: 30_000,
     fileWatch: false,
+    // No session listing exists (verified against rust-v0.154.0).
+    liveness: "pid",
   },
 };
