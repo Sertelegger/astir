@@ -220,8 +220,10 @@ astir: nothing can notify you — no notifier is reachable · 1 waiting on you �
 |---|---|
 | `daemon not running — no one will be told` | Start it (`astir daemon`, or `astir autostart` on macOS). |
 | `port 47000 is <host>'s daemon, not this machine's` | Something forwarded another machine's daemon onto this port (VS Code Remote-SSH does; see above). |
+| `the daemon is older than this astir — restart it` | You rebuilt astir but the running daemon is the old build. Its blocks are still shown, just not filtered to the ones it announced. |
 | `nothing can notify you — no notifier is reachable` | No delivery path is live: this machine cannot show a notification (no `notify-send`, or no desktop session to show it on) **and** your Mac's notifier is not reachable — typically the `ssh -R` tunnel is down. |
 | `notifier not answering` | A notifier is set up for this machine and did not answer, so blocks on other machines cannot reach you. |
+| `lost contact with 1 machine where an agent was waiting` | Your notifier had a doorbell from another machine and has stopped hearing from it — the agent is probably still waiting. |
 | `hears nothing from this session` | (only with `--session`) This session's hooks are not reaching the daemon. |
 | `2 waiting on you · oldest 3m` | Agents blocked on you that astir has announced. A block answered automatically inside the alert delay never appears here. |
 

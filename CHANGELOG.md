@@ -56,8 +56,10 @@ release is cut, named and published is in
   - Each path now says whether it can deliver. `/healthz` lists the live
     ones, and the daemon's startup line, its tunnel-loss line and
     `astir doctor` name a dead one and why.
-  - A notifier that cannot show a doorbell refuses it, so the sending daemon
-    knows too.
+  - A notifier that cannot show a doorbell refuses it, and says so on its
+    `/healthz`, so the sending daemon knows too. A local notifier that runs
+    and fails (a headless box with a session bus but nothing to show on) is
+    a failed delivery, not a delivered one.
 - **A notifier astir cannot reach is no longer shown as "no remote agents"**
   ([#79](https://github.com/Sertelegger/astir/issues/79)). Where one is
   expected (the notifier service is installed, or `astir pair` set up a
