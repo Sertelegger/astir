@@ -14,6 +14,16 @@ release is cut, named and published is in
 
 ### Added
 
+- **Codex is a second provider**
+  ([#24](https://github.com/Sertelegger/astir/issues/24)). A Codex session shows
+  up beside your Claude Code ones: in the menu bar, in `astir status`, in the
+  overview, and with an alert when it is waiting on a permission prompt. Files
+  it changes with `apply_patch` light up on the map. `astir install` registers
+  the plugin with Codex when `codex` is on your PATH; the next `codex` session
+  asks you to trust its hooks. The adapter was written against payloads
+  captured from codex-cli 0.154.0, and every assumption about how Codex runs a
+  hook was checked against its source.
+
 - `astir doctor` reports which plugin version is actually installed, per profile
   and per scope, and names any that is behind the running binary. The hooks run
   from a cached copy of the plugin and the binary runs from wherever it was
@@ -32,6 +42,32 @@ release is cut, named and published is in
 - The release checklist now includes updating the installed plugin. Bumping
   `marketplace.json` lets an install see that a new version exists; it does not
   fetch it, and CONTRIBUTING previously implied otherwise.
+
+### Known limitations
+
+- **A Codex permission alert waits 30 seconds, not 5.** Codex's automatic
+  reviewer answers many requests itself, and the one captured took ~12s; a
+  shorter wait would alert you about decisions that were never yours. The
+  menu-bar badge is not delayed.
+- **An approved Codex command that runs long can still raise a false alert.**
+  Codex says nothing between approving a request and the tool finishing, so a
+  command its reviewer approved at ~12s that then runs for another 20s looks
+  exactly like a request nobody has answered. The alert is followed by a
+  `resolved` when it finishes.
+- **A Codex session's map shows only what it wrote.** Codex reads files through
+  its shell, which names no paths astir can trust, so reads and shell-driven
+  writes leave no trace. Claude's map shows both.
+- **Codex `Interrupt` and subagent events are mapped from Codex's declared
+  schema, not a capture.** No captured session has produced one yet; the
+  fixture says so, and they are the first thing to re-check when one does.
+- **A Codex session reports no busy/idle status of its own**, so between
+  events astir waits up to 15 minutes before calling a silent one idle.
+  Claude's discovery answers that within seconds.
+- **Codex on Windows is untested.** The hooks carry a PowerShell command, but
+  nothing has run it. Without `ps` the relay cannot name the Codex process, so
+  a Codex session there that dies without `SessionEnd` is not cleaned up —
+  the same is true anywhere for one that dies in its first turn, before any
+  event that carries the pid.
 
 ## [0.2.0] — 2026-09-11 (Bagel)
 

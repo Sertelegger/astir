@@ -1,0 +1,119 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.sh\" 2>/dev/null || true",
+            "commandWindows": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/ensure-daemon.sh\" >/dev/null 2>&1 || true",
+            "commandWindows": "exit 0",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.sh\" 2>/dev/null || true",
+            "commandWindows": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.sh\" 2>/dev/null || true",
+            "commandWindows": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.sh\" 2>/dev/null || true",
+            "commandWindows": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.sh\" 2>/dev/null || true",
+            "commandWindows": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.sh\" 2>/dev/null || true",
+            "commandWindows": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.sh\" 2>/dev/null || true",
+            "commandWindows": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.sh\" 2>/dev/null || true",
+            "commandWindows": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.sh\" 2>/dev/null || true",
+            "commandWindows": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-relay.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

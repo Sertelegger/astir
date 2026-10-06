@@ -8,7 +8,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultNewId, normalizeClaudeHook } from "../adapters/claude/normalize.js";
 import { watchPathsFor } from "../adapters/claude/watch.js";
+import { normalizeCodexHook } from "../adapters/codex/normalize.js";
 import type { Normalizer, SidecarMeta } from "../adapters/types.js";
+import { CAPABILITIES } from "../contract/capabilities.js";
 import { validateEvent } from "../contract/event.js";
 import { candidateConfigDirs } from "../discovery/profiles.js";
 import type { Registry } from "../model/registry.js";
@@ -135,7 +137,21 @@ export interface DaemonOpts {
  */
 const NORMALIZERS: Record<string, Normalizer> = {
   claude: normalizeClaudeHook,
+  codex: normalizeCodexHook,
 };
+
+/**
+ * The agent's own pid, from a hook relay that runs inside its process.
+ *
+ * A header rather than a payload field, because it is not the provider's to
+ * say: the relay measures it, and only a relay can (see `discovery/pids.ts`).
+ */
+function agentPid(req: IncomingMessage): number | null {
+  const raw = req.headers["x-astir-agent-pid"];
+  if (typeof raw !== "string" || !/^\d{1,10}$/.test(raw)) return null;
+  const pid = Number(raw);
+  return pid > 1 ? pid : null;
+}
 
 /** CAP-05 route 1 — read `<session>/subagents/agent-<id>.meta.json`. */
 /**
@@ -428,14 +444,16 @@ export class Daemon {
     // shared, so adding one is adding a table entry — not a second copy of the
     // validate/apply/count/respond tail.
     const provider = path.startsWith("/hook/") ? path.slice("/hook/".length) : null;
-    const normalizer = provider === null ? undefined : NORMALIZERS[provider];
+    // `hasOwn`, because `/hook/constructor` would otherwise find Object's.
+    const normalizer =
+      provider !== null && Object.hasOwn(NORMALIZERS, provider) ? NORMALIZERS[provider] : undefined;
     if (normalizer !== undefined && req.method === "POST") {
       const body = await this.body(req);
       if (!body.ok) {
         this.counters.rejected++;
         return this.json(res, 400, { error: "bad body" });
       }
-      return this.ingest(normalizer, body.value, res);
+      return this.ingest(normalizer, body.value, res, agentPid(req));
     }
 
     // PSH-10 — "I have seen it." Clears the badge without claiming the agent is
@@ -599,7 +617,7 @@ export class Daemon {
     push();
   }
 
-  private ingest(normalize: Normalizer, payload: unknown, res: ServerResponse): void {
+  private ingest(normalize: Normalizer, payload: unknown, res: ServerResponse, pid: number | null): void {
     const { event, droppedPaths, claimedSessionId, cwd } = normalize(payload, {
       now: this.nowSeconds,
       newId: defaultNewId,
@@ -664,6 +682,8 @@ export class Daemon {
     }
     if (result.applied) this.counters.ingested++;
     else if (result.reason === "duplicate") this.counters.duplicates++;
+    // After apply, which is what creates the session the pid belongs to.
+    if (result.applied && pid !== null) this.opts.registry.observePid(valid.event.sessionId, pid);
 
     if (result.becameBlocked) {
       this.counters.blocked++;
@@ -683,7 +703,10 @@ export class Daemon {
     // matcher naming directories would also filter events to files whose names
     // contain those words. So astir registers a matcher-less entry, which fires
     // for every watched change, and supplies the paths here instead.
-    if (valid.event.kind === "session_start") {
+    //
+    // Only for a provider that declares it watches: for any other, this is a
+    // repo walk on a synchronous hook for a field nothing reads.
+    if (valid.event.kind === "session_start" && CAPABILITIES[valid.event.provider].fileWatch) {
       const watch = this.watchPathsFor(valid.event.sessionId, cwd);
       if (watch !== null) {
         // `this.json` returns void; returning its result from a void method is

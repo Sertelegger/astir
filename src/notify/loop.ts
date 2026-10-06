@@ -9,6 +9,8 @@
  * event — an agent that has been blocked for thirty minutes generates nothing.
  */
 
+import { CAPABILITIES } from "../contract/capabilities.js";
+import type { Provider } from "../contract/event.js";
 import type { Registry } from "../model/registry.js";
 import { debug } from "../obs/debug.js";
 import type { Dispatcher } from "./dispatch.js";
@@ -27,11 +29,12 @@ export interface NotifyLoopOpts {
   now?: () => number;
   onDelivered?: (summary: string) => void;
   /**
-   * PSH-16 — how long a block must last before it is worth interrupting anyone.
-   * Long enough that an auto-resolved permission never reaches it, short enough
-   * to be invisible against the reminder cadence.
+   * PSH-16 — how long a block must last before it is worth interrupting
+   * anyone, per provider. Defaults to what each provider declares
+   * (`CAPABILITIES`), because "long enough that an auto-resolved permission
+   * never reaches it" depends on who does the auto-resolving.
    */
-  notifyAfterMs?: number;
+  dwellMs?: (provider: Provider) => number;
 }
 
 export class NotifyLoop {
@@ -46,11 +49,11 @@ export class NotifyLoop {
    * and proves nothing about now.
    */
   private restoredSeen = new Map<string, number>();
-  private readonly notifyAfterMs: number;
+  private readonly dwellFor: (provider: Provider) => number;
 
   constructor(private opts: NotifyLoopOpts) {
     this.now = opts.now ?? (() => Date.now());
-    this.notifyAfterMs = opts.notifyAfterMs ?? 5_000;
+    this.dwellFor = opts.dwellMs ?? ((provider) => CAPABILITIES[provider].blockDwellMs);
   }
 
   /**
@@ -65,6 +68,7 @@ export class NotifyLoop {
 
     for (const b of blocked) {
       const key = keyOf(b.sessionId, b.agentId);
+      const dwell = this.dwellFor(b.provider);
       // PSH-16 — let a block prove it is real before interrupting anyone.
       //
       // A permission EVENT is not evidence that a human is needed. Under
@@ -106,9 +110,9 @@ export class NotifyLoop {
       if (!this.announced.has(key) && b.restored) {
         const first = this.restoredSeen.get(key) ?? now;
         this.restoredSeen.set(key, first);
-        if (now - first < this.notifyAfterMs) continue;
+        if (now - first < dwell) continue;
       }
-      if (!this.announced.has(key) && b.blockedForMs < this.notifyAfterMs) continue;
+      if (!this.announced.has(key) && b.blockedForMs < dwell) continue;
       if (!this.opts.policy.shouldNotify(key, "blocked", now)) continue;
 
       const envelope = buildEnvelope({
