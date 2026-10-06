@@ -23,6 +23,10 @@ release is cut, named and published is in
 
 ### Fixed
 
+- The menu-bar app's icon no longer disappears on a dark menu bar. It tinted
+  the symbol with the badge text's colour, which SwiftBar never did; an
+  untinted symbol is drawn in whatever contrasts with the bar, so it now
+  matches the SwiftBar plugin exactly.
 - `hooks/hooks.json` no longer carries a `_comment` key, which Claude Code
   reported as an unknown key on every session start. JSON has no comments; the
   prose moved to `hooks/README.md`.

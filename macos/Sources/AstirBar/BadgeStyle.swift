@@ -12,11 +12,10 @@ import AppKit
 /// grey circle on black — the icon disappeared.
 enum BadgeStyle {
     static func symbolTint(_ badge: MenuItemModel) -> NSColor? {
-        // RED: what drawBadge did before — the text's colour as a fallback.
-        badge.colour.flatMap(NSColor.dynamic) ?? badge.symbolColour.flatMap(NSColor.dynamic)
+        badge.symbolColour.flatMap(NSColor.dynamic)
     }
 
     static func textColour(_ badge: MenuItemModel) -> NSColor? {
-        badge.colour.flatMap(NSColor.dynamic) ?? badge.symbolColour.flatMap(NSColor.dynamic)
+        badge.colour.flatMap(NSColor.dynamic)
     }
 }
