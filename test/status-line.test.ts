@@ -9,8 +9,9 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { RemoteView } from "../src/notify/remote.js";
 import type { RemoteAgentView } from "../src/status/fetch.js";
-import type { FocusDeps } from "../src/status/focus.js";
+import type { ProbeDeps } from "../src/status/focus.js";
 import {
   DEFAULT_LINE_BUDGET_MS,
   focusProbe,
@@ -20,6 +21,7 @@ import {
   runStatusLine,
   statusLine,
 } from "../src/status/line.js";
+import { buildMenu } from "../src/status/menubar.js";
 import type {
   HealthBody,
   RemoteSession,
@@ -59,7 +61,9 @@ const session = (over: Partial<StatusSession> = {}): StatusSession => ({
   ...over,
 });
 
+/** A current daemon's `/state`: v2.2 is the first that says what it announced. */
 const body = (over: Partial<StatusBody> = {}): StatusBody => ({
+  v: { major: 2, minor: 2 },
   blockedCount: 0,
   sessions: [],
   silent: [],
@@ -289,13 +293,16 @@ describe("the blocks summary — announced blocks only (PSH-16)", () => {
     expect(r.blocked).toBe(1);
   });
 
-  it("reads an absent announcedAt (an older daemon) as not announced", () => {
+  it("reads an absent announcedAt from a CURRENT daemon as not announced", () => {
+    // From a v2.2 daemon an absent field is a shape VER-01 says to ignore, not
+    // a block to count. An OLDER daemon is a different case: see below.
     const old = agent({ state: "blocked" });
     delete old.announcedAt;
     const r = statusLine(
       input({ status: ok(body({ blockedCount: 1, sessions: [session({ agents: [old] })] })) }),
     );
     expect(r.line).toBeNull();
+    expect(r.warnings).toEqual([]);
     expect(r.blocked).toBe(1);
   });
 
@@ -332,17 +339,18 @@ describe("the blocks summary — announced blocks only (PSH-16)", () => {
     expect(r.blocked).toBe(1);
   });
 
-  it("does not count a dismissed or contact-lost doorbell, as the menu bar badge does not", () => {
-    const r = statusLine(
-      input({
-        remote: {
-          agents: [doorbell({ acknowledged: true }), doorbell({ sessionId: "r2", stale: true })],
-          sessions: [],
-        },
-      }),
-    );
+  it("does not count a dismissed doorbell, as the menu bar badge does not", () => {
+    const r = statusLine(input({ remote: { agents: [doorbell({ acknowledged: true })], sessions: [] } }));
     expect(r.line).toBeNull();
     expect(r.blocked).toBe(0);
+  });
+
+  it("does not count a contact-lost doorbell either — but says contact was lost, never calm", () => {
+    const r = statusLine(input({ remote: { agents: [doorbell({ stale: true })], sessions: [] } }));
+    expect(r.line).toBe(LINE_TEXT.contactLost(1));
+    expect(r.warnings).toEqual([{ kind: "contact-lost", text: LINE_TEXT.contactLost(1) }]);
+    expect(r.blocked).toBe(0);
+    expect(r.announced).toBe(0);
   });
 
   it("joins a warning and the summary with ` · `", () => {
@@ -459,7 +467,7 @@ describe("--json rows", () => {
       ],
     });
     const r = statusLine(input({ status: ok(b) }));
-    expect(r.v).toEqual({ major: 1, minor: 0 });
+    expect(r.v).toEqual({ major: 1, minor: 1 });
     expect(r.rows[0]).toEqual({
       sessionId: "waits",
       host: null,
@@ -688,15 +696,250 @@ describe("a notifier that did not answer", () => {
   });
 });
 
-/** Fetchers that answer at once, overridable one at a time. */
-const deps = (over: Partial<LineDeps> = {}): Partial<LineDeps> => ({
+/**
+ * DMN-09 — a doorbell the notifier has marked `stale`: contact with that
+ * machine was lost while its agent was waiting. The menu bar draws it red
+ * ("unreachable"); the line must not draw it as nothing, which is what an
+ * ANSWERED block looks like.
+ */
+describe("lost contact is not calm", () => {
+  const lost = (over: Partial<RemoteAgentView> = {}): RemoteAgentView => doorbell({ stale: true, ...over });
+
+  it("names how many machines, singular and plural", () => {
+    expect(LINE_TEXT.contactLost(1)).toBe("astir: lost contact with 1 machine where an agent was waiting");
+    expect(LINE_TEXT.contactLost(2)).toBe("astir: lost contact with 2 machines where an agent was waiting");
+  });
+
+  it("counts machines, not agents — however the host is spelled", () => {
+    const r = statusLine(
+      input({
+        remote: {
+          agents: [
+            lost({ agentId: "a" }),
+            lost({ agentId: "b" }),
+            lost({ sessionId: "r2", host: "LAPTOP.local" }),
+            lost({ sessionId: "r3", host: "server" }),
+          ],
+          sessions: [],
+        },
+      }),
+    );
+    expect(r.line).toBe(LINE_TEXT.contactLost(2));
+  });
+
+  it("counts a dismissed one too, as the menu bar's red tier does — dismissed is still waiting", () => {
+    const r = statusLine(input({ remote: { agents: [lost({ acknowledged: true })], sessions: [] } }));
+    expect(r.warnings.map((w) => w.kind)).toEqual(["contact-lost"]);
+  });
+
+  it("is only about doorbells: a quiet session gone stale, with nothing waiting, is not this warning", () => {
+    const r = statusLine(input({ remote: { agents: [], sessions: [roster({ stale: true })] } }));
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("ignores a stale doorbell from THIS host, which the local daemon already answers for", () => {
+    const r = statusLine(input({ remote: { agents: [lost({ host: SELF })], sessions: [] } }));
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("leaves the machines still heard from counted, beside the warning", () => {
+    const r = statusLine(
+      input({
+        remote: {
+          agents: [lost({ sessionId: "gone", host: "server" }), doorbell({ since: NOW - 5 * MIN })],
+          sessions: [],
+        },
+      }),
+    );
+    expect(r.line).toBe(`${LINE_TEXT.contactLost(1)} · 1 waiting on you · oldest 5m`);
+    expect(r.blocked).toBe(1);
+    expect(r.announced).toBe(1);
+  });
+
+  it("keeps the lost session as a row in --json", () => {
+    const r = statusLine(input({ remote: { agents: [lost()], sessions: [] } }));
+    expect(r.rows).toEqual([expect.objectContaining({ sessionId: "r1", host: "laptop", focusable: false })]);
+  });
+
+  it("comes after no-delivery and an unreadable /state, and before silent", () => {
+    const remote = { agents: [lost()], sessions: [] };
+    const me = body({ silent: [{ sessionId: "me", name: null, cwd: "/x" }] });
+
+    const quiet = statusLine(input({ session: "me", status: ok(me), remote }));
+    expect(quiet.warnings.map((w) => w.kind)).toEqual(["contact-lost", "silent"]);
+    expect(quiet.line).toBe(LINE_TEXT.contactLost(1));
+
+    const dead = statusLine(input({ remote, health: health({ delivery: { live: [] } }) }));
+    expect(dead.warnings.map((w) => w.kind)).toEqual(["no-delivery", "contact-lost"]);
+
+    const refused = statusLine(
+      input({ remote, status: { ok: false, kind: "rejected", reason: "token rejected" } }),
+    );
+    expect(refused.warnings.map((w) => w.kind)).toEqual(["unreachable", "contact-lost"]);
+  });
+
+  it("is still listed when the local daemon is down — the notifier is a separate process", () => {
+    const r = statusLine(
+      input({
+        health: null,
+        status: { ok: false, kind: "absent", reason: "x" },
+        remote: { agents: [lost()], sessions: [] },
+      }),
+    );
+    expect(r.line).toBe(LINE_TEXT.daemonDown);
+    expect(r.warnings.map((w) => w.kind)).toEqual(["daemon-down", "contact-lost"]);
+  });
+
+  it("agrees with the menu bar on the same notifier answer, from the moment the entry goes stale", () => {
+    // The real RemoteView ages the entry; the real buildMenu draws it. One
+    // doorbell from megabrain, then the tunnel drops and nothing reconfirms it.
+    const view = new RemoteView();
+    view.apply(
+      {
+        v: { major: 1, minor: 0 },
+        id: "e1",
+        ts: NOW,
+        kind: "blocked",
+        reason: "permission_prompt",
+        origin: { host: "megabrain", user: "dev" },
+        session: { sessionId: "mb1", agentId: "main", repo: "astir" },
+        title: "t",
+        body: "b",
+      },
+      NOW,
+    );
+    const at = (minutes: number) => {
+      const now = NOW + minutes * MIN;
+      const remote = { agents: view.list(now), sessions: [] };
+      const status = ok(body({ sessions: [session({ agents: [agent({ state: "idle" })] })] }));
+      return {
+        badge: buildMenu(status, { invocation: ["node", "astir"], remote, now }).badge.symbol,
+        line: statusLine(input({ status, remote, now })),
+      };
+    };
+
+    const heard = at(19);
+    expect(heard.badge).toBe("bell.badge.fill");
+    expect(heard.line.line).toBe("1 waiting on you · oldest 19m");
+
+    for (const minutes of [21, 45]) {
+      const lostNow = at(minutes);
+      expect(lostNow.badge).toBe("exclamationmark.triangle");
+      expect(lostNow.line.warnings.map((w) => w.kind)).toEqual(["contact-lost"]);
+      expect(lostNow.line.line).toBe(LINE_TEXT.contactLost(1));
+    }
+  });
+});
+
+/**
+ * `/state` below v2.2 carries no `announcedAt`. The CLI is rebuilt before the
+ * daemon is restarted (megabrain runs it from `dist/` in tmux), and in that
+ * window an old daemon IS still announcing — with its own dwell, over its own
+ * doorbells. Reading every block as unannounced printed nothing while agents
+ * waited, which is the worse lie.
+ */
+describe("an older daemon", () => {
+  const raw = (over: Partial<StatusAgent> = {}): StatusAgent => {
+    const a = agent({ state: "blocked", ...over });
+    delete a.announcedAt;
+    return a;
+  };
+  const older = (over: Partial<StatusBody> = {}): StatusBody =>
+    body({
+      v: { major: 2, minor: 1 },
+      blockedCount: 2,
+      sessions: [
+        session({ sessionId: "a", agents: [raw({ inStateMs: 10 * MIN })] }),
+        session({ sessionId: "b", cwd: "/p/b", agents: [raw({ inStateMs: 2 * MIN })] }),
+      ],
+      ...over,
+    });
+
+  it("says to restart it, and counts its blocked agents raw", () => {
+    const r = statusLine(input({ status: ok(older()) }));
+    expect(LINE_TEXT.oldDaemon).toBe("astir: the daemon is older than this astir — restart it");
+    expect(r.line).toBe(`${LINE_TEXT.oldDaemon} · 2 waiting on you · oldest 10m`);
+    expect(r.warnings).toEqual([{ kind: "old-daemon", text: LINE_TEXT.oldDaemon }]);
+    expect(r.blocked).toBe(2);
+    // `announced` is what the line counts — here, every undismissed block.
+    expect(r.announced).toBe(2);
+  });
+
+  it("still leaves out a block the human dismissed", () => {
+    const b = older({ sessions: [session({ agents: [raw({ acknowledged: true }), raw({ id: "x" })] })] });
+    expect(statusLine(input({ status: ok(b) })).announced).toBe(1);
+  });
+
+  it("reads any version below 2.2 as older, and a missing or malformed one too", () => {
+    // Every astir daemon has sent `v` since the first (e1c9cfe: 2.0), so one
+    // with none is not a daemon this astir can read announcedAt from.
+    for (const v of [
+      { major: 2, minor: 1 },
+      { major: 2, minor: 0 },
+      { major: 1, minor: 9 },
+      undefined,
+      "2.2",
+      {},
+      { major: "2", minor: "2" },
+    ]) {
+      const b = older();
+      if (v === undefined) delete b.v;
+      else b.v = v as NonNullable<StatusBody["v"]>;
+      expect(
+        statusLine(input({ status: ok(b) })).warnings.map((w) => w.kind),
+        JSON.stringify(v),
+      ).toEqual(["old-daemon"]);
+    }
+  });
+
+  it("does not warn about 2.2 or anything newer", () => {
+    for (const v of [
+      { major: 2, minor: 2 },
+      { major: 2, minor: 3 },
+      { major: 3, minor: 0 },
+    ]) {
+      const r = statusLine(input({ status: ok(body({ v })) }));
+      expect(r.warnings, JSON.stringify(v)).toEqual([]);
+    }
+  });
+
+  it("comes right after an impostor, whose body is never read as this machine's", () => {
+    const foreign = statusLine(
+      input({ health: health({ host: "laptop" }), status: ok(older({ host: "laptop" })) }),
+    );
+    expect(foreign.warnings.map((w) => w.kind)).toEqual(["impostor"]);
+    expect(foreign.announced).toBe(0);
+
+    const both = statusLine(input({ status: ok(older()), health: health({ delivery: { live: [] } }) }));
+    expect(both.warnings.map((w) => w.kind)).toEqual(["old-daemon", "no-delivery"]);
+  });
+
+  it("is what `status --line` prints against one, end to end", async () => {
+    const out = await runStatusLine(
+      { session: null, json: false },
+      deps({
+        fetchHealth: async () => ({ ok: true, role: "daemon", host: SELF }),
+        fetchStatus: async () => ok(older()),
+      }),
+    );
+    expect(out).toBe(`${LINE_TEXT.oldDaemon} · 2 waiting on you · oldest 10m`);
+  });
+});
+
+/** Fetchers that answer at once, overridable one at a time. No focus override: the probe runs. */
+const fetchers = (over: Partial<LineDeps> = {}): Partial<LineDeps> => ({
   fetchHealth: async () => health(),
   fetchStatus: async () => ok(body()),
   fetchRemote: async () => null,
   now: () => NOW,
   selfHost: SELF,
-  focusable: () => false,
   ...over,
+});
+
+/** The same, with focus decided up front, for every test that is not about the probe. */
+const deps = (over: Partial<LineDeps> = {}): Partial<LineDeps> => ({
+  focusable: () => false,
+  ...fetchers(over),
 });
 
 const never = <T>(): Promise<T> => new Promise<T>(() => {});
@@ -720,7 +963,7 @@ describe("runStatusLine", () => {
   it("emits the JSON document with --json, even when the line is empty", async () => {
     const out = await runStatusLine({ session: null, json: true }, deps());
     const doc = JSON.parse(out) as { v: unknown; line: unknown; warnings: unknown; rows: unknown };
-    expect(doc).toMatchObject({ v: { major: 1, minor: 0 }, line: null, warnings: [], rows: [] });
+    expect(doc).toMatchObject({ v: { major: 1, minor: 1 }, line: null, warnings: [], rows: [] });
     expect(out).not.toContain("\n");
   });
 
@@ -1018,6 +1261,27 @@ describe("runStatusLine — off the socket", () => {
     for (const [key, signal] of signals) expect(signal.aborted, key).toBe(true);
   });
 
+  it("reads an older daemon's real answer — /state 2.1, no announcedAt, no delivery — as old, not calm", async () => {
+    // What dcd33a6's daemon sends, through the real fetchers: the reviewers
+    // measured "" here while two agents waited.
+    const blocked = { ...agent({ state: "blocked", inStateMs: 10 * MIN }) } as Partial<StatusAgent>;
+    delete blocked.announcedAt;
+    stubSockets({
+      "47500/healthz": { ok: true, role: "daemon", host: SELF, build: "old" },
+      "47500/state": body({
+        v: { major: 2, minor: 1 },
+        blockedCount: 1,
+        sessions: [session({ agents: [blocked as StatusAgent] })],
+      }),
+      "47501/state": { agents: [], sessions: [] },
+    });
+    const out = await runStatusLine(
+      { session: null, json: false, port: 47_500, notifyPort: 47_501, timeoutMs: 250 },
+      real,
+    );
+    expect(out).toBe(`${LINE_TEXT.oldDaemon} · 1 waiting on you · oldest 10m`);
+  });
+
   it("keeps the daemon's answer past a hung notifier, and aborts the notifier's request", async () => {
     // Measured against real sockets: a notifier request the budget did not
     // abort kept the process alive to 3.06s — past astir-tui's 3s kill. The
@@ -1040,69 +1304,244 @@ describe("runStatusLine — off the socket", () => {
 describe("focusProbe", () => {
   /** pid → parent, as `ps -e -o pid=,ppid=` reports it. */
   const TREE: Record<number, number> = { 100: 90, 90: 80, 80: 1, 200: 190, 190: 1 };
+  const TABLE = Object.entries(TREE)
+    .map(([pid, ppid]) => `  ${pid}   ${ppid}`)
+    .join("\n");
 
-  const fake = (over: Partial<FocusDeps> & { panes?: string | null } = {}) => {
+  const fake = (over: Partial<ProbeDeps> & { panes?: string | null; table?: string | null } = {}) => {
     const calls: string[] = [];
-    const d: FocusDeps = {
+    const signals: AbortSignal[] = [];
+    const d: ProbeDeps = {
       platform: "linux",
-      selfPid: 1,
-      home: "/home/x",
       pidAlive: () => true,
-      run: (file, args) => {
+      run: async (file, args, signal) => {
         calls.push(`${file} ${args.join(" ")}`);
+        signals.push(signal);
         if (file === "tmux") return over.panes === undefined ? "80\n555\n" : over.panes;
-        if (file === "ps" && args[0] === "-e") {
-          return Object.entries(TREE)
-            .map(([pid, ppid]) => `  ${pid}   ${ppid}`)
-            .join("\n");
-        }
-        if (file === "ps" && args[1] === "ppid=") {
-          const pid = Number(args[3]);
-          return TREE[pid] === undefined ? null : `${TREE[pid]}\n`;
-        }
+        if (file === "ps") return over.table === undefined ? TABLE : over.table;
         return null;
       },
-      ...over,
+      ...(over.platform === undefined ? {} : { platform: over.platform }),
+      ...(over.pidAlive === undefined ? {} : { pidAlive: over.pidAlive }),
+      ...(over.run === undefined ? {} : { run: over.run }),
     };
-    return { d, calls };
+    return { d, calls, signals };
   };
+  const open = (): AbortSignal => new AbortController().signal;
 
-  it("on Linux, is true for a pid that sits under a tmux pane", () => {
-    const { d } = fake();
-    expect(focusProbe(d)(100)).toBe(true);
+  it("on Linux, is true for a pid that sits under a tmux pane", async () => {
+    expect((await focusProbe(fake().d, open()))(100)).toBe(true);
   });
 
-  it("on Linux, is false for a pid under no pane, or with no tmux at all", () => {
-    expect(focusProbe(fake().d)(200)).toBe(false);
-    expect(focusProbe(fake({ panes: null }).d)(100)).toBe(false);
+  it("on Linux, is false for a pid under no pane, or with no tmux at all", async () => {
+    expect((await focusProbe(fake().d, open()))(200)).toBe(false);
+    expect((await focusProbe(fake({ panes: null }).d, open()))(100)).toBe(false);
   });
 
-  it("is false for a pid that is not running", () => {
-    expect(focusProbe(fake({ pidAlive: () => false }).d)(100)).toBe(false);
+  it("is false for a pid that is not running", async () => {
+    expect((await focusProbe(fake({ pidAlive: () => false }).d, open()))(100)).toBe(false);
   });
 
-  it("on macOS, a live pid is enough — the owning app is always there to raise", () => {
+  it("on macOS, a live pid is enough — the owning app is always there to raise — and nothing is spawned", async () => {
     const { d, calls } = fake({ platform: "darwin", panes: null });
-    expect(focusProbe(d)(200)).toBe(true);
+    expect((await focusProbe(d, open()))(200)).toBe(true);
     expect(calls).toEqual([]);
   });
 
-  it("reads the process table and the panes ONCE, however many sessions are asked about", () => {
+  it("on macOS, a pid that is not running is not focusable", async () => {
+    const { d } = fake({ platform: "darwin", pidAlive: (pid) => pid !== 200 });
+    const probe = await focusProbe(d, open());
+    expect(probe(200)).toBe(false);
+    expect(probe(100)).toBe(true);
+  });
+
+  it("reads the panes and the process table ONCE, however many sessions are asked about", async () => {
     // Run every five seconds by the TUI mod. Walking the ancestry with one `ps`
     // per hop per session would be dozens of spawns a tick.
     const { d, calls } = fake();
-    const probe = focusProbe(d);
+    const probe = await focusProbe(d, open());
     probe(100);
     probe(200);
     probe(100);
-    expect(calls.filter((c) => c.startsWith("tmux"))).toHaveLength(1);
-    expect(calls.filter((c) => c.startsWith("ps"))).toEqual(["ps -e -o pid=,ppid="]);
+    expect(calls).toEqual(["tmux list-panes -a -F #{pane_pid}", "ps -e -o pid=,ppid="]);
   });
 
-  it("falls back to walking hop by hop when the table cannot be read", () => {
-    const { d } = fake();
-    const run = d.run;
-    d.run = (file, args) => (file === "ps" && args[0] === "-e" ? null : run(file, args));
-    expect(focusProbe(d)(100)).toBe(true);
+  it("does not read the process table when there is no pane to be under", async () => {
+    const { d, calls } = fake({ panes: "" });
+    expect((await focusProbe(d, open()))(100)).toBe(false);
+    expect(calls).toEqual(["tmux list-panes -a -F #{pane_pid}"]);
+  });
+
+  it("is false — not a walk hop by hop — when the table cannot be read", async () => {
+    // One `ps` per hop per session, on a five-second loop, is the unbounded
+    // cost the probe exists to avoid. Unknown is not focusable.
+    const { d, calls } = fake({ table: null });
+    expect((await focusProbe(d, open()))(100)).toBe(false);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("hands every command the caller's signal, so the line's budget can kill it", async () => {
+    const stop = new AbortController();
+    const { d, signals } = fake();
+    await focusProbe(d, stop.signal);
+    expect(signals).toHaveLength(2);
+    for (const s of signals) expect(s).toBe(stop.signal);
+  });
+
+  it("is false for everything, and spawns nothing, once the budget is spent", async () => {
+    const stop = new AbortController();
+    stop.abort();
+    const { d, calls } = fake();
+    expect((await focusProbe(d, stop.signal))(100)).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("never rejects: a command that throws is one that found nothing", async () => {
+    const { d } = fake({
+      run: async () => {
+        throw new Error("boom");
+      },
+    });
+    expect((await focusProbe(d, open()))(100)).toBe(false);
+  });
+});
+
+/**
+ * #80 — `rows[].focusable` asks tmux. A wedged tmux once held `--json` for the
+ * 5s of an `execFileSync` AFTER the budget, past astir-tui's 3s kill, so every
+ * tick read `astir unreachable` and hid the real warning — for a field the mod
+ * does not even read.
+ */
+describe("the focus probe runs inside the line's budget", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const waiting = body({
+    blockedCount: 1,
+    sessions: [session({ agents: [announced({ inStateMs: 2 * MIN })] })],
+  });
+
+  /** The real probe, over commands that answer as told; tmux hangs until killed unless `tmux` is given. */
+  const probing = (answers: { tmux?: string } = {}) => {
+    const calls: string[] = [];
+    const killed: string[] = [];
+    const probe: ProbeDeps = {
+      platform: "linux",
+      pidAlive: () => true,
+      run: (file, _args, signal) => {
+        calls.push(file);
+        if (file === "ps") return Promise.resolve("  100   80\n  80   1\n");
+        if (answers.tmux !== undefined) return Promise.resolve(answers.tmux);
+        return new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              killed.push(file);
+              resolve(null);
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+    return { probe, calls, killed };
+  };
+
+  it("a wedged tmux costs `focusable`, not the line — and is killed when the budget ends", async () => {
+    const { probe, killed } = probing();
+    const out = await runStatusLine(
+      { session: null, json: true, timeoutMs: 20 },
+      fetchers({ fetchStatus: async () => ok(waiting), probe }),
+    );
+    const doc = JSON.parse(out) as { line: string; warnings: unknown[]; rows: Array<{ focusable: boolean }> };
+    expect(doc.line).toBe("1 waiting on you · oldest 2m");
+    expect(doc.warnings).toEqual([]);
+    expect(doc.rows[0]?.focusable).toBe(false);
+    expect(killed).toEqual(["tmux"]);
+  });
+
+  it("is over when the budget is — 1.5s by default, not a moment longer", async () => {
+    vi.useFakeTimers();
+    let settled = false;
+    const pending = runStatusLine(
+      { session: null, json: true },
+      fetchers({ fetchStatus: async () => ok(waiting), probe: probing().probe }),
+    ).then((out) => {
+      settled = true;
+      return out;
+    });
+    await vi.advanceTimersByTimeAsync(1_499);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((JSON.parse(await pending) as { line: string }).line).toBe("1 waiting on you · oldest 2m");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a probe that ignores the budget altogether still costs only `focusable`", async () => {
+    // Every other fake here answers when the signal aborts. The real one
+    // need not: a command whose output something else still holds may never
+    // answer, and the budget racing the probe is all that ends the line then.
+    vi.useFakeTimers();
+    const deaf: ProbeDeps = { platform: "linux", pidAlive: () => true, run: () => never() };
+    let settled = false;
+    const pending = runStatusLine(
+      { session: null, json: true },
+      fetchers({ fetchStatus: async () => ok(waiting), probe: deaf }),
+    ).then((out) => {
+      settled = true;
+      return out;
+    });
+    await vi.advanceTimersByTimeAsync(DEFAULT_LINE_BUDGET_MS);
+    expect(settled).toBe(true);
+    const doc = JSON.parse(await pending) as {
+      line: string;
+      warnings: unknown[];
+      rows: Array<{ focusable: boolean }>;
+    };
+    expect(doc.line).toBe("1 waiting on you · oldest 2m");
+    expect(doc.warnings).toEqual([]);
+    expect(doc.rows[0]?.focusable).toBe(false);
+  });
+
+  it("starts with the fetches, so a notifier that spends the whole budget does not starve it", async () => {
+    // The ordinary state of a box behind a dead `ssh -R`: the notifier hangs
+    // to the end of the budget. A probe started after it would never run.
+    const { probe } = probing({ tmux: "80\n" });
+    const out = await runStatusLine(
+      { session: null, json: true, timeoutMs: 20 },
+      fetchers({ fetchStatus: async () => ok(waiting), fetchRemote: never, probe }),
+    );
+    const doc = JSON.parse(out) as { line: string; rows: Array<{ focusable: boolean }> };
+    expect(doc.line).toBe(`${LINE_TEXT.notifierHung} · 1 waiting on you · oldest 2m`);
+    expect(doc.rows[0]?.focusable).toBe(true);
+  });
+
+  it("asks tmux and ps at most once a run, however many sessions there are", async () => {
+    const { probe, calls } = probing({ tmux: "80\n" });
+    const many = body({
+      sessions: [
+        session({ sessionId: "a", cwd: "/p/a", pid: 100 }),
+        session({ sessionId: "b", cwd: "/p/b", pid: 100 }),
+        session({ sessionId: "c", cwd: "/p/c", pid: 100 }),
+      ],
+    });
+    const out = await runStatusLine(
+      { session: null, json: true },
+      fetchers({ fetchStatus: async () => ok(many), probe }),
+    );
+    expect((JSON.parse(out) as { rows: Array<{ focusable: boolean }> }).rows.map((r) => r.focusable)).toEqual(
+      [true, true, true],
+    );
+    expect(calls).toEqual(["tmux", "ps"]);
+  });
+
+  it("spawns nothing for the plain line, which carries no rows", async () => {
+    const { probe, calls } = probing({ tmux: "80\n" });
+    await runStatusLine(
+      { session: null, json: false },
+      fetchers({ fetchStatus: async () => ok(waiting), probe }),
+    );
+    expect(calls).toEqual([]);
   });
 });

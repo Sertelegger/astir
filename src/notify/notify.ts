@@ -18,8 +18,9 @@
  * path remains as an honest fallback that says what it cannot do.
  */
 
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { basename } from "node:path";
 
 export interface Notification {
   title: string;
@@ -35,9 +36,42 @@ export interface Notification {
 
 export type Notifier = (n: Notification) => void;
 
+/**
+ * What became of one attempt to put a notification on screen.
+ *
+ * The reason is content-free (SEC-01): it names the binary and how it failed —
+ * `notify-send failed (exit 1)` — and never the title or body it was given,
+ * because it is repeated on the startup line, in `doctor` and in `/healthz`'s
+ * consumers.
+ */
+export type NotifyOutcome = { ok: true } | { ok: false; reason: string };
+
+/**
+ * How long a notifier may take before it counts as failed. Every one astir
+ * runs posts and exits in well under a second; one still running after five
+ * is wedged on a bus or a prompt, and what it eventually shows is not news.
+ *
+ * No longer than the sending daemon waits for `astir notifier` to answer
+ * (`REMOTE_TIMEOUT_MS`), which hears this verdict only once it is reached.
+ */
+export const NOTIFIER_TIMEOUT_MS = 5_000;
+
 export interface NotifierBackend {
-  notify: Notifier;
-  /** Remove an outstanding notification, where the platform allows it. */
+  /**
+   * Show one, and say what became of it.
+   *
+   * #78, round two — it used to be fire-and-forget, so a `notify-send` that
+   * ran, failed and exited 1 was a delivery. On a headless systemd host that
+   * is every run: pam_systemd exports the session bus address to each SSH
+   * shell and user service, the static check below passes, and nothing owns
+   * org.freedesktop.Notifications to show anything.
+   */
+  notify: (n: Notification) => Promise<NotifyOutcome>;
+  /**
+   * Remove an outstanding notification, where the platform allows it. Fire
+   * and forget: a withdrawal shows nothing, so whether it worked says nothing
+   * about whether this machine can show one.
+   */
   remove: (group: string) => void;
   /** What `doctor` reports, so a missing capability is stated rather than guessed. */
   capabilities: { click: boolean; replace: boolean; remove: boolean };
@@ -69,8 +103,64 @@ export interface NotifierProbe {
   env?: Record<string, string | undefined>;
   /** Does this path exist? Finds binaries and recognises WSL. */
   exists?: (path: string) => boolean;
-  /** How a command is spawned. Fire and forget. */
-  run?: (cmd: string, args: string[]) => void;
+  /**
+   * How a command is spawned, and what became of it. Injected by tests, which
+   * must never put a real notification in front of whoever runs them.
+   */
+  run?: (cmd: string, args: string[]) => Promise<NotifyOutcome>;
+}
+
+/**
+ * The real runner: spawn, then watch. A non-zero exit, a spawn error, or no
+ * exit within `timeoutMs` is a failure; a child still running at the deadline
+ * is killed, since nothing it shows after that is worth showing and an
+ * orphaned notifier per doorbell piles up behind a wedged bus.
+ *
+ * Built from the binary's name and the error code alone. Not the error's
+ * message: for a spawned command that is `Command failed: notify-send … <title>
+ * <body>`, which would carry the notification's text into every place the
+ * reason is repeated.
+ */
+export function childRunner(
+  timeoutMs = NOTIFIER_TIMEOUT_MS,
+): (cmd: string, args: string[]) => Promise<NotifyOutcome> {
+  return (cmd, args) =>
+    new Promise((resolve) => {
+      const name = basename(cmd);
+      const couldNotStart = (err: unknown): NotifyOutcome => {
+        const code = (err as { code?: unknown } | null)?.code;
+        return {
+          ok: false,
+          reason: `${name} could not start${typeof code === "string" ? ` (${code})` : ""}`,
+        };
+      };
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = spawn(cmd, args, { stdio: "ignore" });
+      } catch (err) {
+        // A synchronous spawn failure (a malformed argument) never reaches `error`.
+        resolve(couldNotStart(err));
+        return;
+      }
+      let timer: NodeJS.Timeout | undefined;
+      let settled = false;
+      const settle = (outcome: NotifyOutcome): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(outcome);
+      };
+      timer = setTimeout(() => {
+        settle({ ok: false, reason: `${name} did not exit within ${timeoutMs / 1000} s` });
+        child.kill("SIGKILL");
+      }, timeoutMs);
+      child.once("error", (err) => settle(couldNotStart(err)));
+      child.once("exit", (code, signal) => {
+        if (code === 0) settle({ ok: true });
+        else if (code !== null) settle({ ok: false, reason: `${name} failed (exit ${code})` });
+        else settle({ ok: false, reason: `${name} was killed (${signal ?? "by a signal"})` });
+      });
+    });
 }
 
 /** WSL is Linux with Windows interop available; it needs the Windows path. */
@@ -91,10 +181,16 @@ function isWsl(
  * Is there anything for `notify-send` to show a notification ON?
  *
  * It talks to a notification server over the session bus, and a desktop is
- * what provides both. Over SSH or in a container with neither, the binary
- * runs, exits, and nothing appears — so the binary alone proves nothing. An
+ * what provides both. In a container with neither, the binary runs, exits,
+ * and nothing appears — so the binary alone proves nothing. An
  * exported-but-empty variable counts as unset: it is what a stripped
  * environment usually carries.
+ *
+ * Necessary, not sufficient, and only the first gate. On a systemd host
+ * pam_systemd exports `DBUS_SESSION_BUS_ADDRESS` to every SSH login and user
+ * service whether or not anything on that bus can show a notification — so a
+ * headless server with libnotify-bin passes this and fails every run. The
+ * run's own exit status is the second gate (`childRunner`).
  */
 function hasDesktop(env: Record<string, string | undefined>): boolean {
   return ["DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY"].some((k) => (env[k] ?? "") !== "");
@@ -138,12 +234,9 @@ export function createNotifierBackend(probe: NotifierProbe = {}): NotifierBacken
   const platform = probe.platform ?? process.platform;
   const env = probe.env ?? process.env;
   const exists = probe.exists ?? existsSync;
-  const run =
-    probe.run ??
-    ((cmd: string, args: string[]): void => {
-      // Fire and forget. A notifier that throws must never reach ingest.
-      execFile(cmd, args, () => undefined);
-    });
+  // Watched, not fired and forgotten — and never throwing, so a notifier that
+  // fails still cannot reach ingest.
+  const run = probe.run ?? childRunner();
 
   if (platform === "darwin") {
     const tn = which("terminal-notifier", env, exists);
@@ -159,9 +252,9 @@ export function createNotifierBackend(probe: NotifierProbe = {}): NotifierBacken
             const cmd = [onClick.command, ...onClick.args].map(shellQuote).join(" ");
             args.push("-execute", cmd);
           }
-          run(tn, args);
+          return run(tn, args);
         },
-        remove: (group) => run(tn, ["-remove", group]),
+        remove: (group) => void run(tn, ["-remove", group]),
       };
     }
 
@@ -175,7 +268,9 @@ export function createNotifierBackend(probe: NotifierProbe = {}): NotifierBacken
       capabilities: { click: false, replace: false, remove: false },
       notify: ({ title, body }) => {
         const script = `display notification "${forAppleScript(body)}" with title "${forAppleScript(title)}"`;
-        run("osascript", ["-e", script]);
+        // Exits 0 whether or not the OS displayed it (A7), so only a failure
+        // to run at all is learned here. Better than learning nothing.
+        return run("osascript", ["-e", script]);
       },
       remove: () => undefined,
     };
@@ -210,14 +305,14 @@ export function createNotifierBackend(probe: NotifierProbe = {}): NotifierBacken
       ...(unavailableReason === undefined ? {} : { unavailableReason }),
       // `notify-send` replaces by hint, but not portably across every daemon.
       capabilities: { click: false, replace: false, remove: false },
-      // The path that was FOUND, not a bare name for execFile to resolve again
-      // against a PATH that may not contain it. Nothing at all when dead: a
-      // spawn whose failure is swallowed is how this lied in the first place.
-      notify: ({ title, body }) => {
-        if (bin !== null && unavailableReason === undefined) {
-          run(bin, ["-u", "critical", "-a", "astir", title, body]);
-        }
-      },
+      // The path that was FOUND, not a bare name for the spawn to resolve
+      // again against a PATH that may not contain it. Nothing at all when
+      // dead, and a failure rather than silence: a spawn whose failure is
+      // swallowed is how this lied in the first place.
+      notify: ({ title, body }) =>
+        bin !== null && unavailableReason === undefined
+          ? run(bin, ["-u", "critical", "-a", "astir", title, body])
+          : Promise.resolve({ ok: false, reason: unavailableReason ?? "notify-send unavailable" }),
       remove: () => undefined,
     };
   }
@@ -227,14 +322,15 @@ export function createNotifierBackend(probe: NotifierProbe = {}): NotifierBacken
     available: false,
     unavailableReason: "no notifier on this platform",
     capabilities: { click: false, replace: false, remove: false },
-    notify: () => undefined,
+    notify: () => Promise.resolve({ ok: false, reason: "no notifier on this platform" }),
     remove: () => undefined,
   };
 }
 
 /** Back-compatible shorthand for callers that only need to post a notification. */
 export function createNotifier(): Notifier {
-  return createNotifierBackend().notify;
+  const backend = createNotifierBackend();
+  return (n) => void backend.notify(n);
 }
 
 /**
@@ -249,7 +345,10 @@ export function createNotifier(): Notifier {
 export function backendFromNotifier(notify: Notifier, name = "custom"): NotifierBackend {
   return {
     name,
-    notify,
+    notify: (n) => {
+      notify(n);
+      return Promise.resolve({ ok: true });
+    },
     remove: () => undefined,
     available: true,
     capabilities: { click: false, replace: false, remove: false },

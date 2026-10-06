@@ -19,7 +19,8 @@ else:
   prompt footer: how many agents are blocked on you right now, announced or not.
   `astir ?` means there is no count to trust: astir could not be read, or it
   says it cannot see every block (no daemon, another machine's daemon on the
-  port, a daemon or notifier it could not read). The status line says which.
+  port, a daemon or notifier it could not read, a machine it lost contact
+  with, a daemon older than astir). The status line says which.
 
 Both refresh every five seconds.
 
@@ -44,16 +45,21 @@ this plugin only reads what the daemon already knows.
 
 ## Which astir it runs
 
-In order:
-
 1. The `entry` setting, run with the `node` setting (or `node` on your PATH).
-2. The build of the checkout the plugin sits in, `<checkout>/dist/cli/main.js`,
-   when the plugin is installed in place from a local checkout (which is what
-   `astir install` sets up). The folder above the plugin counts as that checkout
-   only when its `.claude-plugin/marketplace.json` lists `astir-tui` with this
-   folder as its source. A copy of the plugin folder somewhere else never runs
-   whatever `dist/cli/main.js` happens to sit above it.
-3. `astir` on your PATH.
+2. Otherwise, `astir` on the PATH Claude Code runs with. `npm link` in your
+   checkout puts it there (see the main README). The `node` setting is not
+   used here.
+
+Nothing else is tried. In particular, the plugin never runs a build it finds
+in the folder above its own. That folder is your checkout when the plugin is
+installed in place, but for a plugin folder loaded from a shared directory such
+as `/tmp` it is anyone's to write, `dist/cli/main.js` and whatever vouches for
+it included. The plugin runs astir as you every five seconds, so it runs only
+what your settings or your PATH name.
+
+With no `entry` set and no `astir` on that PATH, the status line reads
+`astir unreachable`. Run `npm link`, or set `entry` to your checkout's
+`dist/cli/main.js`.
 
 The `node` and `entry` settings are asked for when you install the plugin, and
 can be changed later from Claude Code's config menu.
@@ -100,5 +106,4 @@ claude plugin test tui       # hooks/astir.test.ts, against the engine itself
 ```
 
 The tests answer everything beneath the plugin (astir's CLI, the clock, the
-session id, the file system), so they need no daemon, no session and no
-network.
+session id), so they need no daemon, no session and no network.

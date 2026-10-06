@@ -203,7 +203,7 @@ export function describeDaemonBuild(
  * tested, and what counts as a healthy notifier is a judgement worth pinning.
  */
 export function describeNotifier(
-  probe: { found: boolean; reason?: string | undefined },
+  probe: { found: boolean; reason?: string | undefined; canShow?: boolean | undefined },
   supervised: boolean,
   rosters: number | null,
 ): string[] {
@@ -222,6 +222,13 @@ export function describeNotifier(
   }
 
   lines.push(`  ${"notifier".padEnd(16)}running`);
+  if (probe.canShow === false) {
+    // #78 — found is not able. A notifier on a headless box answers the
+    // probe like any other and refuses every doorbell, so "running" alone
+    // would read as a way to reach you. Absent is an older notifier that did
+    // not say, and is left alone.
+    lines.push(`${pad}but it cannot show notifications — it refuses every doorbell sent to it`);
+  }
   // Running and never contacted is a DIFFERENT failure from not running, and
   // the two need different fixes — one is a process, the other is a tunnel.
   if (rosters === 0) {
@@ -277,8 +284,16 @@ export function describeDelivery(
     lines.push(`${label}DEAD — ${why}`);
     lines.push(`${pad}this machine cannot show a notification itself`);
   } else if (daemonLive !== null) {
-    lines.push(`${label}DEAD in the daemon — ${local.name} works here, not where the daemon runs`);
-    lines.push(`${pad}it was started without this terminal's display or session bus`);
+    // Two causes, and nothing here tells them apart. The daemon may lack the
+    // display or bus this terminal has — or both have one and nothing on it
+    // can show a notification, so every run exits 1 (a headless systemd host,
+    // where pam_systemd exports the bus to everything). Round two named only
+    // the first, "works here", which is false on that host and sends the user
+    // to restart a daemon that restarting cannot fix. The test send can tell
+    // them apart: it runs from here.
+    lines.push(`${label}DEAD in the daemon — its ${local.name} is not getting through`);
+    lines.push(`${pad}it may lack this terminal's display or session bus, or nothing on the bus`);
+    lines.push(`${pad}can show one; \`astir doctor --notify\` tries one from here to tell which`);
   } else {
     lines.push(`${label}${local.name} — live`);
     return lines;

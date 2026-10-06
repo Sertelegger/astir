@@ -180,6 +180,14 @@ export interface RemoteSession {
 }
 
 export interface StatusBody {
+  /**
+   * VER-01 — `/state`'s own version. Every astir daemon has sent it (2.0 from
+   * the first); 2.2 added `announcedAt`. `status --line` reads anything below
+   * 2.2 — or a body without one — as an older daemon, whose blocks it cannot
+   * tell announced from not. Typed as the daemon sends it; read off a socket,
+   * so checked before it is compared.
+   */
+  v?: { major: number; minor: number };
   blockedCount: number;
   sessions: StatusSession[];
   /**

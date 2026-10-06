@@ -12,22 +12,31 @@
  */
 
 import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { hostname, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { daemonDeliveryLive, describeDelivery } from "../src/config/plugin.js";
 import { CONTRACT_VERSION } from "../src/contract/event.js";
 import { Daemon } from "../src/daemon/server.js";
 import { Registry } from "../src/model/registry.js";
-import { Dispatcher, localTarget, remoteTarget } from "../src/notify/dispatch.js";
+import { detectNotifier } from "../src/notify/detect.js";
+import { Dispatcher, localTarget, REMOTE_TIMEOUT_MS, remoteTarget } from "../src/notify/dispatch.js";
 import { buildEnvelope } from "../src/notify/envelope.js";
 import { NotifyLoop } from "../src/notify/loop.js";
-import { backendFromNotifier, createNotifierBackend, type NotifierBackend } from "../src/notify/notify.js";
+import {
+  backendFromNotifier,
+  childRunner,
+  createNotifierBackend,
+  NOTIFIER_TIMEOUT_MS,
+  type NotifierBackend,
+  type NotifyOutcome,
+} from "../src/notify/notify.js";
 import { NotifyPolicy } from "../src/notify/policy.js";
+import { NotifierServer } from "../src/notify/server.js";
 
 const blocked = buildEnvelope({
   kind: "blocked",
@@ -58,10 +67,14 @@ function linux(env: Record<string, string | undefined>, exists: (p: string) => b
     exists,
     run: (cmd, args) => {
       ran.push({ cmd, args });
+      return Promise.resolve({ ok: true });
     },
   });
   return { backend, ran };
 }
+
+/** A runner for backends whose spawn nothing here looks at. */
+const shown = (): Promise<NotifyOutcome> => Promise.resolve({ ok: true });
 
 describe("the Linux backend checks what it needs instead of assuming it", () => {
   it("is dead when notify-send is not installed — the megabrain case", () => {
@@ -87,6 +100,9 @@ describe("the Linux backend checks what it needs instead of assuming it", () => 
     ["WAYLAND_DISPLAY", "wayland-0"],
     ["DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus"],
   ])("is live with notify-send and %s", (key, value) => {
+    // The first gate only. A bus address alone is what pam_systemd exports on
+    // a headless host too; the run's exit status is the second gate — see
+    // "the local path learns from what its notifier did".
     const { backend } = linux({ [key]: value, PATH: "/usr/bin" }, only("/usr/bin/notify-send"));
     expect(backend.available).toBe(true);
     expect(backend.unavailableReason).toBeUndefined();
@@ -113,9 +129,13 @@ describe("the Linux backend checks what it needs instead of assuming it", () => 
     expect(ran[0]?.cmd).toBe("/opt/x/bin/notify-send");
   });
 
-  it("never spawns anything when it is dead", () => {
+  it("never spawns anything when it is dead, and answers failure", async () => {
     const { backend, ran } = linux({}, only());
-    backend.notify({ title: "t", body: "b" });
+    // `astir notifier` calls this directly: silence here was a delivery.
+    expect(await backend.notify({ title: "t", body: "b" })).toEqual({
+      ok: false,
+      reason: "notify-send not found",
+    });
     expect(ran).toEqual([]);
   });
 
@@ -135,7 +155,7 @@ describe("other platforms keep what works today", () => {
       platform: "darwin",
       env: {},
       exists: only("/opt/homebrew/bin/terminal-notifier"),
-      run: () => undefined,
+      run: shown,
     });
     expect(b.name).toBe("terminal-notifier");
     expect(b.available).toBe(true);
@@ -144,13 +164,13 @@ describe("other platforms keep what works today", () => {
   it("macOS without it falls back to osascript, which ships with the OS — still live", () => {
     // The user's Mac receives astir's notifications today. Nothing in #78 may
     // turn that into a reported failure.
-    const b = createNotifierBackend({ platform: "darwin", env: {}, exists: only(), run: () => undefined });
+    const b = createNotifierBackend({ platform: "darwin", env: {}, exists: only(), run: shown });
     expect(b.name).toBe("osascript");
     expect(b.available).toBe(true);
   });
 
   it("Windows is unchanged", () => {
-    const b = createNotifierBackend({ platform: "win32", env: {}, exists: only(), run: () => undefined });
+    const b = createNotifierBackend({ platform: "win32", env: {}, exists: only(), run: shown });
     expect(b.available).toBe(true);
   });
 
@@ -159,16 +179,27 @@ describe("other platforms keep what works today", () => {
       platform: "linux",
       env: { WSL_DISTRO_NAME: "Ubuntu" },
       exists: only(),
-      run: () => undefined,
+      run: shown,
     });
     expect(b.name).toBe("burnt-toast");
     expect(b.available).toBe(true);
   });
 
   it("a platform with no notifier says so", () => {
-    const b = createNotifierBackend({ platform: "aix", env: {}, exists: only(), run: () => undefined });
+    const b = createNotifierBackend({ platform: "aix", env: {}, exists: only(), run: shown });
     expect(b.available).toBe(false);
     expect(b.unavailableReason).toBe("no notifier on this platform");
+  });
+
+  it("and answers failure if asked anyway, rather than a delivery it never made", async () => {
+    // Unreachable today — the local target and `astir notifier` both stop at
+    // `available` — but a backend's answer is its own contract, not its
+    // callers' gate.
+    const b = createNotifierBackend({ platform: "aix", env: {}, exists: only(), run: shown });
+    expect(await b.notify({ title: "t", body: "b" })).toEqual({
+      ok: false,
+      reason: "no notifier on this platform",
+    });
   });
 
   it("a wrapped function is assumed to work, as callers that pass one mean", () => {
@@ -185,6 +216,7 @@ function dead(reason = "notify-send not found"): NotifierBackend & { calls: stri
     capabilities: { click: false, replace: false, remove: false },
     notify: () => {
       calls.push("notify");
+      return Promise.resolve({ ok: true });
     },
     remove: () => {
       calls.push("remove");
@@ -278,6 +310,349 @@ describe("a notifier that refuses or cannot be reached stops counting as live", 
     expect(outcome?.ok).toBe(false);
     expect(d.live()).toEqual([]);
     expect(remote.unavailableReason).toBe(outcome?.reason);
+  });
+});
+
+describe("the probe tells a notifier's target what it found", () => {
+  /**
+   * Two facts, held apart: what the PSH-14 probe last read at `/healthz`, and
+   * whether the last POST failed. A successful POST answers the second and
+   * never the first — a 200 to a resolution is what made a notifier that
+   * refuses every block read as live between blocks.
+   */
+  let server: Server | undefined;
+  afterEach(async () => {
+    await new Promise<void>((r) => (server ? server.close(() => r()) : r()));
+    server = undefined;
+  });
+
+  async function notifier(status: () => number): Promise<string> {
+    server = createServer((req, res) => {
+      req.resume();
+      res.writeHead(status(), { "content-type": "application/json" }).end("{}");
+    });
+    await new Promise<void>((r) => server?.listen(0, "127.0.0.1", () => r()));
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}/notify`;
+  }
+
+  it.each([
+    ["a string", "yes"],
+    ["a number", 1],
+    ["null", null],
+  ])("the probe drops a canShow that is %s rather than guessing what it meant", async (_label, canShow) => {
+    // `/healthz` takes no token, so anything on the port can answer it. A
+    // truthy non-boolean read as `true` would revive a path; read as
+    // `false` it would kill one. Absent is "did not say", which is the truth.
+    server = createServer((req, res) => {
+      req.resume();
+      res
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify({ ok: true, role: "notifier", canShow }));
+    });
+    await new Promise<void>((r) => server?.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as AddressInfo).port;
+    expect(await detectNotifier(port)).toEqual({ found: true, url: `http://127.0.0.1:${port}/notify` });
+  });
+
+  it("is dead when the probe says the notifier cannot show, and says why", () => {
+    const remote = remoteTarget("http://127.0.0.1:47001/notify", "t");
+    remote.probed({ canShow: false });
+    expect(remote.live()).toBe(false);
+    expect(remote.unavailableReason).toBe("the notifier cannot show notifications");
+  });
+
+  it("a successful POST does not overrule a probe that said it cannot show", async () => {
+    const url = await notifier(() => 200);
+    const remote = remoteTarget(url, "t", 2_000);
+    remote.probed({ canShow: false });
+    expect((await remote.deliver(resolved)).ok).toBe(true);
+    expect(remote.live()).toBe(false);
+    remote.probed({ canShow: true });
+    expect(remote.live()).toBe(true);
+  });
+
+  it("reachability clears a failure that was only about reaching it", async () => {
+    const url = await notifier(() => 200);
+    await new Promise<void>((r) => server?.close(() => r()));
+    server = undefined;
+    const remote = remoteTarget(url, "t", 2_000);
+    expect((await remote.deliver(blocked)).ok).toBe(false);
+    expect(remote.live()).toBe(false);
+    remote.probed({ canShow: true });
+    expect(remote.live()).toBe(true);
+    expect(remote.unavailableReason).toBeUndefined();
+  });
+
+  it("an older notifier that does not say is read as before — reachable, not unable", async () => {
+    const url = await notifier(() => 200);
+    await new Promise<void>((r) => server?.close(() => r()));
+    server = undefined;
+    const remote = remoteTarget(url, "t", 2_000);
+    await remote.deliver(blocked);
+    remote.probed({});
+    expect(remote.live()).toBe(true);
+  });
+
+  it("does not clear a refused token — /healthz needs none, so reaching it proves nothing", async () => {
+    const url = await notifier(() => 401);
+    const remote = remoteTarget(url, "wrong", 2_000);
+    await remote.deliver(blocked);
+    remote.probed({ canShow: true });
+    expect(remote.live()).toBe(false);
+    expect(remote.unavailableReason).toBe("unauthorized — token mismatch");
+  });
+
+  it("clears a 503 only when the notifier says it can show now", async () => {
+    const url = await notifier(() => 503);
+    const remote = remoteTarget(url, "t", 2_000);
+    await remote.deliver(blocked);
+    remote.probed({});
+    expect(remote.live(), "a notifier too old to say has not disproved its refusal").toBe(false);
+    remote.probed({ canShow: true });
+    expect(remote.live()).toBe(true);
+  });
+});
+
+describe("the local path learns from what its notifier did", () => {
+  /**
+   * The headless systemd host: `notify-send` installed, the session bus
+   * exported to every SSH shell and user service by pam_systemd, and nothing
+   * on that bus owning org.freedesktop.Notifications. The static gate passes;
+   * every run exits 1 with nothing on screen. Measured by the review with the
+   * real Ubuntu 24.04 binary and a private bus.
+   */
+  const bus = { PATH: "/usr/bin", DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus" };
+  function host(outcomes: NotifyOutcome[]) {
+    const ran: string[] = [];
+    const backend = createNotifierBackend({
+      platform: "linux",
+      env: bus,
+      exists: only("/usr/bin/notify-send"),
+      run: (cmd) => {
+        ran.push(cmd);
+        return Promise.resolve(outcomes.shift() ?? { ok: true });
+      },
+    });
+    return { backend, ran };
+  }
+  const exit1: NotifyOutcome = { ok: false, reason: "notify-send failed (exit 1)" };
+
+  it("a failed run is a failed delivery, with its reason", async () => {
+    const { backend } = host([exit1]);
+    expect(backend.available, "the static gate still passes").toBe(true);
+    expect(await localTarget(backend).deliver(blocked)).toEqual({
+      ok: false,
+      reason: "notify-send failed (exit 1)",
+    });
+  });
+
+  it("is not live after one, and says why", async () => {
+    const { backend } = host([exit1]);
+    const d = new Dispatcher([localTarget(backend)]);
+    expect(d.live()).toEqual(["local"]);
+    await d.send(blocked);
+    expect(d.live()).toEqual([]);
+    expect(d.describe()).toBe("none live (local: notify-send failed (exit 1))");
+  });
+
+  it("is live again once a later delivery succeeds", async () => {
+    const { backend } = host([exit1, { ok: true }]);
+    const target = localTarget(backend);
+    await target.deliver(blocked);
+    expect(target.live()).toBe(false);
+    // Still tried: a dead verdict that stopped trying could never be lifted.
+    expect((await target.deliver(blocked)).ok).toBe(true);
+    expect(target.live()).toBe(true);
+    expect(target.unavailableReason).toBeUndefined();
+  });
+
+  it("a withdrawal neither kills nor revives it — it shows nothing either way", async () => {
+    const { backend } = host([exit1]);
+    const target = localTarget(backend);
+    await target.deliver(blocked);
+    await target.deliver(resolved);
+    expect(target.live(), "a dead path is not revived").toBe(false);
+
+    const healthy = localTarget(host([]).backend);
+    expect((await healthy.deliver(resolved)).ok).toBe(true);
+    expect(healthy.live(), "and a live one is not killed").toBe(true);
+    expect(healthy.unavailableReason).toBeUndefined();
+  });
+
+  it("a backend that throws is a failure too", async () => {
+    const target = localTarget({
+      ...backendFromNotifier(() => undefined),
+      notify: () => {
+        throw new Error("spawn EAGAIN");
+      },
+    });
+    expect((await target.deliver(blocked)).ok).toBe(false);
+    expect(target.live()).toBe(false);
+  });
+
+  it("names the backend, never the error, when one throws — the reason is content-free (SEC-01)", async () => {
+    // A spawn's error message is the command line it ran, title and body
+    // included, and this reason reaches the startup line and doctor.
+    const target = localTarget({
+      ...backendFromNotifier(() => undefined),
+      notify: () => {
+        throw new Error("Command failed: notify-send An agent needs you secret-project");
+      },
+    });
+    expect(await target.deliver(blocked)).toEqual({ ok: false, reason: "custom failed to run" });
+    expect(target.unavailableReason).toBe("custom failed to run");
+  });
+
+  it.each([
+    [
+      "terminal-notifier",
+      { platform: "darwin" as const, exists: only("/opt/homebrew/bin/terminal-notifier") },
+    ],
+    ["osascript", { platform: "darwin" as const, exists: only() }],
+    ["burnt-toast", { platform: "win32" as const, exists: only() }],
+    ["notify-send", { platform: "linux" as const, exists: only("/usr/bin/notify-send"), env: bus }],
+  ])("every backend answers with what its run did — %s", async (name, probe) => {
+    const backend = createNotifierBackend({
+      env: {},
+      ...probe,
+      run: () => Promise.resolve({ ok: false, reason: `${name} failed (exit 2)` }),
+    });
+    expect(backend.name).toBe(name);
+    expect(await backend.notify({ title: "t", body: "b" })).toEqual({
+      ok: false,
+      reason: `${name} failed (exit 2)`,
+    });
+  });
+
+  it("the loop says NO PATH DELIVERED when the only path's notifier failed", async () => {
+    let t = 0;
+    const registry = new Registry({ nowMs: () => t });
+    const lines: string[] = [];
+    const loop = new NotifyLoop({
+      registry,
+      policy: new NotifyPolicy(),
+      dispatcher: new Dispatcher([localTarget(host([exit1]).backend)]),
+      now: () => t,
+      dwellMs: () => 0,
+      onDelivered: (l) => lines.push(l),
+    });
+    registry.apply(
+      {
+        v: CONTRACT_VERSION,
+        eventId: "e1",
+        provider: "claude",
+        sessionId: "s1",
+        ts: 1,
+        kind: "notification",
+        agentId: "s1",
+        agentType: null,
+        parentAgentId: null,
+        parentSource: null,
+        tool: null,
+        description: null,
+        paths: [],
+        op: null,
+        ok: null,
+        notificationKind: "permission_prompt",
+      },
+      "/repo",
+    );
+    t += 1;
+    await loop.pulse();
+    expect(lines[0]).toContain("NO PATH DELIVERED");
+  });
+});
+
+describe("the default runner watches the child it spawns", () => {
+  // Node stands in for the notifier: these test how an exit, a spawn error
+  // and a hang are read, and must never put a notification on anyone's screen.
+  const node = basename(process.execPath);
+
+  it("an exit of 0 is a delivery", async () => {
+    expect(await childRunner()(process.execPath, ["-e", "process.exit(0)"])).toEqual({ ok: true });
+  });
+
+  it("a non-zero exit is not, and says which binary and which code", async () => {
+    expect(await childRunner()(process.execPath, ["-e", "process.exit(3)"])).toEqual({
+      ok: false,
+      reason: `${node} failed (exit 3)`,
+    });
+  });
+
+  it("a binary that cannot be started is not", async () => {
+    const r = await childRunner()("/nonexistent/astir-test/notify-send", []);
+    expect(r).toEqual({ ok: false, reason: "notify-send could not start (ENOENT)" });
+  });
+
+  it("a spawn that throws before starting is not — answered, never rejected", async () => {
+    // A NUL in an argument throws from `spawn` itself and never reaches the
+    // child's `error` event. Callers catch a rejection, but with the error's
+    // text — which for a spawn is the command line — so the runner answers.
+    const r = await childRunner()(process.execPath, ["-e", "process.exit(0)", "a\u0000b"]);
+    expect(r).toEqual({ ok: false, reason: `${node} could not start (ERR_INVALID_ARG_VALUE)` });
+  });
+
+  it.skipIf(process.platform === "win32")("a child killed by a signal is not a delivery", async () => {
+    // Exit code null: an OOM kill, a session teardown, a SIGTERM from outside.
+    // Whatever it was doing, it did not finish showing anything.
+    expect(await childRunner()(process.execPath, ["-e", 'process.kill(process.pid, "SIGTERM")'])).toEqual({
+      ok: false,
+      reason: `${node} was killed (SIGTERM)`,
+    });
+  });
+
+  it("gives up on a child no later than a daemon gives up on the notifier running it", () => {
+    // `astir notifier` answers its sender only once its child settles. Waiting
+    // longer than the sender does turns a wedged notify-send into "could not
+    // reach it" at the daemon, which the next probe — reaching a `/healthz`
+    // that still says it can show — clears, and the path reads live while
+    // nothing can appear.
+    expect(NOTIFIER_TIMEOUT_MS).toBeLessThanOrEqual(REMOTE_TIMEOUT_MS);
+  });
+
+  it("a child that does not exit in time is not, and is killed rather than left behind", async () => {
+    // One wedged notify-send per doorbell, every minute, behind a bus that
+    // never answers, is a process leak. The child writes its pid so the test
+    // can see it gone.
+    const dir = mkdtempSync(join(tmpdir(), "astir-runner-"));
+    try {
+      const pidFile = join(dir, "pid");
+      const started = Date.now();
+      const r = await childRunner(2_000)(process.execPath, [
+        "-e",
+        `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
+      ]);
+      expect(r).toEqual({ ok: false, reason: `${node} did not exit within 2 s` });
+      expect(Date.now() - started).toBeLessThan(5_000);
+
+      const pid = Number(readFileSync(pidFile, "utf8"));
+      const alive = (): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      for (let i = 0; i < 40 && alive(); i++) await new Promise((r) => setTimeout(r, 50));
+      expect(alive(), "the hung child was killed").toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never repeats what it was asked to show — the reason is content-free (SEC-01)", async () => {
+    const r = await childRunner()(process.execPath, [
+      "-e",
+      "process.exit(1)",
+      "An agent needs you",
+      "secret-project needs permission",
+    ]);
+    expect(r.ok).toBe(false);
+    const reason = r.ok ? "" : r.reason;
+    expect(reason).not.toContain("secret-project");
+    expect(reason).not.toContain("An agent");
+    expect(reason).not.toContain("process.exit");
   });
 });
 
@@ -461,6 +836,25 @@ describe("doctor names a dead local path and why", () => {
     expect(out).toContain("daemon");
   });
 
+  it("does not blame the daemon's environment for a notifier that fails in both", () => {
+    // The headless systemd host: notify-send installed and a bus exported in
+    // this terminal AND in the daemon, and nothing on that bus to show one, so
+    // every run exits 1. The static check passes here, the daemon's runs
+    // fail, and this branch cannot tell that from a daemon started without
+    // this terminal's bus. Round two said it "works here" and that the daemon
+    // "was started without" that bus — false on this host, and a restart
+    // fixes nothing — while `--notify`, a few lines down, printed
+    // `local FAILED — notify-send failed (exit 1)`.
+    const out = text(describeDelivery(live, []));
+    expect(out).toMatch(/dead in the daemon/i);
+    expect(out).not.toContain("works here");
+    expect(out).not.toContain("it was started without");
+    // Both causes named, and the test send that tells them apart.
+    expect(out).toContain("display or session bus");
+    expect(out).toContain("astir doctor --notify");
+    expect(out).toContain("no one will be told");
+  });
+
   it("does not grade what it could not ask the daemon", () => {
     const out = text(describeDelivery(live, null));
     expect(out).not.toMatch(/dead/i);
@@ -639,4 +1033,188 @@ describe.skipIf(process.platform === "win32")("the built daemon and doctor say w
       await new Promise<void>((r) => old.close(() => r()));
     }
   }, 40_000);
+
+  /** Run `astir <args>` from the build above; resolves once its stdout matches `ready`. */
+  async function launch(args: string[], childEnv: Record<string, string>, ready: RegExp) {
+    const child = spawn(process.execPath, [entry, ...args], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: childEnv,
+    });
+    let out = "";
+    const match = await new Promise<RegExpExecArray>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`${args[0]} never said ${ready}; stdout=${out}`)),
+        15_000,
+      );
+      child.stdout?.on("data", (c: Buffer) => {
+        out += c.toString();
+        const m = ready.exec(out);
+        if (m !== null) {
+          clearTimeout(timer);
+          resolve(m);
+        }
+      });
+      child.once("exit", (code) => {
+        clearTimeout(timer);
+        reject(new Error(`${args[0]} exited early (code ${code}); stdout=${out}`));
+      });
+    });
+    return { child, match, out: () => out };
+  }
+
+  /** Read until `done` holds or `ms` runs out, and hand back the last reading to assert on. */
+  async function until<T>(read: () => Promise<T>, done: (v: T) => boolean, ms: number): Promise<T> {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const v = await read();
+      if (done(v) || Date.now() > deadline) return v;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  /**
+   * `runDaemon`'s PSH-14 probe, which only the built daemon runs: what the
+   * roster push and `/state` read follow, and what a probe that finds the
+   * notifier already attached does with it. Round one did nothing at all
+   * there, so a notifier that came back able to show stayed dead.
+   *
+   * Two probes are needed and the interval is the daemon's own 15 s, so this
+   * one is slow on purpose. An in-process notifier stands in, with a
+   * do-nothing `notify`: nothing here can reach a screen.
+   */
+  it("the daemon's probe follows the notifier it finds, and revives it once it can show", async () => {
+    const notifyToken = "delivery-live-notify-token";
+    let notifier = new NotifierServer({
+      token: notifyToken,
+      notify: () => undefined,
+      cannotShow: "no display",
+    });
+    const notifyPort = await notifier.listen(0);
+    let daemon: Awaited<ReturnType<typeof launch>> | undefined;
+    try {
+      // Another machine's roster, held by the notifier. The daemon shows it
+      // in `/state` only if it reads the notifier its probe attached.
+      const seeded = await fetch(`http://127.0.0.1:${notifyPort}/roster`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${notifyToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ host: "astir-78-elsewhere", sessions: [{ sessionId: "far-1", cwd: "/far" }] }),
+      });
+      expect(seeded.status).toBe(200);
+
+      daemon = await launch(
+        [
+          "daemon",
+          "--port",
+          "0",
+          "--token",
+          TOKEN,
+          "--notify-port",
+          String(notifyPort),
+          "--notify-token",
+          notifyToken,
+        ],
+        env,
+        /notifier detected on .*\n/,
+      );
+      const daemonPort = Number(/listening on 127\.0\.0\.1:(\d+)/.exec(daemon.out())?.[1]);
+      const name = `remote(http://127.0.0.1:${notifyPort}/notify)`;
+      const live = async () =>
+        (
+          (await (await fetch(`http://127.0.0.1:${daemonPort}/healthz`)).json()) as {
+            delivery?: { live?: string[] };
+          }
+        ).delivery?.live ?? [];
+      const remote = async () =>
+        (
+          (await (
+            await fetch(`http://127.0.0.1:${daemonPort}/state`, {
+              headers: { Authorization: `Bearer ${TOKEN}` },
+            })
+          ).json()) as { remote?: Array<{ sessionId?: string }> }
+        ).remote ?? [];
+
+      expect(daemon.out()).toContain(
+        `notifier detected on 127.0.0.1:${notifyPort}, but it cannot show notifications`,
+      );
+      expect(await live(), "attached, and dead from the start").not.toContain(name);
+
+      // The `/state` read follows the attached notifier (it polls every 5 s).
+      const far = await until(remote, (r) => r.some((s) => s.sessionId === "far-1"), 10_000);
+      expect(far.map((s) => s.sessionId)).toContain("far-1");
+
+      // Restarted from a desktop login, quicker than the probe interval: the
+      // probe never sees it gone, so only the "already attached" branch can
+      // carry the news.
+      await notifier.close();
+      notifier = new NotifierServer({ token: notifyToken, notify: () => undefined });
+      await notifier.listen(notifyPort);
+      expect(await until(live, (l) => l.includes(name), 25_000)).toContain(name);
+      expect(daemon.out()).toContain(`notifier on 127.0.0.1:${notifyPort} is live again`);
+    } finally {
+      daemon?.child.kill("SIGTERM");
+      await notifier.close();
+    }
+  }, 60_000);
+
+  // `astir notifier` hands its backend's answer to the server, so a
+  // notify-send that runs and exits 1 is refused to the sender. A fake one on
+  // PATH stands in — so Linux only (elsewhere another backend, and a real
+  // notification, would answer), and only where no real notify-send sits in a
+  // directory searched before PATH, since nothing real may be spawned here.
+  const realNotifySend = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].some((d) =>
+    existsSync(join(d, "notify-send")),
+  );
+  const wsl = existsSync("/proc/sys/fs/binfmt_misc/WSLInterop");
+  it.skipIf(process.platform !== "linux" || wsl || realNotifySend)(
+    "astir notifier refuses a doorbell its notify-send failed to show, and accepts one that shows",
+    async () => {
+      // The headless systemd host: a bus address exported, the binary there,
+      // and every run exiting 1. The address goes nowhere.
+      const fake = join(root, "fake-bin");
+      const exitCode = join(root, "fake-exit");
+      const ran = join(root, "fake-ran");
+      mkdirSync(fake, { recursive: true });
+      writeFileSync(exitCode, "1");
+      writeFileSync(
+        join(fake, "notify-send"),
+        `#!/bin/sh\necho ran >> '${ran}'\nexit "$(cat '${exitCode}')"\n`,
+        {
+          mode: 0o755,
+        },
+      );
+      const notifier = await launch(
+        ["notifier", "--port", "0", "--token", "nt"],
+        {
+          ...env,
+          PATH: `${fake}:${env.PATH}`,
+          DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/astir-78-bus",
+        },
+        /notifier listening on 127\.0\.0\.1:(\d+)/,
+      );
+      try {
+        const base = `http://127.0.0.1:${notifier.match[1]}`;
+        const post = (body: unknown) =>
+          fetch(`${base}/notify`, {
+            method: "POST",
+            headers: { Authorization: "Bearer nt", "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+        const canShow = async () =>
+          ((await (await fetch(`${base}/healthz`)).json()) as { canShow?: unknown }).canShow;
+
+        expect(await canShow(), "nothing tried, nothing known").toBe(true);
+        expect((await post(blocked)).status).toBe(503);
+        expect(readFileSync(ran, "utf8"), "the fake ran, and nothing else").toBe("ran\n");
+        expect(await canShow()).toBe(false);
+
+        writeFileSync(exitCode, "0");
+        expect((await post({ ...blocked, id: `${blocked.id}-later` })).status).toBe(200);
+        expect(await canShow()).toBe(true);
+      } finally {
+        notifier.child.kill("SIGTERM");
+      }
+    },
+    40_000,
+  );
 });

@@ -36,12 +36,12 @@ interface Warning {
   text: string;
 }
 
-/** What `astir status --line --json` prints, shaped as the serialiser's v1. */
 /** What the status line draws for astir's line: its own `astir:` lead dropped. */
 function drawn(line: string | null): string | undefined {
   return line === null ? undefined : line.replace(/^astir:\s*/, "");
 }
 
+/** What `astir status --line --json` prints, shaped as the serialiser's v1. */
 function printed(fields: {
   line: string | null;
   blocked: number;
@@ -61,7 +61,10 @@ function printed(fields: {
 /**
  * What astir says in each state where a warning stands, word for word: each
  * one is `statusLine()`'s own output (src/status/line.ts), run for that state,
- * not written by hand. `rows`, `announced` and `v` are left to `printed`.
+ * not written by hand. `rows` and `announced` are left to `printed`, and so is
+ * `v` where it is 1.0. `contactLost` and `oldDaemon` are line v1.1's, written
+ * from its spec's words before src/status/line.ts had them; what these tests
+ * read of them is the warning's `kind`.
  */
 const SAID = {
   daemonDown: {
@@ -99,36 +102,44 @@ const SAID = {
     blocked: 2,
     warnings: [{ kind: "silent", text: "astir: hears nothing from this session" }],
   },
+  // Line v1.1. The only agent waiting was on a machine the notifier has lost
+  // contact with: its doorbell is not counted, so `blocked` is 0.
+  contactLost: {
+    line: "astir: lost contact with 1 machine where an agent was waiting",
+    blocked: 0,
+    v: { major: 1, minor: 1 },
+    warnings: [
+      { kind: "contact-lost", text: "astir: lost contact with 1 machine where an agent was waiting" },
+    ],
+  },
+  // Line v1.1. A daemon from before /state 2.2 has no `announcedAt`, so the
+  // line counts its raw blocks.
+  oldDaemon: {
+    line: "astir: the daemon is older than this astir — restart it · 2 waiting on you · oldest 3m",
+    blocked: 2,
+    v: { major: 1, minor: 1 },
+    warnings: [{ kind: "old-daemon", text: "astir: the daemon is older than this astir — restart it" }],
+  },
 } as const;
-
-/** The marketplace of an astir checkout: it names `./tui` as astir-tui's folder. */
-const CHECKOUT_MARKETPLACE = JSON.stringify({
-  name: "astir-marketplace",
-  plugins: [
-    { name: "astir", source: "./", version: "0.2.0" },
-    { name: "astir-tui", source: "./tui", version: "0.2.0" },
-  ],
-});
 
 function exited(stdout: string, exitCode = 0): ProcessRunResult {
   return { exitCode, stdout, stderr: "", isStdoutTruncated: false, isStderrTruncated: false };
 }
 
 /**
- * The world beneath the plugin. `dist` says what the folder above the
- * plugin's holds at `dist/cli/main.js`: a built CLI (`true`), a folder
- * (`"dir"`), or nothing. `marketplace` is the text of that folder's
- * `.claude-plugin/marketplace.json`, null for none; an astir checkout's by
- * default.
+ * The world beneath the plugin. With `planted`, the folder above the plugin's
+ * holds what an astir checkout would: a `.claude-plugin/marketplace.json` that
+ * names `./tui` (this folder, under `claude plugin test tui`) as astir-tui's,
+ * and a `dist/cli/main.js` that is a file. Anyone can put both beside a plugin folder loaded from a shared /tmp,
+ * so nothing found there may decide what runs.
  */
-function world(on: On, opts: { dist?: boolean | "dir"; marketplace?: string | null } = {}): World {
+function world(on: On, opts: { planted?: boolean } = {}): World {
   const clock = mock.clock(on, { now: 1_000_000 });
   const runs: (readonly string[])[] = [];
   const timeouts: (number | undefined)[] = [];
   const statuses: (string | undefined)[] = [];
   const stats: string[] = [];
   const reads: string[] = [];
-  const marketplace = opts.marketplace === undefined ? CHECKOUT_MARKETPLACE : opts.marketplace;
   let answer: Answer = () => exited(printed({ line: null, blocked: 0 }));
   let session = "sess-1";
 
@@ -137,15 +148,15 @@ function world(on: On, opts: { dist?: boolean | "dir"; marketplace?: string | nu
   on("session.id", () => ({ value: session }));
   on("fs.read", (_$, e) => {
     reads.push(e.path);
-    if (marketplace !== null && e.path.endsWith("/.claude-plugin/marketplace.json")) {
-      return { value: marketplace };
+    if (opts.planted === true && e.path.endsWith("/.claude-plugin/marketplace.json")) {
+      // `./tui`: the folder `claude plugin test tui` loads this plugin from.
+      return { value: JSON.stringify({ plugins: [{ name: "astir-tui", source: "./tui" }] }) };
     }
     throw new Error(`ENOENT: ${e.path}`);
   });
   on("fs.stat", (_$, e) => {
     stats.push(e.path);
-    if (opts.dist === true) return { value: { kind: "file", size: 1, mtimeMs: 0, isLink: false } };
-    if (opts.dist === "dir") return { value: { kind: "dir", size: 0, mtimeMs: 0, isLink: false } };
+    if (opts.planted === true) return { value: { kind: "file", size: 1, mtimeMs: 0, isLink: false } };
     throw new Error(`ENOENT: ${e.path}`);
   });
   on("process.run", (_$, e) => {
@@ -372,6 +383,14 @@ describe("a count astir says is not whole is not drawn as one", () => {
     // The local count is real, the other machines' are not known: a part
     // of a total drawn as the total is a wrong total.
     ["the notifier does not answer", SAID.notifierHung],
+    // Deliberately not taught to COUNT_STANDS. A machine the notifier lost
+    // contact with had an agent waiting whose state is now unknown, so the
+    // count is a part, and `astir 0` would be the calm this exists to refuse.
+    ["contact is lost with a machine where an agent was waiting", SAID.contactLost],
+    // Deliberately not taught either: a daemon older than the CLI reading it
+    // is a skew whose count this does not vouch for. The line says restart
+    // it; the number waits until then.
+    ["the daemon is older than this astir", SAID.oldDaemon],
   ];
 
   for (const [what, said] of unknown) {
@@ -505,65 +524,36 @@ describe("never a stale value", () => {
 });
 
 describe("finding astir", () => {
-  test("with nothing set and no checkout around it, astir is run from PATH", async ($, on) => {
-    const w = world(on, { dist: false, marketplace: null });
+  test("with nothing set, astir is run from PATH", async ($, on) => {
+    const w = world(on);
     await start($, w);
     expect(w.runs[0]).toEqual(["astir", "status", "--line", "--json"]);
   });
 
-  test("installed in place from the repository, the checkout's own build is run", async ($, on) => {
-    const w = world(on, { dist: true });
+  test("a checkout's layout above the plugin is not taken on its word: nothing there is read or run", async ($, on) => {
+    // The folder above a plugin loaded from a shared /tmp is anyone's to
+    // write: a marketplace naming this folder astir-tui's and a
+    // `dist/cli/main.js` beside it vouch only for whoever put them there, and
+    // `$.fs.stat` has no owner to tell them apart from a checkout. Run every
+    // five seconds as the person, that would be theirs to run. So what runs is
+    // the person's own say: their settings, else their PATH.
+    const w = world(on, { planted: true });
     await start($, w);
-    // The plugin's folder is <repo>/tui, so the build is <repo>/dist, and
-    // <repo>'s marketplace is what says this folder is astir-tui's.
-    const [probed] = w.stats;
-    expect(probed).toEndWith("/dist/cli/main.js");
-    expect(probed).not.toContain("/tui/");
-    expect(w.reads).toEqual([probed?.replace(/dist\/cli\/main\.js$/, ".claude-plugin/marketplace.json")]);
-    expect(w.runs[0]).toEqual(["node", probed, "status", "--line", "--json"]);
-  });
-
-  const strangers: [string, string | null][] = [
-    ["has no marketplace", null],
-    ["has a marketplace that is not JSON", "{ not json"],
-    [
-      // This folder's name listed, under another plugin's: not astir's checkout.
-      "has a marketplace with no astir-tui in it",
-      JSON.stringify({ plugins: [{ name: "not-astir-tui", source: "./tui", version: "0.2.0" }] }),
-    ],
-    [
-      "has a marketplace whose astir-tui is another folder",
-      JSON.stringify({ plugins: [{ name: "astir-tui", source: "./elsewhere", version: "0.2.0" }] }),
-    ],
-  ];
-
-  for (const [what, marketplace] of strangers) {
-    // A plugin folder copied anywhere has some folder above it. A build there
-    // is not astir's because of where it sits: run every five seconds as the
-    // person, it must be one the checkout this plugin came from vouches for.
-    test(`the folder above ${what}: its build is never run, astir is run from PATH`, async ($, on) => {
-      const w = world(on, { dist: true, marketplace });
-      await start($, w);
-      expect(w.stats).toEqual([]);
-      expect(w.runs[0]).toEqual(["astir", "status", "--line", "--json"]);
-    });
-  }
-
-  test("a dist/cli/main.js that is a folder is no build, so astir is run from PATH", async ($, on) => {
-    const w = world(on, { dist: "dir" });
-    await start($, w);
-    expect(w.stats).toHaveLength(1);
-    expect(w.runs[0]).toEqual(["astir", "status", "--line", "--json"]);
+    await w.clock.advance(5_000);
+    expect(w.reads).toEqual([]);
+    expect(w.stats).toEqual([]);
+    expect(w.runs).toEqual([
+      ["astir", "status", "--line", "--json"],
+      ["astir", "status", "--line", "--json"],
+    ]);
   });
 
   test(
     "an entry in settings wins, run with the node in settings",
     { options: { entry: "/opt/astir/dist/cli/main.js", node: "/usr/local/bin/node22" } },
     async ($, on) => {
-      const w = world(on, { dist: true });
+      const w = world(on, { planted: true });
       await start($, w);
-      expect(w.reads).toEqual([]);
-      expect(w.stats).toEqual([]);
       expect(w.runs[0]).toEqual([
         "/usr/local/bin/node22",
         "/opt/astir/dist/cli/main.js",
@@ -584,9 +574,20 @@ describe("finding astir", () => {
     },
   );
 
-  test("the node in settings runs the checkout's build too", { options: { node: "/n" } }, async ($, on) => {
-    const w = world(on, { dist: true });
+  test("a blank entry is no entry: astir is run from PATH", { options: { entry: "  " } }, async ($, on) => {
+    const w = world(on);
     await start($, w);
-    expect(w.runs[0]?.slice(0, 1)).toEqual(["/n"]);
+    expect(w.runs[0]).toEqual(["astir", "status", "--line", "--json"]);
   });
+
+  test(
+    "a node with no entry runs nothing of its own: astir is run from PATH",
+    { options: { node: "/n" } },
+    async ($, on) => {
+      // `node` is what runs the entry; PATH's `astir` brings its own.
+      const w = world(on, { planted: true });
+      await start($, w);
+      expect(w.runs[0]).toEqual(["astir", "status", "--line", "--json"]);
+    },
+  );
 });

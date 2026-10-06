@@ -39,7 +39,7 @@ import { createClaudeLister } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
 import { parseSnapshot } from "../model/snapshot.js";
 import { detectNotifier } from "../notify/detect.js";
-import { Dispatcher, localTarget, remoteTarget } from "../notify/dispatch.js";
+import { Dispatcher, localTarget, NotifierWatch, remoteTarget } from "../notify/dispatch.js";
 import { buildEnvelope } from "../notify/envelope.js";
 import { NotifyLoop } from "../notify/loop.js";
 import { createNotifierBackend } from "../notify/notify.js";
@@ -441,24 +441,15 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   // PSH-14 — find the notifier rather than being told where it is. Re-checked on
   // a slow timer because an `ssh -R` tunnel comes and goes with the connection,
   // so a one-shot probe at startup would be wrong for most of the daemon's life.
+  // Every tick reports to the attached path too (#78): whether the notifier
+  // can show anything, and that it is reachable — which lifts a failure left
+  // by one POST that fell into a restart.
   if (typeof notifyUrl !== "string") {
-    let attached = false;
+    const watch = new NotifierWatch(dispatcher, remoteToken);
     const probe = async (): Promise<void> => {
-      const found = await detectNotifier(notifyPort);
-      if (found.found && !attached) {
-        attached = true;
-        notifierUrl = found.url;
-        dispatcher.add(remoteTarget(found.url, remoteToken));
-        process.stdout.write(`notifier detected on 127.0.0.1:${notifyPort} — delivering there too\n`);
-      } else if (!found.found && attached) {
-        attached = false;
-        notifierUrl = null;
-        dispatcher.remove(`remote(${found.url})`);
-        // #78 — this is the moment no one may be told, so say who still can be.
-        process.stdout.write(
-          `notifier on 127.0.0.1:${notifyPort} went away (${found.reason ?? "gone"}); delivery paths: ${dispatcher.describe()}\n`,
-        );
-      }
+      const said = watch.observe(await detectNotifier(notifyPort));
+      notifierUrl = watch.url;
+      if (said !== null) process.stdout.write(`${said}\n`);
     };
     void probe();
     const probeTimer = setInterval(() => void probe(), 15_000);
@@ -778,6 +769,8 @@ async function runNotifier(flags: Args["flags"]): Promise<void> {
   }
   const server = new NotifierServer({
     token,
+    // #78 — the backend answers with what its run did, so a notify-send that
+    // exits 1 here is refused to the sender rather than counted as shown.
     notify: backend.notify,
     ...(backend.available ? {} : { cannotShow: backend.unavailableReason ?? "no notifier" }),
     onEvent: (line) => process.stdout.write(`delivered: ${line}\n`),

@@ -15,13 +15,13 @@
     "node": {
       "type": "string",
       "title": "Node",
-      "description": "The node executable that runs astir's CLI. Empty means `node` on PATH.",
+      "description": "The node executable that runs the astir CLI entry. Empty means `node` on PATH. Unused when the entry is empty.",
       "default": ""
     },
     "entry": {
       "type": "string",
       "title": "astir CLI entry",
-      "description": "Path to astir's dist/cli/main.js. Empty means the checkout this plugin sits in, else `astir` on PATH.",
+      "description": "Path to astir's dist/cli/main.js. Empty means `astir` on PATH.",
       "default": ""
     }
   }

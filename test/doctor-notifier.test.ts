@@ -55,6 +55,22 @@ describe("doctor says whether a notifier exists", () => {
     expect(text(describeNotifier({ found: true }, true, 3))).not.toContain("not supervised");
   });
 
+  it("says when the notifier it found cannot show anything", () => {
+    // #78, round two — a headless `astir notifier` answers the probe like any
+    // other, and refuses every doorbell. "running" alone reads as a way to
+    // reach you, which is the one thing it is not.
+    const out = text(describeNotifier({ found: true, canShow: false }, true, 3));
+    expect(out).toContain("running");
+    expect(out).toMatch(/cannot show/);
+    expect(out).toMatch(/refuse/);
+  });
+
+  it("adds nothing for one that can show, or is too old to say", () => {
+    for (const probe of [{ found: true, canShow: true }, { found: true }]) {
+      expect(text(describeNotifier(probe, true, 3))).not.toMatch(/cannot show/);
+    }
+  });
+
   it("says nothing about supervision when there is no notifier to supervise", () => {
     // One problem at a time: "start one" is the action, not "also supervise it".
     expect(text(describeNotifier({ found: false }, false, null))).not.toContain("not supervised");

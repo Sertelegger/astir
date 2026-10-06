@@ -11,7 +11,8 @@
  *     ungated (PSH-16: the ambient badge is not gated on announcement), or
  *     `astir ?` when astir could not be read or says its count is not whole
  *     (no daemon, another machine's on the port, a daemon or notifier it
- *     could not read). astir's JSON has no "unknown" count: it writes 0 and a
+ *     could not read, a machine it lost contact with, a daemon older than
+ *     it). astir's JSON has no "unknown" count: it writes 0 and a
  *     warning, and `astir 0` beside "daemon not running" would be calm drawn
  *     on a broken state.
  *
@@ -53,6 +54,11 @@ const PREDATES: Reading = { line: "astir predates status --line — update astir
  * the notifier unread, no daemon, an impostor — leaves `blocked` a 0 or a
  * part, and so does a kind this does not know: a later minor may add one, and
  * guessing it harmless would draw a number this cannot vouch for.
+ *
+ * Two of line v1.1's are left out on purpose, not by lag: `contact-lost` (a
+ * machine where an agent was waiting went quiet, so that agent is in no count)
+ * and `old-daemon` (a daemon older than the CLI reading it, a skew whose count
+ * this does not vouch for until it is restarted).
  */
 const COUNT_STANDS: ReadonlySet<unknown> = new Set(["no-delivery", "silent"]);
 
@@ -62,8 +68,9 @@ interface Reading {
   blocked: number | null;
 }
 
-/** How astir is run, from the person's settings: `entry` undefined means "find it". */
+/** How astir is run, from the person's settings: `entry` undefined means `astir` on PATH. */
 interface Command {
+  /** What runs `entry`; PATH's `astir` brings its own. */
   node: string;
   entry: string | undefined;
 }
@@ -123,58 +130,23 @@ async function poll($: EngineInterface, how: Command): Promise<Reading> {
   // asked about only once it has done work, and a /clear's new session has
   // not, whatever the one before it did.
   const { value: worked } = await $.state.get(WORKED);
-  const argv = [
-    ...(await command($, how)),
-    "status",
-    "--line",
-    "--json",
-    ...(worked === sid ? ["--session", sid] : []),
-  ];
+  const argv = [...command(how), "status", "--line", "--json", ...(worked === sid ? ["--session", sid] : [])];
   const ran = await $.process.run(argv, { timeoutMs: RUN_TIMEOUT_MS });
   return ran.exitCode === 0 ? read(ran.stdout) : UNREACHABLE;
 }
 
 /**
- * How astir is run: the entry the person set; else the build of the checkout
- * this plugin was installed in place from (its folder is `<repo>/tui`, so the
- * build is `<repo>/dist/cli/main.js`); else `astir` on PATH.
- */
-async function command($: EngineInterface, how: Command): Promise<string[]> {
-  if (how.entry !== undefined) return [how.node, how.entry];
-  const build = await checkoutBuild($).catch(() => undefined);
-  return build === undefined ? ["astir"] : [how.node, build];
-}
-
-/**
- * The build of the astir checkout this plugin sits in, or undefined.
+ * How astir is run: the entry the person set, else `astir` on their PATH.
  *
- * Proven rather than assumed from where the folder is: a plugin folder copied
- * or loaded from anywhere (`--plugin-dir /tmp/astir-tui`) has some folder
- * above it, and a `dist/cli/main.js` there would otherwise be run as the
- * person every five seconds by whoever could write it. So the folder above
- * must be a checkout whose marketplace names this very folder as astir-tui's
- * source, and the build must be a file. Anything less is PATH's `astir`.
+ * Nothing found on disk is a third way. A build beside the plugin's folder
+ * (`<checkout>/dist/cli/main.js` above `<checkout>/tui`) is the checkout's only
+ * on the word of files in that same folder, and the folder above a plugin
+ * loaded from a shared /tmp is anyone's to write: whoever put a vouch there
+ * would have their build run as the person every five seconds, and `$.fs.stat`
+ * has no owner to tell them apart. So only the person's own say decides.
  */
-async function checkoutBuild($: EngineInterface): Promise<string | undefined> {
-  // The parent and the folder's own name by spelling: there is no path module here.
-  const at = /^(.*?)[\\/]+([^\\/]+)[\\/]*$/.exec($.plugin.root);
-  if (at === null) return undefined;
-  const [, checkout, folder] = at;
-  const market = JSON.parse(await $.fs.read(`${checkout}/.claude-plugin/marketplace.json`)) as {
-    plugins?: unknown;
-  } | null;
-  const listed = market?.plugins;
-  const plugins: unknown[] = Array.isArray(listed) ? listed : [];
-  const vouched = plugins.some((p) => {
-    const { name, source } = (p ?? {}) as { name?: unknown; source?: unknown };
-    return (
-      name === "astir-tui" && typeof source === "string" && source.replace(/^\.[\\/]|[\\/]+$/g, "") === folder
-    );
-  });
-  if (!vouched) return undefined;
-  const build = `${checkout}/dist/cli/main.js`;
-  const found = await $.fs.stat(build);
-  return found.kind === "file" ? build : undefined;
+function command(how: Command): string[] {
+  return how.entry === undefined ? ["astir"] : [how.node, how.entry];
 }
 
 /** A `userConfig` string, or undefined when it is unset or blank. */

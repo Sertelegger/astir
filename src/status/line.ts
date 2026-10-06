@@ -20,8 +20,13 @@
  *
  *   1. no daemon — nothing is watching, so no one will be told;
  *   2. another machine's daemon on the port — everything else would be ITS state;
- *   3. no delivery path is live (#78) — astir sees the block and cannot say so;
- *   4. this session is in `silent[]` — astir cannot hear the very session asking.
+ *   3. a daemon older than this astir — it cannot say which blocks it announced;
+ *   4. no delivery path is live (#78) — astir sees the block and cannot say so;
+ *   5. contact lost with a machine where an agent was waiting (DMN-09);
+ *   6. this session is in `silent[]` — astir cannot hear the very session asking.
+ *
+ * (`/state` that cannot be read, and a notifier that does not answer, are
+ * `unreachable` — see `statusLine` for where each sits.)
  *
  * Then the blocks, as counts. Never a session name (PSH-11: a surface that
  * names a session must be able to raise it, and a status line cannot), and
@@ -38,7 +43,7 @@
 
 import { hostname } from "node:os";
 import { DEFAULT_PORT } from "../config/paths.js";
-import { sameHost } from "../notify/envelope.js";
+import { sameHost, shortHost } from "../notify/envelope.js";
 import { mergeRemoteSessions } from "../notify/roster.js";
 import { humanDuration } from "./agents.js";
 import {
@@ -49,12 +54,18 @@ import {
   type RemoteAgentView,
   UNNAMED_HOST,
 } from "./fetch.js";
-import { ancestry, defaultFocusDeps, type FocusDeps } from "./focus.js";
+import { ancestry, defaultProbeDeps, type FocusDeps, type ProbeDeps } from "./focus.js";
 import { overview } from "./overview.js";
 import type { HealthBody, RemoteSession, StatusBody, StatusResult } from "./types.js";
 
 /** VER-01 — bumped on minor for an added field, major for a changed one. */
-export const LINE_JSON_VERSION = { major: 1, minor: 0 } as const;
+export const LINE_JSON_VERSION = { major: 1, minor: 1 } as const;
+
+/**
+ * VER-01 — the first `/state` that carries `announcedAt`. Below it the line
+ * cannot tell an announced block from one the dwell is still holding.
+ */
+const STATE_ANNOUNCES = { major: 2, minor: 2 } as const;
 
 /**
  * How long the whole fetch may take. A tmux segment re-runs every few seconds
@@ -72,6 +83,9 @@ export const LINE_TEXT = {
   silent: "astir: hears nothing from this session",
   unreachable: "astir unreachable",
   notifierHung: "astir: notifier not answering",
+  oldDaemon: "astir: the daemon is older than this astir — restart it",
+  contactLost: (machines: number): string =>
+    `astir: lost contact with ${machines} machine${machines === 1 ? "" : "s"} where an agent was waiting`,
 } as const;
 
 export interface LineOpts {
@@ -91,7 +105,15 @@ export interface LineOpts {
   notifierExpected?: boolean;
 }
 
-export type LineWarningKind = "daemon-down" | "impostor" | "no-delivery" | "silent" | "unreachable";
+/** Additive since 1.0: `old-daemon` and `contact-lost` arrived in 1.1. A host must fail closed on a kind it does not know. */
+export type LineWarningKind =
+  | "daemon-down"
+  | "impostor"
+  | "old-daemon"
+  | "no-delivery"
+  | "contact-lost"
+  | "silent"
+  | "unreachable";
 
 export interface LineWarning {
   kind: LineWarningKind;
@@ -110,7 +132,10 @@ export interface LineRow {
   waitingMs: number | null;
   /** Every block in it has been dismissed. */
   acknowledged: boolean;
-  /** Some block in it has been announced to a human. */
+  /**
+   * Some block in it has been announced to a human. Always false for a local
+   * row under `old-daemon`, which cannot say — the warning is what tells a host.
+   */
   announced: boolean;
   /** PSH-11 — `focusSession` could act on it from here. */
   focusable: boolean;
@@ -123,13 +148,17 @@ export interface LineResult {
   /** UNGATED — every block, announced or not, for the ambient label. */
   blocked: number;
   /**
-   * Announced, undismissed blocks — what the line counts.
+   * Announced, undismissed blocks — what the line counts. Against an older
+   * daemon (`old-daemon`) that is every undismissed block, announced or not,
+   * because the daemon cannot say which it announced.
    *
    * Both counts are only whole when every warning is `no-delivery` or `silent`:
    * the daemon answered and every machine was heard, it is only that no one can
    * be told. Under `daemon-down`, `impostor` or `unreachable` (the daemon, or
-   * the notifier, could not be read) they are 0 or a part, never a guess — and
-   * a host must draw them as unknown, as astir-tui does.
+   * the notifier, could not be read) they are 0 or a part, never a guess; under
+   * `contact-lost` a machine's agents are left out because their state is
+   * unknown; under `old-daemon` the line's count is ungated. A host must draw
+   * all of those as unknown, as astir-tui does.
    */
   announced: number;
   /** Every warning that applies, most important first. The line shows the first. */
@@ -192,6 +221,22 @@ const unreachable = (): LineResult => ({
   rows: [],
 });
 
+/**
+ * VER-01 — a `/state` older than the first that says what it announced.
+ *
+ * A missing or malformed `v` counts as older: every astir daemon has sent one,
+ * so a body without it is not one whose `announcedAt` can be read. A newer
+ * major is not older.
+ */
+function announcesNothing(v: unknown): boolean {
+  const { major, minor } = (typeof v === "object" && v !== null ? v : {}) as {
+    major?: unknown;
+    minor?: unknown;
+  };
+  if (typeof major !== "number" || typeof minor !== "number") return true;
+  return major < STATE_ANNOUNCES.major || (major === STATE_ANNOUNCES.major && minor < STATE_ANNOUNCES.minor);
+}
+
 /** Everything the line says, decided with no I/O. */
 export function statusLine(input: LineInput): LineResult {
   const { status, health, selfHost, now } = input;
@@ -218,42 +263,14 @@ export function statusLine(input: LineInput): LineResult {
     status.kind === "http" ||
     status.kind === "foreign";
 
-  const warnings: LineWarning[] = [];
-  if (!answered) {
-    warnings.push({ kind: "daemon-down", text: LINE_TEXT.daemonDown });
-  } else if (impostor !== null) {
-    warnings.push({ kind: "impostor", text: LINE_TEXT.impostor(input.port, impostor) });
-  } else {
-    // Absent is "an older daemon, cannot tell" — not "nothing is live".
-    const live = health?.delivery?.live;
-    if (Array.isArray(live) && live.length === 0) {
-      warnings.push({ kind: "no-delivery", text: LINE_TEXT.noDelivery });
-    }
-    if (
-      status.ok &&
-      input.session !== null &&
-      (status.body.silent ?? []).some((s) => s.sessionId === input.session)
-    ) {
-      warnings.push({ kind: "silent", text: LINE_TEXT.silent });
-    }
-    if (!status.ok) {
-      // The daemon is there and `/state` could not be read: no token, a stale
-      // one, a 500. None of the four warnings fit, and printing nothing would
-      // read as "all quiet" — so it says why, and a host reads it as unknown.
-      warnings.push({ kind: "unreachable", text: `astir: ${status.reason}` });
-    }
-  }
-
-  // Last, and so shown only when nothing above applies: other machines'
-  // blocks are unknown, which is not the same as there being none.
-  const notifierSilent = input.remote === null && input.notifierExpected === true;
-  if (input.remoteTimedOut === true || notifierSilent) {
-    warnings.push({ kind: "unreachable", text: LINE_TEXT.notifierHung });
-  }
-
   // An impostor's sessions are another machine's, and counting them here is
   // precisely the lie the host check exists to stop.
-  const local: StatusBody | null = status.ok && impostor === null ? status.body : null;
+  const mine = answered && impostor === null;
+  const local: StatusBody | null = status.ok && mine ? status.body : null;
+  // Against a daemon too old to say what it announced, every undismissed block
+  // is counted, ungated: it IS announcing them, with its own dwell, and a line
+  // that showed nothing while agents waited would be the worse lie.
+  const older = local !== null && announcesNothing(local.v);
 
   // What this machine sent comes back through a notifier reached over `ssh -R`;
   // `fetchRemote` drops it, and so does this, so a hand-fed input cannot
@@ -262,14 +279,62 @@ export function statusLine(input: LineInput): LineResult {
   // Dismissed or contact-lost doorbells are not counted, exactly as the menu
   // bar's badge does not count them.
   const ringing = (d: RemoteAgentView): boolean => !d.acknowledged && d.stale !== true;
+  // DMN-09 — but a contact-lost one is not nothing. The menu bar draws it red
+  // ("unreachable"), dismissed or not, because the agent may still be waiting
+  // and we stopped being told; leaving it out of the count WITHOUT a warning
+  // would look exactly like a block that was answered. Machines, not agents:
+  // what was lost is the contact.
+  const lost = new Set(doorbells.filter((d) => d.stale === true).map((d) => shortHost(d.host).toLowerCase()));
+
+  // Pushed in precedence order; the line shows the first.
+  const warnings: LineWarning[] = [];
+  if (!answered) {
+    warnings.push({ kind: "daemon-down", text: LINE_TEXT.daemonDown });
+  } else if (impostor !== null) {
+    warnings.push({ kind: "impostor", text: LINE_TEXT.impostor(input.port, impostor) });
+  }
+  if (older) warnings.push({ kind: "old-daemon", text: LINE_TEXT.oldDaemon });
+  if (mine) {
+    // Absent is "an older daemon, cannot tell" — not "nothing is live".
+    const live = health?.delivery?.live;
+    if (Array.isArray(live) && live.length === 0) {
+      warnings.push({ kind: "no-delivery", text: LINE_TEXT.noDelivery });
+    }
+    if (!status.ok) {
+      // The daemon is there and `/state` could not be read: no token, a stale
+      // one, a 500. None of the other warnings fit, and printing nothing would
+      // read as "all quiet" — so it says why, and a host reads it as unknown.
+      warnings.push({ kind: "unreachable", text: `astir: ${status.reason}` });
+    }
+  }
+  // Listed even when the daemon is down: the notifier is a separate process,
+  // and what it says survives the daemon dying.
+  if (lost.size > 0) warnings.push({ kind: "contact-lost", text: LINE_TEXT.contactLost(lost.size) });
+  if (
+    local !== null &&
+    input.session !== null &&
+    (local.silent ?? []).some((s) => s.sessionId === input.session)
+  ) {
+    warnings.push({ kind: "silent", text: LINE_TEXT.silent });
+  }
+
+  // Last, and so shown only when nothing above applies: other machines'
+  // blocks are unknown, which is not the same as there being none. It never
+  // meets `contact-lost`: stale doorbells come only from a notifier that
+  // answered, and this is one that did not.
+  const notifierSilent = input.remote === null && input.notifierExpected === true;
+  if (input.remoteTimedOut === true || notifierSilent) {
+    warnings.push({ kind: "unreachable", text: LINE_TEXT.notifierHung });
+  }
 
   const waits: number[] = [];
   for (const s of local?.sessions ?? []) {
     for (const a of s.agents ?? []) {
-      // `announcedAt` absent (an older daemon) or null: not announced. The line
-      // would rather say nothing about a block than flash one the loop's dwell
-      // has not cleared.
-      if (a.state === "blocked" && !a.acknowledged && a.announcedAt != null) waits.push(a.inStateMs);
+      // From a current daemon, `announcedAt` null (or absent) is not announced:
+      // the line would rather say nothing about a block than flash one the
+      // loop's dwell has not cleared.
+      if (a.state === "blocked" && !a.acknowledged && (older || a.announcedAt != null))
+        waits.push(a.inStateMs);
     }
   }
   // A doorbell IS an announcement: the remote loop rang it after its own dwell.
@@ -380,6 +445,9 @@ function rowsFor(
     .map((x) => x.row);
 }
 
+/** What a probe that did not finish, or found nothing, decides: nothing can be raised from here. */
+const NOWHERE = (): boolean => false;
+
 /**
  * PSH-11 — could `focusSession` act on this pid? Decided here, not by a host.
  *
@@ -388,55 +456,54 @@ function rowsFor(
  * at an app bundle to raise; anywhere else the only route is a tmux pane above
  * it, so the pid must sit under one.
  *
- * The TUI mod runs this every five seconds, and `ancestry()` asks `ps` once per
- * hop. So the process table and the pane list are each read ONCE, lazily, and
- * `ancestry()` walks the cached table — the same walk, with no spawns. If the
- * table cannot be read it walks hop by hop as before: slower, still right.
+ * Asked once per run, before any pid is known, so the answer is ready when the
+ * rows are built. The pane list and the process table are each read ONCE —
+ * the TUI mod runs this every five seconds, and `ancestry()` asks `ps` once per
+ * hop — and `ancestry()` then walks the table: the same walk, with no spawns.
+ *
+ * Every command runs under `signal`, the line's own budget, and is killed when
+ * it fires (#80). Whatever has not answered by then is unknown, and unknown is
+ * not focusable: a wedged tmux costs `focusable`, never the line. So there is
+ * no hop-by-hop fallback when the table cannot be read — that is one spawn per
+ * hop per session, unbounded, for an answer that can be false instead.
  */
-export function focusProbe(deps: FocusDeps): (pid: number) => boolean {
-  let panes: Set<number> | undefined;
-  let walker: FocusDeps | undefined;
-  return (pid) => {
-    if (!deps.pidAlive(pid)) return false;
-    if (deps.platform === "darwin") return true;
-    panes ??= panePids(deps);
-    if (panes.size === 0) return false;
-    walker ??= tableWalker(deps);
-    const under = panes;
-    return ancestry(pid, walker).some((p) => under.has(p));
-  };
-}
+export async function focusProbe(deps: ProbeDeps, signal: AbortSignal): Promise<(pid: number) => boolean> {
+  try {
+    if (deps.platform === "darwin") return (pid) => deps.pidAlive(pid);
+    if (signal.aborted) return NOWHERE;
+    const panes = new Set<number>();
+    for (const line of (
+      (await deps.run("tmux", ["list-panes", "-a", "-F", "#{pane_pid}"], signal)) ?? ""
+    ).split("\n")) {
+      const pid = Number.parseInt(line.trim(), 10);
+      if (Number.isFinite(pid)) panes.add(pid);
+    }
+    if (panes.size === 0 || signal.aborted) return NOWHERE;
 
-function panePids(deps: FocusDeps): Set<number> {
-  const out = deps.run("tmux", ["list-panes", "-a", "-F", "#{pane_pid}"]);
-  const pids = new Set<number>();
-  for (const line of (out ?? "").split("\n")) {
-    const pid = Number.parseInt(line.trim(), 10);
-    if (Number.isFinite(pid)) pids.add(pid);
-  }
-  return pids;
-}
+    const parent = new Map<number, number>();
+    for (const line of ((await deps.run("ps", ["-e", "-o", "pid=,ppid="], signal)) ?? "").split("\n")) {
+      const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+      if (Number.isFinite(pid) && Number.isFinite(ppid)) parent.set(pid as number, ppid as number);
+    }
+    if (parent.size === 0) return NOWHERE;
 
-/** `deps`, with `ancestry()`'s per-hop `ps` answered from one read of the table. */
-function tableWalker(deps: FocusDeps): FocusDeps {
-  const out = deps.run("ps", ["-e", "-o", "pid=,ppid="]);
-  const parent = new Map<number, number>();
-  for (const line of (out ?? "").split("\n")) {
-    const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-    if (Number.isFinite(pid) && Number.isFinite(ppid)) parent.set(pid as number, ppid as number);
-  }
-  if (parent.size === 0) return deps;
-  return {
-    ...deps,
-    run: (file, args) => {
-      // Exactly the query `ancestry()` makes; anything else goes to the real run.
-      if (file === "ps" && args.length === 4 && args[0] === "-o" && args[1] === "ppid=" && args[2] === "-p") {
+    // `ancestry()`, answered from the table: exactly the query it makes, and
+    // nothing else, because nothing else may spawn here.
+    const walker: FocusDeps = {
+      platform: deps.platform,
+      pidAlive: deps.pidAlive,
+      selfPid: 0,
+      home: "",
+      run: (file, args) => {
+        if (file !== "ps" || args.length !== 4 || args[1] !== "ppid=") return null;
         const ppid = parent.get(Number(args[3]));
         return ppid === undefined ? null : `${ppid}\n`;
-      }
-      return deps.run(file, args);
-    },
-  };
+      },
+    };
+    return (pid) => deps.pidAlive(pid) && ancestry(pid, walker).some((p) => panes.has(p));
+  } catch {
+    return NOWHERE;
+  }
 }
 
 export interface LineDeps {
@@ -445,7 +512,10 @@ export interface LineDeps {
   fetchRemote: (port: number, timeoutMs: number, signal: AbortSignal) => Promise<RemoteState>;
   now: () => number;
   selfHost: string;
+  /** Decides `focusable` outright, in place of the probe — for a test that is not about it. */
   focusable: (pid: number) => boolean;
+  /** PSH-11 — what `focusProbe` asks. Every command runs under the line's budget. */
+  probe: ProbeDeps;
 }
 
 /**
@@ -477,6 +547,10 @@ export interface LineDeps {
  *   the daemon's own probe drops the dead tunnel — behind a claim that astir
  *   itself cannot be reached. So the line is built from the daemon, remote
  *   counts are left out rather than guessed, and a warning says why.
+ * - **Only the focus probe** (`--json`) — the rows say `focusable: false`, and
+ *   nothing else changes. It starts with the fetches, under the same signal,
+ *   so a notifier that spends the whole budget does not starve it, and the
+ *   budget firing kills whatever it is still running.
  */
 export async function runStatusLine(opts: LineOpts, deps: Partial<LineDeps> = {}): Promise<string> {
   const port = opts.port ?? Number(process.env.ASTIR_PORT ?? DEFAULT_PORT);
@@ -497,16 +571,23 @@ export async function runStatusLine(opts: LineOpts, deps: Partial<LineDeps> = {}
   let daemon: [HealthBody | null, StatusResult] | null = null;
   // `failed` rather than null: null is the notifier's own "nothing running".
   let remote: { value: RemoteState } | "failed" | null = null;
+  let focusable = deps.focusable;
   try {
-    // All three are started before anything is awaited — one budget, not three.
+    // Every fetch is started before anything is awaited — one budget, not three.
     const health = getHealth(port, inner, stop.signal);
     const status = getStatus(port, inner, stop.signal);
     const notifier = getRemote(notifyPort, inner, stop.signal).then(
       (value) => ({ value }),
       () => "failed" as const,
     );
+    // Rows are only in the JSON, so only the JSON pays for deciding focus.
+    const focus =
+      opts.json && focusable === undefined ? focusProbe(deps.probe ?? defaultProbeDeps(), stop.signal) : null;
     daemon = await Promise.race([Promise.all([health, status]), expired]);
     if (daemon !== null) remote = await Promise.race([notifier, expired]);
+    // The probe first: one that already answered wins over a budget that has
+    // just run out.
+    if (daemon !== null && focus !== null) focusable = (await Promise.race([focus, expired])) ?? NOWHERE;
   } catch {
     // None of the real fetchers throw. If one does, nothing is known — which
     // is `unreachable`, not silence.
@@ -533,8 +614,7 @@ export async function runStatusLine(opts: LineOpts, deps: Partial<LineDeps> = {}
             ...(opts.notifierExpected === true ? { notifierExpected: true } : {}),
             now,
             selfHost,
-            // Rows are only in the JSON, so only the JSON pays for deciding focus.
-            ...(opts.json ? { focusable: deps.focusable ?? focusProbe(defaultFocusDeps()) } : {}),
+            ...(opts.json ? { focusable: focusable ?? NOWHERE } : {}),
           });
   } catch {
     // What answered is read off sockets, one of them unauthenticated. A shape
