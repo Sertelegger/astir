@@ -8,12 +8,12 @@ else:
   blocks are waiting and for how long. Nothing at all when all is well.
 
   ```
-  ⚠ astir-tui: astir: daemon not running — no one will be told
+  ⚠ astir-tui: daemon not running — no one will be told
   ⚠ astir-tui: 2 waiting on you · oldest 3m
   ```
 
   Claude Code draws the `⚠ astir-tui:` part. The rest is `astir status --line`,
-  word for word.
+  word for word, less the `astir:` it leads with for a tmux bar.
 
 - **A footer label**, `astir <n>`, beside the other modes at the right of the
   prompt footer: how many agents are blocked on you right now, announced or not.
