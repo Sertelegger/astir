@@ -15,7 +15,7 @@ struct AstirBar {
         // macOS and runs it against a real `astir menubar --json`, and for a
         // person whose bar shows a warning and wants the reason in a terminal.
         if CommandLine.arguments.contains("--check") {
-            let coloured = coloursFollowTheBar()
+            let coloured = coloursFollowTheBar() && badgeColouredLikeSwiftBar()
             switch AstirCommand.fetchMenu() {
             case .menu(let model):
                 let symbol = model.badge.symbol ?? "-"
@@ -35,13 +35,14 @@ struct AstirBar {
         app.run()
     }
 
-    /// Every colour pair resolves to its dark half wherever the bar is dark.
+    /// Every colour pair resolves to its dark half under every dark appearance.
     ///
-    /// Checked under the appearances a status item is actually drawn with, not
-    /// only the window ones: the bar draws its buttons under a *vibrant*
-    /// appearance, so a pair that resolves correctly in a window can still pick
-    /// its light half on a dark bar — a grey icon on a black bar. Printed per
-    /// appearance, so a failure in CI says which one and what it got.
+    /// Including the *vibrant* ones a status item is drawn with, which no window
+    /// uses. This was written to prove that a dark bar picked the light half of
+    /// a pair — the first guess at why the icon disappeared on a dark bar — and
+    /// it passed: the pairs were right. It stays as the guard on that, printed
+    /// per appearance so a failure says which one and what it got. The actual
+    /// cause is in `badgeColouredLikeSwiftBar`.
     private static func coloursFollowTheBar() -> Bool {
         let pair = ColourPair(light: "#6c6c70", dark: "#98989d")
         guard let colour = NSColor.dynamic(pair) else {
@@ -81,6 +82,32 @@ struct AstirBar {
             print("  \(pass ? "ok  " : "FAIL") \(label) \(got) (want \(want))")
         }
         return ok
+    }
+
+    /// The symbol is tinted only by its own colour, never the text's.
+    ///
+    /// Every badge astir sends has a text colour and no symbol colour, so the
+    /// symbol must be left untinted — that is what keeps it visible on a dark
+    /// bar, and what SwiftBar always did. See `BadgeStyle`.
+    private static func badgeColouredLikeSwiftBar() -> Bool {
+        let green = ColourPair(light: "#248a3d", dark: "#30db5b")
+        let textOnly = MenuItemModel(
+            text: "3", depth: 0, colour: green, symbol: "circle.fill",
+            symbolColour: nil, monospace: true, action: nil, refresh: nil
+        )
+        let ownColour = MenuItemModel(
+            text: "", depth: 0, colour: nil, symbol: "circle.fill",
+            symbolColour: green, monospace: nil, action: nil, refresh: nil
+        )
+        let checks: [(String, Bool)] = [
+            ("symbol untinted when only the text has a colour", BadgeStyle.symbolTint(textOnly) == nil),
+            ("text keeps its colour", BadgeStyle.textColour(textOnly) != nil),
+            ("symbol tinted by its own colour", BadgeStyle.symbolTint(ownColour) != nil),
+            ("text not coloured by the symbol's colour", BadgeStyle.textColour(ownColour) == nil),
+        ]
+        print("badge:")
+        for (label, pass) in checks { print("  \(pass ? "ok  " : "FAIL") \(label)") }
+        return checks.allSatisfy { $0.1 }
     }
 
     private static func hex(_ c: NSColor) -> String {

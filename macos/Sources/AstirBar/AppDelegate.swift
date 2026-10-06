@@ -70,7 +70,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func drawBadge(_ badge: MenuItemModel) {
         guard let button = statusItem.button else { return }
-        let colour = badge.colour.flatMap(NSColor.dynamic) ?? badge.symbolColour.flatMap(NSColor.dynamic)
 
         if let symbol = badge.symbol,
            let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "astir") {
@@ -80,7 +79,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             button.image = nil
         }
-        button.contentTintColor = colour
+        // Nil unless the badge names a symbol colour: an untinted template
+        // follows the bar, light or dark. See BadgeStyle.
+        button.contentTintColor = BadgeStyle.symbolTint(badge)
 
         // Monospaced digits so a count going from 9 to 10 does not nudge every
         // status item to its left.
@@ -88,7 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ? NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             : NSFont.menuBarFont(ofSize: 0)
         var attributes: [NSAttributedString.Key: Any] = [.font: font]
-        if let colour { attributes[.foregroundColor] = colour }
+        if let colour = BadgeStyle.textColour(badge) { attributes[.foregroundColor] = colour }
         button.attributedTitle = NSAttributedString(string: badge.text, attributes: attributes)
     }
 
