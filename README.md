@@ -251,7 +251,9 @@ same line under the prompt and an `astir <n>` label in the footer.
 claude plugin install astir-tui@astir-marketplace   # after `astir install`
 ```
 
-It is display only and asks nothing of the session; see
+Type `/astir` for a pane listing every session, blocked first, with a key that
+takes you to the one waiting longest (it selects its tmux pane) and one that
+dismisses it. It is display only and asks nothing of the session; see
 [`tui/README.md`](tui/README.md) for what it draws, how it finds astir, and how
 to check what it hooks with `claude plugin validate tui`. Mods are an early
 access Claude Code feature (2.1.287 and later), drawn in the terminal and the

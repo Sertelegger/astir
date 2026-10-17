@@ -14,7 +14,7 @@
     {
       "name": "astir-tui",
       "source": "./tui",
-      "description": "astir inside Claude Code's terminal: a footer count of agents waiting on you, and a warning when no one would be told.",
+      "description": "astir inside Claude Code's terminal: a footer count of agents waiting on you, a warning line when no one would be told, and /astir, a pane with a key that takes you to the one waiting.",
       "version": "0.2.0"
     }
   ]

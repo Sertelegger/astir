@@ -1,7 +1,7 @@
 # astir-tui
 
-astir inside Claude Code's own terminal. It draws two things and does nothing
-else:
+astir inside Claude Code's own terminal. It draws three things, and does two
+only when you press for them:
 
 - **A status line under the prompt** when there is something to say: first a
   warning if no one would be told when an agent blocks, then how many announced
@@ -22,7 +22,10 @@ else:
   port, a daemon or notifier it could not read, a machine it lost contact
   with, a daemon older than astir). The status line says which.
 
-Both refresh every five seconds.
+- **`/astir`**, a pane listing the sessions astir knows of, with a key that
+  takes you to the one waiting on you. See [`/astir`](#astir) below.
+
+All three refresh every five seconds.
 
 ## Install
 
@@ -64,14 +67,87 @@ With no `entry` set and no `astir` on that PATH, the status line reads
 The `node` and `entry` settings are asked for when you install the plugin, and
 can be changed later from Claude Code's config menu.
 
+## `/astir`
+
+Type `/astir` to open a pane above the prompt. It works mid-turn too: it opens
+at once rather than waiting for the turn to end, and it never interrupts the
+turn or touches what you have typed.
+
+```
+g: go to api (3m)  d: dismiss web · macbook (5m)  [ Close ]
+api            blocked  for 3m                        [ Go ]
+web · macbook  blocked  for 5m
+cli            waiting  for 10m  dismissed            [ Go ]
+docs           idle                                   [ Go ]
+```
+
+The keys and astir's last answer sit above the sessions, so they stay in view
+however many sessions there are. Each row is a session, in astir's order:
+blocked first, then the rest. Each row shows the session's repo, the machine it
+runs on if that is not this one, astir's word for its state, and how long it
+has waited when it is blocked. `dismissed` marks a block you have already
+dismissed.
+
+The keys:
+
+- **`g`** goes to the session that has waited longest, among those blocked,
+  not dismissed, and offered Go (see below). It runs `astir focus`, which
+  selects that session's tmux window and pane, and then the pane closes.
+- **`d`** dismisses the session that has waited longest, among those blocked
+  and not dismissed, on any machine (`astir dismiss`). The row then updates,
+  and astir's answer is shown above the rows.
+- **Tab** walks the buttons, each row's **Go** among them, and **Enter**
+  presses the one it is on.
+- **Esc** closes the pane while it holds the keys (see below), and so does
+  **Close**, always.
+
+The `g` and `d` buttons name the session they act on and how long it has
+waited, so you can see what a key will do before you press it. Neither appears
+when nothing qualifies.
+
+**Why some rows have no Go.** Go raises a tmux pane on this machine. A session
+on another machine has no window here to raise. A local session that is not
+running inside a tmux pane has nothing astir can find. astir says which
+sessions it can raise, and the pane offers Go only on those. You can still
+dismiss a remote session with `d`.
+
+**When Go fails**, the pane stays open and shows the first line of astir's
+answer (for example, that no daemon is running). The message stays for at
+least five seconds, so it is there to read, and then clears the next time
+astir answers properly. If astir stops answering, the message stays.
+
+**When the keys do nothing.** The pane asks for the keyboard when it opens.
+Claude Code refuses that if the prompt has text in it, so that typing is never
+interrupted. The pane then says so: press `ctrl+x tab` to give it the keys.
+Close is there for the same reason. While the prompt holds the keys, Esc is the
+prompt's whenever it has text or a turn is running, and there it would
+interrupt Claude rather than close the pane.
+
+**When astir cannot be read**, the pane shows `astir unreachable` and only
+Close, never the last rows it saw: a press on one of those could act on a
+session that has since gone. When astir answers but says it cannot see every
+session (the daemon is down, a machine is out of reach), the pane says so too,
+rather than showing an empty or partial list as if it were the whole picture.
+The status line says what is wrong.
+
+`/astir` gives Claude nothing to read: it answers with no output text and no
+notes for the model.
+
 ## What it never does
 
-It is display only (NG4). It hooks no tool call and no prompt, adds nothing to
-the conversation, asks no model, writes no file and keeps nothing after the
-session. It never draws a tool's input, a file path or a description (SEC-01):
-the only text it shows is the line astir writes, which is counts and fixed
-words. `claude plugin validate tui` lists every hook and every call the module
-makes. Check it there rather than taking this paragraph's word for it.
+Apart from Go and Dismiss, which run only when you press them, it is display
+only (NG4). It hooks no tool call and no prompt, adds nothing to the
+conversation, asks no model, writes no file and keeps nothing after the
+session. It never draws a tool's input, a file path or a description (SEC-01).
+The only text it shows is what astir writes: the status line, which is counts
+and fixed words, and in the pane each session's repo name, host and state, with
+control characters removed.
+
+It runs `astir status` every five seconds. `astir focus` and `astir dismiss`
+run only when you press Go, `g` or `d`. Nothing else is ever run, and never
+`astir view`, whose fallback on a headless machine prints a URL with its
+token in it. `claude plugin validate tui` lists every hook and every call the
+module makes. Check it there rather than taking this paragraph's word for it.
 
 ## Why your session is not asked about at first
 
@@ -106,4 +182,6 @@ claude plugin test tui       # hooks/astir.test.ts, against the engine itself
 ```
 
 The tests answer everything beneath the plugin (astir's CLI, the clock, the
-session id), so they need no daemon, no session and no network.
+session id, the pane's opening and closing), so they need no daemon, no session
+and no network. The `/astir` pane's tests draw it on the terminal and desktop
+surfaces and press its buttons.
