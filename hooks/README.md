@@ -105,8 +105,10 @@ Node flags cannot make it print.
 Registered: `SessionStart`, `PreToolUse`, `PermissionRequest`, `PostToolUse`,
 `Stop`, `Interrupt`, `SessionEnd`, `SubagentStart`, `SubagentStop`. Not
 `UserPromptSubmit`, whose only content is the prompt, and not the compaction
-events. `Interrupt` and the two subagent events are mapped from Codex's
-declared schema; no captured session has produced one yet
+events. Every registered event has been captured from a real session
+(`test/fixtures/codex/capture.json`, codex-cli 0.154.0 and 0.165.0) except one
+shape: a subagent's own tool call, which carries `agent_id`. The one captured
+subagent ran no tool, so that payload is built from Codex's declared schema
 (`test/fixtures/codex/declared.json` says so and cites the source).
 
 `SessionEnd` and `Interrupt` have a 3-second timeout because Codex clamps them

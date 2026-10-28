@@ -2,10 +2,12 @@
  * #24 — Codex as a second provider.
  *
  * Everything here reads `fixtures/codex/capture.json`, sanitised from real
- * codex-cli 0.154.0 sessions. The adapter was written against it rather than
- * against the published schemas, and the places they would have disagreed are
- * asserted on the fixture itself, so a re-capture that changes them fails here
- * instead of silently agreeing with a stale comment.
+ * codex-cli 0.154.0 and 0.165.0 sessions. The adapter was written against it
+ * rather than against the published schemas, and the places they would have
+ * disagreed are asserted on the fixture itself, so a re-capture that changes
+ * them fails here instead of silently agreeing with a stale comment. The one
+ * payload no capture has produced yet is in `fixtures/codex/declared.json`,
+ * which says so.
  */
 
 import { spawnSync } from "node:child_process";
@@ -20,10 +22,18 @@ import { Daemon } from "../src/daemon/server.js";
 import { Registry } from "../src/model/registry.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+type Step = { afterMs: number; payload: Record<string, unknown> };
 const capture = JSON.parse(readFileSync(join(root, "test", "fixtures", "codex", "capture.json"), "utf8")) as {
   _capture: Record<string, unknown>;
   events: Record<string, Record<string, unknown>>;
-  permissionSequence: Array<{ afterMs: number; payload: Record<string, unknown> }>;
+  /** First capture: a request an automatic reviewer answered. */
+  permissionSequence: Step[];
+  /** Second capture: Esc at the approval prompt. */
+  escSequence: Step[];
+  /** Second capture: the root spawns a subagent, which runs and stops. */
+  spawnSequence: Step[];
+  /** Second capture: three Bash calls at once, and their results. */
+  parallelSequence: Step[];
 };
 const fixture = (name: string): Record<string, unknown> => {
   const p = capture.events[name];
@@ -31,6 +41,10 @@ const fixture = (name: string): Record<string, unknown> => {
   return p;
 };
 const sequence = capture.permissionSequence.map((s) => s.payload);
+const esc = capture.escSequence.map((s) => s.payload);
+const spawned = capture.spawnSequence.map((s) => s.payload);
+const parallel = capture.parallelSequence.map((s) => s.payload);
+const names = (steps: Array<Record<string, unknown>>) => steps.map((p) => p.hook_event_name);
 const declared = JSON.parse(
   readFileSync(join(root, "test", "fixtures", "codex", "declared.json"), "utf8"),
 ) as {
@@ -56,16 +70,108 @@ describe("the fixture is a capture, not a construction", () => {
     expect(capture._capture.provider).toBe("codex");
     expect(capture._capture.cliVersion).toMatch(/^codex-cli \d+\.\d+\.\d+/);
     expect(capture._capture.capturedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // Two captures, each with its own version and date; the top level names
+    // the latest.
+    const captures = capture._capture.captures as Array<{
+      cliVersion: string;
+      capturedAt: string;
+      gave?: string[];
+    }>;
+    expect(captures.length).toBeGreaterThanOrEqual(2);
+    for (const c of captures) {
+      expect(c.cliVersion).toMatch(/^codex-cli \d+\.\d+\.\d+$/);
+      expect(c.capturedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+    expect(captures.at(-1)?.cliVersion).toBe(capture._capture.cliVersion);
+    expect(captures.at(-1)?.capturedAt).toBe(capture._capture.capturedAt);
+    // What the latest one gave is really in the fixture.
+    for (const where of captures.at(-1)?.gave ?? []) {
+      const [top, key] = where.split(/\.(.+)/) as [string, string | undefined];
+      const node = (capture as unknown as Record<string, Record<string, unknown>>)[top];
+      expect(key === undefined ? node : node?.[key], where).toBeDefined();
+    }
   });
 
   it("shows a PermissionRequest carries no tool_use_id", () => {
     // Why the block cannot be matched to the call it is about, and why it is
     // cleared by the agent's NEXT event of any kind rather than by a matching
-    // PostToolUse — the captured request never got one.
-    const request = sequence[1] ?? {};
-    expect(request.hook_event_name).toBe("PermissionRequest");
-    expect(request).not.toHaveProperty("tool_use_id");
-    expect(request).toHaveProperty("tool_name");
+    // PostToolUse — the first captured request never got one.
+    for (const request of [sequence[1] ?? {}, esc[1] ?? {}]) {
+      expect(request.hook_event_name).toBe("PermissionRequest");
+      expect(request).not.toHaveProperty("tool_use_id");
+      expect(request).toHaveProperty("tool_name");
+    }
+  });
+
+  it("shows Esc at an approval prompt sends Interrupt, and nothing after it", () => {
+    // No PostToolUse for the requested call and no Stop: the Interrupt is the
+    // only word that the request is over.
+    expect(names(esc)).toEqual(["PreToolUse", "PermissionRequest", "Interrupt"]);
+    const [pre, request, interrupt] = esc;
+    expect(request?.tool_name).toBe(pre?.tool_name);
+    expect(interrupt?.session_id).toBe(request?.session_id);
+    expect(interrupt?.turn_id).toBe(request?.turn_id);
+    expect(interrupt).not.toHaveProperty("agent_id");
+  });
+
+  it("shows a subagent shares the root's session, runs its own turn, and is named by agent_id", () => {
+    // Why a subagent's events must be told apart by agent_id: session_id
+    // cannot do it.
+    const start = fixture("SubagentStart");
+    const stop = fixture("SubagentStop");
+    const spawn = fixture("PreToolUse:spawn");
+    expect(start.session_id).toBe(spawn.session_id);
+    expect(start.turn_id).not.toBe(spawn.turn_id);
+    expect(typeof start.agent_id).toBe("string");
+    expect(start.agent_id).not.toBe(start.session_id);
+    expect(stop.agent_id).toBe(start.agent_id);
+    expect(stop.turn_id).toBe(start.turn_id);
+    // No verdict: a subagent cannot be reported as failed.
+    expect(stop).toHaveProperty("last_assistant_message");
+    expect(stop).toHaveProperty("agent_transcript_path");
+    for (const key of Object.keys(stop)) expect(key).not.toMatch(/success|status|error|^ok$|result|exit/);
+  });
+
+  it("shows the spawn call returns before the subagent starts", () => {
+    // So the root is not mid-tool while its subagent runs.
+    expect(names(spawned)).toEqual([
+      "PreToolUse",
+      "PostToolUse",
+      "SubagentStart",
+      "SubagentStop",
+      "PreToolUse",
+    ]);
+    const [pre, post, start] = capture.spawnSequence;
+    expect(pre?.payload).toEqual(fixture("PreToolUse:spawn"));
+    expect(post?.payload.tool_use_id).toBe(pre?.payload.tool_use_id);
+    expect(post?.afterMs ?? 0).toBeLessThan(start?.afterMs ?? 0);
+    // A different id format from every other tool's `exec-<uuid>`.
+    expect(pre?.payload.tool_use_id).toMatch(/^call_[0-9a-f]{32}$/);
+  });
+
+  it("shows tool calls run in parallel, and finish in a different order", () => {
+    const pres = parallel.slice(0, 3);
+    const posts = parallel.slice(3);
+    expect(names(pres)).toEqual(["PreToolUse", "PreToolUse", "PreToolUse"]);
+    expect(names(posts)).toEqual(["PostToolUse", "PostToolUse", "PostToolUse"]);
+    const started = capture.parallelSequence.slice(0, 3).map((s) => s.afterMs);
+    expect(Math.max(...started) - Math.min(...started)).toBeLessThan(100);
+    expect(Math.min(...capture.parallelSequence.slice(3).map((s) => s.afterMs))).toBeGreaterThan(
+      Math.max(...started),
+    );
+    // Only the tool_use_id pairs a result with its call.
+    const ids = (ps: typeof parallel) => ps.map((p) => p.tool_use_id);
+    expect(new Set(ids(posts))).toEqual(new Set(ids(pres)));
+    expect(ids(posts)).not.toEqual(ids(pres));
+  });
+
+  it("shows no captured tool event carries agent_id — the captured subagent ran no tool", () => {
+    // Which is why a subagent's own tool call is still only declared.
+    const all = [...Object.values(capture.events), ...sequence, ...esc, ...spawned, ...parallel].filter(
+      (p) => p.hook_event_name === "PreToolUse" || p.hook_event_name === "PostToolUse",
+    );
+    expect(all.length).toBeGreaterThan(0);
+    for (const p of all) expect(p).not.toHaveProperty("agent_id");
   });
 
   it("shows the captured permission was answered with nobody looking, in ~12s", () => {
@@ -95,7 +201,9 @@ describe("every captured event normalizes to a valid contract event, or to nothi
     "PostToolUse:Bash": "post_tool",
     "PreToolUse:apply_patch": "pre_tool",
     "PostToolUse:apply_patch": "post_tool",
+    "PreToolUse:spawn": "pre_tool",
     Stop: "stop",
+    Interrupt: "stop",
     SessionEnd: "session_end",
   };
 
@@ -104,12 +212,25 @@ describe("every captured event normalizes to a valid contract event, or to nothi
       const r = normalize(fixture(name));
       expect(r.event?.kind).toBe(kind);
       expect(r.event?.provider).toBe("codex");
-      // The root agent's id IS the session id, as for Claude. No capture has
-      // ever carried an agent_id to say otherwise.
+      // The root agent's id IS the session id, as for Claude. None of these
+      // carries an agent_id to say otherwise; only the subagent events do.
       expect(r.event?.agentId).toBe(fixture(name).session_id);
       expect(validateEvent(r.event).ok).toBe(true);
     });
   }
+
+  it("SubagentStart and SubagentStop → the subagent's own events, not the root's", () => {
+    for (const [name, kind] of [
+      ["SubagentStart", "subagent_start"],
+      ["SubagentStop", "subagent_stop"],
+    ] as const) {
+      const r = normalize(fixture(name));
+      expect(r.event?.kind, name).toBe(kind);
+      expect(r.event?.agentId, name).toBe(fixture(name).agent_id);
+      expect(r.event?.sessionId, name).toBe(fixture(name).session_id);
+      expect(validateEvent(r.event).ok, name).toBe(true);
+    }
+  });
 
   it("PermissionRequest → a human-blocking notification", () => {
     const r = normalize(sequence[1]);
@@ -136,7 +257,53 @@ describe("every captured event normalizes to a valid contract event, or to nothi
   });
 });
 
-describe("events mapped from Codex's declared schema, not yet a capture", () => {
+describe("Interrupt and the subagent events, as captured", () => {
+  it("Interrupt ends the turn", () => {
+    const r = normalize(fixture("Interrupt"));
+    expect(r.event?.kind).toBe("stop");
+    expect(r.event?.agentId).toBe(fixture("Interrupt").session_id);
+    expect(validateEvent(r.event).ok).toBe(true);
+  });
+
+  it("SubagentStart names the subagent, attached to the root and marked inferred", () => {
+    const r = normalize(fixture("SubagentStart"));
+    expect(r.event).toMatchObject({
+      kind: "subagent_start",
+      agentId: fixture("SubagentStart").agent_id,
+      agentType: "default",
+      parentAgentId: null,
+      parentSource: "inferred",
+    });
+    expect(validateEvent(r.event).ok).toBe(true);
+  });
+
+  it("SubagentStop ends the subagent without inventing a verdict", () => {
+    const r = normalize(fixture("SubagentStop"));
+    // Parentage is claimed once, by SubagentStart. Every other event makes no
+    // claim, so a lost SubagentStart leaves the agent unparented rather than
+    // guessed at.
+    expect(r.event).toMatchObject({
+      kind: "subagent_stop",
+      ok: null,
+      agentType: "default",
+      parentSource: null,
+    });
+    expect(JSON.stringify(r)).not.toContain("<redacted: the subagent's reply>");
+  });
+
+  it("the spawn call is the root's own tool call, with no paths in its brief", () => {
+    const r = normalize(fixture("PreToolUse:spawn"));
+    expect(r.event).toMatchObject({
+      kind: "pre_tool",
+      tool: "collaborationspawn_agent",
+      op: "other",
+      paths: [],
+      agentId: fixture("PreToolUse:spawn").session_id,
+    });
+  });
+});
+
+describe("a subagent's own tool call — declared, not yet captured", () => {
   it("says so, and says where the shape came from", () => {
     // A declared fixture that passes for a captured one is how §14 erodes.
     expect(declared._declared.note).toMatch(/^NOT CAPTURED/);
@@ -146,35 +313,26 @@ describe("events mapped from Codex's declared schema, not yet a capture", () => 
     }
   });
 
-  it("Interrupt ends the turn", () => {
-    const r = normalize(decl("Interrupt"));
-    expect(r.event?.kind).toBe("stop");
-    expect(r.event?.agentId).toBe(decl("Interrupt").session_id);
-    expect(validateEvent(r.event).ok).toBe(true);
+  it("holds only what no capture has produced", () => {
+    // Anything captured belongs in capture.json, and must leave this file.
+    expect(Object.keys(declared.events)).toEqual(["PreToolUse:subagent"]);
+    for (const name of Object.keys(declared.events)) expect(capture.events[name], name).toBeUndefined();
   });
 
-  it("SubagentStart names the subagent, attached to the root and marked inferred", () => {
-    const r = normalize(decl("SubagentStart"));
-    expect(r.event).toMatchObject({
-      kind: "subagent_start",
-      agentId: decl("SubagentStart").agent_id,
-      agentType: "worker",
-      parentAgentId: null,
-      parentSource: "inferred",
-    });
-    expect(validateEvent(r.event).ok).toBe(true);
+  it("is the captured subagent's, so the two files describe one session", () => {
+    const start = fixture("SubagentStart");
+    const pre = decl("PreToolUse:subagent");
+    expect(pre.session_id).toBe(start.session_id);
+    expect(pre.agent_id).toBe(start.agent_id);
+    expect(pre.agent_type).toBe(start.agent_type);
   });
 
   it("a subagent's tool call is the subagent's, not the root's", () => {
     const r = normalize(decl("PreToolUse:subagent"));
     expect(r.event?.agentId).toBe(decl("PreToolUse:subagent").agent_id);
     expect(r.event?.agentId).not.toBe(r.event?.sessionId);
-  });
-
-  it("SubagentStop ends the subagent without inventing a verdict", () => {
-    const r = normalize(decl("SubagentStop"));
-    expect(r.event).toMatchObject({ kind: "subagent_stop", ok: null });
-    expect(JSON.stringify(r)).not.toContain("<redacted: the subagent's reply>");
+    // Only SubagentStart claims parentage.
+    expect(r.event?.parentSource).toBeNull();
   });
 });
 
@@ -190,7 +348,14 @@ describe("SEC-01 — the prompt and the model's reply never become part of an ev
   });
 
   it("never carries a tool's output or command text, for any captured event", () => {
-    const all = [...Object.values(capture.events), ...sequence];
+    const all = [
+      ...Object.values(capture.events),
+      ...sequence,
+      ...esc,
+      ...spawned,
+      ...parallel,
+      ...Object.values(declared.events),
+    ];
     for (const payload of all) {
       const out = JSON.stringify(normalize(payload).event);
       expect(out).not.toContain("<redacted");
@@ -310,39 +475,142 @@ describe("a Codex permission blocks, and the agent's next move unblocks it", () 
 });
 
 describe("what unblocks a Codex agent, and what must not", () => {
+  /** The real Registry, on a clock the test moves to each step's `afterMs`. */
   function replay() {
     let n = 0;
-    const registry = new Registry({ nowMs: () => 0 });
+    let t = 0;
+    const registry = new Registry({ nowMs: () => t });
     const apply = (payload: unknown) => {
       const r = normalizeCodexHook(payload, { ...deps, newId: () => `e${++n}` });
       if (r.event === null) throw new Error("expected an event");
       expect(registry.apply(r.event, r.cwd).applied).toBe(true);
     };
-    return { registry, apply };
+    const step = (s: Step | undefined) => {
+      if (s === undefined) throw new Error("missing step");
+      t = s.afterMs;
+      apply(s.payload);
+    };
+    const agent = (sessionId: unknown, agentId: unknown = sessionId) =>
+      registry.get(String(sessionId))?.agents.get(String(agentId));
+    return { registry, apply, step, agent };
   }
 
-  it("Esc at the approval prompt — Interrupt — ends the block", () => {
+  it("replays the captured Esc: blocked at the PermissionRequest, unblocked by the Interrupt alone", () => {
     // No Stop and no PostToolUse follow an interrupted approval, so without
-    // this the agent would stay blocked and keep reminding you.
-    const { registry, apply } = replay();
-    apply(sequence[0]);
-    apply(sequence[1]);
-    expect(registry.blockedAgents()).toHaveLength(1);
-    apply(decl("Interrupt"));
+    // Interrupt the agent would stay blocked and keep reminding you.
+    const { registry, step, agent } = replay();
+    const [pre, request, interrupt] = capture.escSequence;
+    const session = request?.payload.session_id;
+
+    step(pre);
+    step(request);
+    expect(registry.blockedAgents()).toMatchObject([
+      { sessionId: session, agentId: session, provider: "codex", reason: "permission_prompt" },
+    ]);
+
+    step(interrupt);
     expect(registry.blockedAgents()).toEqual([]);
+    expect(agent(session)?.state).toBe("waiting");
+    // The whole wait was the human's, from the request to the Esc.
+    expect(agent(session)?.blockedMs).toBe((interrupt?.afterMs ?? 0) - (request?.afterMs ?? 0));
+    // And that took the Interrupt only: the capture has nothing after it.
+    expect(capture.escSequence).toHaveLength(3);
+  });
+
+  it("replays the captured spawn: the subagent runs and ends under the session, and the root is untouched by it", () => {
+    const { registry, step, agent } = replay();
+    const [pre, post, start, stop, next] = capture.spawnSequence;
+    const session = pre?.payload.session_id;
+    const sub = start?.payload.agent_id;
+
+    step(pre);
+    step(post);
+    const rootBefore = { ...agent(session) };
+    expect(rootBefore.state).toBe("thinking");
+
+    step(start);
+    expect(agent(session, sub)).toMatchObject({
+      agentType: "default",
+      parentId: null,
+      parentSource: "inferred",
+      state: "thinking",
+    });
+    step(stop);
+    expect(agent(session, sub)?.state).toBe("done");
+    expect(registry.get(String(session))?.agents.size).toBe(2);
+
+    // Nothing the subagent did moved the root: not its state, not when that
+    // state began, not its clock.
+    const root = agent(session);
+    for (const key of [
+      "state",
+      "stateSince",
+      "lastEventTs",
+      "lastActivityMs",
+      "activeMs",
+      "turnMs",
+      "tool",
+    ] as const) {
+      expect(root?.[key], key).toEqual(rootBefore[key]);
+    }
+
+    // The root's own next call is still the root's.
+    step(next);
+    expect(agent(session)?.state).toBe("tool-running");
+    expect(agent(session, sub)?.state).toBe("done");
+
+    // And the root never became anyone's child. Asserted outright, not against
+    // `rootBefore`: an event that marked every agent inferred would already
+    // have marked the root by then, because the registry's update path does
+    // not exclude it — and the stale value would reach /state and the stream.
+    expect(agent(session)).toMatchObject({ parentId: null, parentSource: null });
   });
 
   it("a subagent's activity does not clear the root agent's block", () => {
     // Every agent in a Codex tree shares the root's session_id. Treating them
-    // all as the root let any subagent tool call answer the root's prompt.
+    // all as the root let any subagent event answer the root's prompt. The
+    // subagent's tool call is the declared one; the rest is captured, from one
+    // session.
     const { registry, apply } = replay();
-    apply(sequence[0]);
-    apply(sequence[1]);
-    apply(decl("SubagentStart"));
+    apply(esc[0]);
+    apply(esc[1]);
+    apply(fixture("SubagentStart"));
     apply(decl("PreToolUse:subagent"));
+    apply(fixture("SubagentStop"));
     const blocked = registry.blockedAgents();
     expect(blocked).toHaveLength(1);
-    expect(blocked[0]?.agentId).toBe(sequence[1]?.session_id);
+    expect(blocked[0]?.agentId).toBe(esc[1]?.session_id);
+  });
+
+  it("KNOWN LIMITATION: a parallel sibling's PostToolUse clears a pending PermissionRequest", () => {
+    // Codex runs tool calls in parallel, and a PermissionRequest names no
+    // tool_use_id, so astir cannot tell the requested call's result from a
+    // sibling's: any PostToolUse ends the block, and the human who has not
+    // answered yet is no longer counted as waited on. No capture has a request
+    // pending while siblings run, so this splices the captured request into
+    // the captured parallel calls (same session). The turn_id is moved to
+    // theirs only for realism: neither the adapter nor the relay reads it.
+    // If this starts failing, the limitation is fixed: rename the test and
+    // remove the CHANGELOG entry.
+    const { registry, apply, agent } = replay();
+    const [a, b, c, siblingDone] = parallel;
+    const session = a?.session_id;
+    apply(a);
+    apply(b);
+    apply(c);
+    // Say the request is for `a`, the first call. Nothing in it says so.
+    apply({ ...esc[1], turn_id: a?.turn_id });
+    expect(registry.blockedAgents()).toHaveLength(1);
+
+    // A sibling finishes first, as `b` did in the capture. Nobody has
+    // answered `a`, but this is indistinguishable from `a` finishing after an
+    // approval.
+    expect(siblingDone?.hook_event_name).toBe("PostToolUse");
+    expect(siblingDone?.tool_use_id).toBe(b?.tool_use_id);
+    expect(siblingDone?.tool_use_id).not.toBe(a?.tool_use_id);
+    apply(siblingDone);
+    expect(registry.blockedAgents()).toEqual([]);
+    expect(agent(session)?.state).toBe("thinking");
   });
 });
 

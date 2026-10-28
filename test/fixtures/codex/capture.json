@@ -1,9 +1,9 @@
 {
   "_capture": {
-    "note": "Captured from real Codex sessions by a temporary command-hook probe plugin, then sanitised. Do not hand-edit; re-capture instead. Keys are exactly as captured. Kept verbatim: hook_event_name, permission_mode, source, tool_name, model, reason, trigger, stop_hook_active. Ids are stable fakes in the captured format, so events that shared a session still share one. cwd and every path are moved under a fake root; apply_patch keeps its directive lines with remapped paths, and its hunk bodies are replaced. Command text, tool responses, the prompt and the assistant message are replaced by markers.",
+    "note": "Captured from real Codex sessions by a temporary command-hook probe plugin, then sanitised. Do not hand-edit; re-capture instead. Two captures: codex-cli 0.154.0 on 2026-09-23 gave everything not listed under `captures[1].gave`; a second, interactive one (codex-tui) on codex-cli 0.165.0 on 2026-10-27 added Interrupt, SubagentStart, SubagentStop, PreToolUse:spawn and the esc, spawn and parallel sequences. envKeys are the first capture's hook environment; the second ran from a login shell and inherited all of it, so its names are not kept. Keys are exactly as captured. Kept verbatim: hook_event_name, permission_mode, source, tool_name, model, reason, trigger, stop_hook_active, agent_type. Ids are stable fakes in the captured format, so events that shared an id still share one — including the uuid inside a transcript path. cwd and every path are moved under a fake root; apply_patch keeps its directive lines with remapped paths, and its hunk bodies are replaced. Command text, every other tool_input value (a PermissionRequest's description; the spawn call's task_name, fork_turns and message), tool responses, the prompt and the assistant messages are replaced by markers. A sequence's afterMs is measured from its first record by the probe's own clock, and records are in the order the probe appended them: parallel hooks can disagree by a millisecond.",
     "provider": "codex",
-    "cliVersion": "codex-cli 0.154.0",
-    "capturedAt": "2026-09-23",
+    "cliVersion": "codex-cli 0.165.0",
+    "capturedAt": "2026-10-27",
     "envKeys": [
       "CLAUDE_PLUGIN_DATA",
       "CLAUDE_PLUGIN_ROOT",
@@ -22,8 +22,35 @@
       "PermissionRequest carries tool_name and tool_input but no tool_use_id.",
       "PreToolUse fires BEFORE PermissionRequest for the same call.",
       "apply_patch carries ABSOLUTE paths in its directives.",
-      "The one captured permission was answered by an automatic reviewer: no human, and the next event arrived ~11.9s later with no PostToolUse for the requested call — which is why the Codex dwell is 30s, not 5s.",
-      "No payload carried agent_id; SubagentStart/SubagentStop/Interrupt were never captured."
+      "The first capture's one permission was answered by an automatic reviewer: no human, and the next event arrived ~11.9s later with no PostToolUse for the requested call — which is why the Codex dwell is 30s, not 5s.",
+      "Esc at an approval prompt sends Interrupt (~4.5s after the PermissionRequest here) and nothing else: no PostToolUse for the requested call and no Stop. Interrupt carries the root's session_id and turn_id and no agent_id.",
+      "A request a human approved got its PostToolUse 3.3s later, with the PreToolUse's tool_use_id (not kept as a sequence).",
+      "A Bash PermissionRequest's tool_input carries a description its PreToolUse does not.",
+      "A spawned subagent shares the root's session_id, runs its own turn_id, and is named by agent_id; its agent_type was \"default\". SubagentStart's transcript_path is the subagent's own rollout; SubagentStop's is the root's, with the subagent's in agent_transcript_path.",
+      "SubagentStop adds agent_transcript_path, stop_hook_active and last_assistant_message, and no success or failure field.",
+      "The spawn tool is collaborationspawn_agent, its tool_use_id is call_<32 hex> rather than exec-<uuid>, and its PostToolUse arrives before SubagentStart (~1.0s): the call does not stay open while the subagent runs.",
+      "Tool calls run in parallel: three PreToolUse within 42 ms, and their PostToolUse arrive in a different order, matched to their calls only by tool_use_id.",
+      "No captured tool event carries agent_id: the one captured subagent ran no tool, so a subagent's own tool call is still declared, not captured (declared.json)."
+    ],
+    "captures": [
+      {
+        "cliVersion": "codex-cli 0.154.0",
+        "capturedAt": "2026-09-23"
+      },
+      {
+        "cliVersion": "codex-cli 0.165.0",
+        "capturedAt": "2026-10-27",
+        "originator": "codex-tui",
+        "gave": [
+          "events.Interrupt",
+          "events.SubagentStart",
+          "events.SubagentStop",
+          "events.PreToolUse:spawn",
+          "escSequence",
+          "spawnSequence",
+          "parallelSequence"
+        ]
+      }
     ]
   },
   "events": {
@@ -139,6 +166,56 @@
       "cwd": "/home/user/repo",
       "hook_event_name": "SessionEnd",
       "reason": "other"
+    },
+    "Interrupt": {
+      "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+      "turn_id": "8b839337-25e9-e93c-d6ed-ab4267a96067",
+      "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "Interrupt",
+      "model": "gpt-6-astra",
+      "permission_mode": "default"
+    },
+    "SubagentStart": {
+      "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+      "turn_id": "d9493f8f-9d93-5249-bf13-81b24c516ede",
+      "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-4e599ec8-baff-d448-7085-fc44e480080b.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "SubagentStart",
+      "model": "gpt-6-astra",
+      "permission_mode": "default",
+      "agent_id": "4e599ec8-baff-d448-7085-fc44e480080b",
+      "agent_type": "default"
+    },
+    "SubagentStop": {
+      "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+      "turn_id": "d9493f8f-9d93-5249-bf13-81b24c516ede",
+      "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+      "agent_transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-4e599ec8-baff-d448-7085-fc44e480080b.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "SubagentStop",
+      "model": "gpt-6-astra",
+      "permission_mode": "default",
+      "stop_hook_active": false,
+      "agent_id": "4e599ec8-baff-d448-7085-fc44e480080b",
+      "agent_type": "default",
+      "last_assistant_message": "<redacted: the subagent's reply>"
+    },
+    "PreToolUse:spawn": {
+      "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+      "turn_id": "59780c47-eaff-396f-e8c1-e4cdb791dc4a",
+      "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+      "cwd": "/home/user/repo",
+      "hook_event_name": "PreToolUse",
+      "model": "gpt-6-astra",
+      "permission_mode": "default",
+      "tool_name": "collaborationspawn_agent",
+      "tool_input": {
+        "task_name": "<redacted>",
+        "fork_turns": "<redacted>",
+        "message": "<redacted>"
+      },
+      "tool_use_id": "call_b5b9d513e63c80958c5c941a532a08d0"
     }
   },
   "permissionSequence": [
@@ -194,6 +271,250 @@
           "command": "<redacted>"
         },
         "tool_use_id": "exec-b4778003-94d3-8ee5-8daa-5dbdc2005ffe"
+      }
+    }
+  ],
+  "escSequence": [
+    {
+      "afterMs": 0,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "8b839337-25e9-e93c-d6ed-ab4267a96067",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PreToolUse",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>"
+        },
+        "tool_use_id": "exec-8a1094c6-2fff-9d50-4056-60a64bb35b20"
+      }
+    },
+    {
+      "afterMs": 1335,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "8b839337-25e9-e93c-d6ed-ab4267a96067",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PermissionRequest",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>",
+          "description": "<redacted>"
+        }
+      }
+    },
+    {
+      "afterMs": 5878,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "8b839337-25e9-e93c-d6ed-ab4267a96067",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "Interrupt",
+        "model": "gpt-6-astra",
+        "permission_mode": "default"
+      }
+    }
+  ],
+  "spawnSequence": [
+    {
+      "afterMs": 0,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "59780c47-eaff-396f-e8c1-e4cdb791dc4a",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PreToolUse",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "tool_name": "collaborationspawn_agent",
+        "tool_input": {
+          "task_name": "<redacted>",
+          "fork_turns": "<redacted>",
+          "message": "<redacted>"
+        },
+        "tool_use_id": "call_b5b9d513e63c80958c5c941a532a08d0"
+      }
+    },
+    {
+      "afterMs": 284,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "59780c47-eaff-396f-e8c1-e4cdb791dc4a",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PostToolUse",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "tool_name": "collaborationspawn_agent",
+        "tool_input": {
+          "task_name": "<redacted>",
+          "fork_turns": "<redacted>",
+          "message": "<redacted>"
+        },
+        "tool_response": "<redacted>",
+        "tool_use_id": "call_b5b9d513e63c80958c5c941a532a08d0"
+      }
+    },
+    {
+      "afterMs": 1292,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "d9493f8f-9d93-5249-bf13-81b24c516ede",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-4e599ec8-baff-d448-7085-fc44e480080b.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "SubagentStart",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "agent_id": "4e599ec8-baff-d448-7085-fc44e480080b",
+        "agent_type": "default"
+      }
+    },
+    {
+      "afterMs": 5663,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "d9493f8f-9d93-5249-bf13-81b24c516ede",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "agent_transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-4e599ec8-baff-d448-7085-fc44e480080b.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "SubagentStop",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "stop_hook_active": false,
+        "agent_id": "4e599ec8-baff-d448-7085-fc44e480080b",
+        "agent_type": "default",
+        "last_assistant_message": "<redacted: the subagent's reply>"
+      }
+    },
+    {
+      "afterMs": 5780,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "59780c47-eaff-396f-e8c1-e4cdb791dc4a",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PreToolUse",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>"
+        },
+        "tool_use_id": "exec-0803dd76-f363-e714-1d79-9516809ed3de"
+      }
+    }
+  ],
+  "parallelSequence": [
+    {
+      "afterMs": 0,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "59780c47-eaff-396f-e8c1-e4cdb791dc4a",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PreToolUse",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>"
+        },
+        "tool_use_id": "exec-0d8abefd-ec34-3056-29ab-cf3ad006b04a"
+      }
+    },
+    {
+      "afterMs": 42,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "59780c47-eaff-396f-e8c1-e4cdb791dc4a",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PreToolUse",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>"
+        },
+        "tool_use_id": "exec-2d23201e-d723-395f-433e-d1c3e6543cd2"
+      }
+    },
+    {
+      "afterMs": 41,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "59780c47-eaff-396f-e8c1-e4cdb791dc4a",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PreToolUse",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>"
+        },
+        "tool_use_id": "exec-e840415e-ceb3-1b22-7094-1934a6301cdd"
+      }
+    },
+    {
+      "afterMs": 1047,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "59780c47-eaff-396f-e8c1-e4cdb791dc4a",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PostToolUse",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>"
+        },
+        "tool_response": "<redacted>",
+        "tool_use_id": "exec-2d23201e-d723-395f-433e-d1c3e6543cd2"
+      }
+    },
+    {
+      "afterMs": 1273,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "59780c47-eaff-396f-e8c1-e4cdb791dc4a",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PostToolUse",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>"
+        },
+        "tool_response": "<redacted>",
+        "tool_use_id": "exec-e840415e-ceb3-1b22-7094-1934a6301cdd"
+      }
+    },
+    {
+      "afterMs": 1485,
+      "payload": {
+        "session_id": "2ba89095-6312-7967-86e5-b4582465611e",
+        "turn_id": "59780c47-eaff-396f-e8c1-e4cdb791dc4a",
+        "transcript_path": "/home/user/.codex/sessions/2026/10/27/rollout-2026-10-27T10-00-00-2ba89095-6312-7967-86e5-b4582465611e.jsonl",
+        "cwd": "/home/user/repo",
+        "hook_event_name": "PostToolUse",
+        "model": "gpt-6-astra",
+        "permission_mode": "default",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>"
+        },
+        "tool_response": "<redacted>",
+        "tool_use_id": "exec-0d8abefd-ec34-3056-29ab-cf3ad006b04a"
       }
     }
   ]

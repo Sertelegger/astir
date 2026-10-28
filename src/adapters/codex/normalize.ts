@@ -2,8 +2,8 @@
  * CAP-02/03 — Codex hook payload → §10.1 event.
  *
  * Written against `test/fixtures/codex/capture.json`, captured from codex-cli
- * 0.154.0, never against the published schemas: those give the declared shape,
- * and a capture gives the shape a session actually sends.
+ * 0.154.0 and 0.165.0, never against the published schemas: those give the
+ * declared shape, and a capture gives the shape a session actually sends.
  *
  * ## What Codex does not say, and what that costs
  *
@@ -12,14 +12,22 @@
  * it wrote, never what it looked at. Guessing paths out of a command line would
  * put tiles on the map for words that merely look like files.
  *
- * **Three events are mapped from Codex's declared schema, not a capture.**
- * `Interrupt`, `SubagentStart` and `SubagentStop` never occurred in a captured
- * session, but leaving them unmapped is worse than §14's risk: without
- * `Interrupt`, Esc at an approval prompt leaves the agent "blocked" and
- * reminding you forever; without `agent_id`, a subagent's events land on the
- * root agent and clear its real block. So they read only the fields the
- * rust-v0.154.0 schema declares REQUIRED (`fixtures/codex/declared.json`
- * cites the lines), and they are the first thing to re-check against a capture.
+ * **A subagent's own tool calls are mapped from Codex's declared schema, not a
+ * capture.** `Interrupt`, `SubagentStart` and `SubagentStop` were mapped that
+ * way first, and a capture (codex-cli 0.165.0) has since confirmed the mapping:
+ * Esc at an approval prompt sends `Interrupt` and nothing else, and a subagent
+ * shares the root's `session_id` and is named by `agent_id`. Without them the agent
+ * would stay "blocked" and reminding you forever, and a subagent's events would
+ * land on the root and clear its real block. The one subagent captured ran no
+ * tool, so a tool call carrying `agent_id` is still only what the
+ * rust-v0.154.0 schema declares (`fixtures/codex/declared.json` cites the
+ * lines), and it is the first thing to re-check against a capture.
+ *
+ * **A permission names no call.** `PermissionRequest` carries no
+ * `tool_use_id`, so the agent's next event of any kind ends the block. Codex
+ * runs tool calls in parallel, so that event can be a sibling call's
+ * `PostToolUse` while the human has not answered yet (a known limitation,
+ * pinned in `test/codex.test.ts`).
  *
  * **No parentage.** Every agent in a Codex tree shares the root's
  * `session_id`, and the hooks name a subagent but not its parent, so every
