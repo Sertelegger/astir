@@ -42,8 +42,8 @@ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
     liveness: "listing",
   },
   codex: {
-    // Its automatic reviewer answered the one captured request after ~11.9s
-    // (test/fixtures/codex/capture.json). 5s would have alerted on it.
+    // Its automatic reviewer answered the captured auto-reviewed request after
+    // ~11.9s (test/fixtures/codex/capture.json). 5s would have alerted on it.
     blockDwellMs: 30_000,
     fileWatch: false,
     // No session listing exists (verified against rust-v0.154.0).

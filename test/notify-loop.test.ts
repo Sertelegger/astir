@@ -154,7 +154,7 @@ describe("PSH-16 — the dwell belongs to the provider", () => {
   /**
    * "Long enough that an auto-resolved permission never reaches it" depends on
    * who auto-resolves. Claude's classifier answers in hundreds of milliseconds;
-   * the one Codex request captured was answered by its reviewer after ~11.9s
+   * the auto-reviewed Codex request captured was answered by its reviewer after ~11.9s
    * (test/fixtures/codex/capture.json). One dwell cannot be right for both, so
    * each provider declares its own and these tests use the declared values.
    */

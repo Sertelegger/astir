@@ -24,9 +24,13 @@ import { Registry } from "../src/model/registry.js";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const RELAY = join(root, "hooks", "codex-relay.mjs");
 const TOKEN = "f".repeat(64);
+type Steps = Array<{ payload: Record<string, unknown> }>;
 const capture = JSON.parse(readFileSync(join(root, "test", "fixtures", "codex", "capture.json"), "utf8")) as {
   events: Record<string, Record<string, unknown>>;
-  permissionSequence: Array<{ payload: Record<string, unknown> }>;
+  permissionSequence: Steps;
+  escSequence: Steps;
+  spawnSequence: Steps;
+  parallelSequence: Steps;
 };
 
 const cleanup: Array<() => unknown> = [];
@@ -151,6 +155,11 @@ describe("the Codex relay", () => {
       capture.events["PreToolUse:Bash"],
       capture.events["PostToolUse:apply_patch"],
       capture.permissionSequence[0]?.payload,
+      // A PermissionRequest's description, the spawn call's brief and the
+      // subagent's reply.
+      capture.escSequence[1]?.payload,
+      capture.events["PreToolUse:spawn"],
+      capture.events.SubagentStop,
     ];
     for (const p of payloads) await relay(JSON.stringify(p), envFor(home(), d.port));
 
@@ -168,7 +177,12 @@ describe("the Codex relay", () => {
     };
     const all = [
       ...Object.values(capture.events),
-      ...capture.permissionSequence.map((s) => s.payload),
+      ...[
+        capture.permissionSequence,
+        capture.escSequence,
+        capture.spawnSequence,
+        capture.parallelSequence,
+      ].flatMap((steps) => steps.map((s) => s.payload)),
       ...Object.values(declared.events),
     ];
     const d = await fakeDaemon();
@@ -329,6 +343,24 @@ describe("the Codex relay", () => {
     expect(blocked[0]?.provider).toBe("codex");
     expect(blocked[0]?.sessionId).toBe(capture.permissionSequence[1]?.payload.session_id);
   });
+
+  it("delivers a captured Esc end to end: the Interrupt alone ends the block", async () => {
+    // Interrupt is the one event that ends a block Esc leaves behind, and the
+    // relay looks up the Codex pid for it — so it must still arrive whole.
+    const registry = new Registry({ nowMs: () => 1_000 });
+    const daemon = new Daemon({ token: TOKEN, registry });
+    cleanup.push(() => daemon.close());
+    const port = await daemon.listen(0);
+    const dir = home();
+    const [pre, request, interrupt] = capture.escSequence;
+
+    for (const step of [pre, request]) {
+      expect((await relay(JSON.stringify(step?.payload), envFor(dir, port))).code).toBe(0);
+    }
+    expect(registry.blockedAgents()).toHaveLength(1);
+    expect((await relay(JSON.stringify(interrupt?.payload), envFor(dir, port))).code).toBe(0);
+    expect(registry.blockedAgents()).toEqual([]);
+  });
 });
 
 describe("the relay says which Codex process it runs under", () => {
@@ -386,11 +418,22 @@ describe("the relay says which Codex process it runs under", () => {
     return Number(out.trim());
   }
 
-  it.skipIf(!canName)("sends the codex pid on a PermissionRequest", async () => {
-    const d = await fakeDaemon();
-    const codexPid = await underCodex(capture.permissionSequence[1]?.payload, envFor(home(), d.port));
-    expect(d.received[0]?.pid).toBe(String(codexPid));
-  });
+  // Every event where liveness is decided. Interrupt matters most: after Esc at
+  // an approval prompt it is the only event Codex sends.
+  for (const [name, payload] of [
+    ["SessionStart", capture.events.SessionStart],
+    ["PermissionRequest", capture.permissionSequence[1]?.payload],
+    ["Stop", capture.events.Stop],
+    ["Interrupt", capture.events.Interrupt],
+  ] as const) {
+    it.skipIf(!canName)(`sends the codex pid on ${name}`, async () => {
+      expect(payload?.hook_event_name).toBe(name);
+      const d = await fakeDaemon();
+      const codexPid = await underCodex(payload, envFor(home(), d.port));
+      expect(d.received).toHaveLength(1);
+      expect(d.received[0]?.pid).toBe(String(codexPid));
+    });
+  }
 
   it.skipIf(!canName)("does not pay for the process table on the per-tool hot path", async () => {
     const d = await fakeDaemon();

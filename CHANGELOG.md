@@ -100,9 +100,18 @@ release is cut, named and published is in
 - **A Codex session's map shows only what it wrote.** Codex reads files through
   its shell, which names no paths astir can trust, so reads and shell-driven
   writes leave no trace. Claude's map shows both.
-- **Codex `Interrupt` and subagent events are mapped from Codex's declared
-  schema, not a capture.** No captured session has produced one yet; the
-  fixture says so, and they are the first thing to re-check when one does.
+- **A Codex subagent's own tool calls are mapped from Codex's declared schema,
+  not a capture.** `Interrupt`, `SubagentStart` and `SubagentStop` have now been
+  captured (codex-cli 0.165.0) and behave as mapped, but the one subagent
+  captured ran no tool. The fixture says so, and that is the first thing to
+  re-check when one does.
+- **A Codex permission can stop counting as waiting on you before you answer
+  it.** Codex runs tool calls in parallel, and astir does not track which call
+  a permission is about — the request names none, and astir keeps no per-call
+  state — so when another call in the same batch finishes first astir takes
+  that as the answer. Within the 30-second wait that means no
+  alert at all; after it, a `resolved` and no more reminders — while the prompt
+  is still open in Codex.
 - **A Codex session reports no busy/idle status of its own**, so between
   events astir waits up to 15 minutes before calling a silent one idle.
   Claude's discovery answers that within seconds.
