@@ -5,8 +5,8 @@ All notable changes to astir are recorded here. The format follows
 addition**: a `Known limitations` section, for behaviour that is easy to mistake
 for a bug.
 
-Direction and boundaries live in [ROADMAP.md](./ROADMAP.md); what is being built
-is in the [milestones](https://github.com/Sertelegger/astir/milestones). How a
+Scope and design constraints live in [CONTRIBUTING.md](./CONTRIBUTING.md); what is being built
+is in the [issues](https://github.com/Sertelegger/astir/issues) and [milestones](https://github.com/Sertelegger/astir/milestones). How a
 release is cut, named and published is in
 [CONTRIBUTING.md](./CONTRIBUTING.md#releases).
 
