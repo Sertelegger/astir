@@ -22,6 +22,12 @@ It is **live-only**: no persistent history, no replay, no forensic timeline. Ses
 
 Astir also never steers the AI session. It observes. It does not block, approve, deny, or inject context.
 
+And it is not a hosted service: it runs on your machines, talks over loopback and your own SSH tunnels, and sends nothing anywhere else.
+
+## Where the work is
+
+**GitHub issues are the plan.** What is in flight, next, deferred or parked is an issue; milestones group them. There is no roadmap file to keep in step — it was retired because a second list is a second place to be wrong. Ideas that are deliberately on hold are issues too, titled `Deferred:` or `Parked idea:`, so they are findable without being mistaken for work in progress.
+
 ## The one rule
 
 **A passing test suite is not evidence that something works.**
@@ -34,6 +40,21 @@ So:
 - **Provider fixtures are captured, never invented.** If you need a hook payload or a transcript record, record a real one and note the CLI version. The old test suite asserted a thinking-block shape that does not exist, so it passed while the feature was dead.
 - **A test named for a requirement asserts that requirement.** The old revive test asserted session state while agent state stayed broken.
 - **Time, filesystem, network, notifications and process spawning go behind injectable seams.** That is what makes the above testable at all.
+
+## Design constraints
+
+These are enforced in code and asserted in tests, not maintained here. They are listed because knowing they are deliberate is what stops them being "simplified" away.
+
+- **Heat decays against an absolute floor, never against the current maximum.** Uniform decay preserves every ratio, so a max-relative map can never cool. This was the first version's defect, and it is pinned at both the model (`src/model/map.ts`) and the client's deliberate duplicate (`src/status/frames.ts`).
+- **Tile area is √total.** Linear area lets one heavily-edited file swallow the map.
+- **Geometry never depends on heat or mode.** `layout()` sees paths and totals only, so a toggle — or a file cooling — cannot reflow the map.
+- **Frames carry heat *and its age*, never heat-as-of-now**, so the browser reproduces the decay curve locally and animates at its own framerate rather than the network's.
+- **Layout is data, not structure.** The map is an entry in a list; no code path asks whether a panel happens to be the map.
+- **Astir never looks calmer than it is entitled to.** Sessions it cannot hear are listed and labelled, never filtered out; a path that cannot deliver says so.
+- **Colour is checked, not chosen** — monotonic lightness and separation under simulated protanopia, deuteranopia and tritanopia, asserted in CI. Heat is *also* bar length, so never colour alone.
+- **The daemon and views branch on declared capabilities, never on a provider's name** (`src/contract/capabilities.ts`).
+
+Where an invariant is held only by a comment rather than a test, it is tracked in [#26](https://github.com/Sertelegger/astir/issues/26).
 
 ## Conventions
 
