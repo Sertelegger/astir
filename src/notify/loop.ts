@@ -100,6 +100,17 @@ export class NotifyLoop {
       // is the policy's business, and a genuine block is minutes long anyway —
       // this delay is invisible against a one-minute reminder interval, and the
       // user is by definition not looking yet.
+      //
+      // The dwell runs from when the block started. For Claude that is now its
+      // `PermissionRequest`, as the dialog was claimed (#86) — though the
+      // agent is only blocked once the dialog has been SEEN, by the session
+      // listing or by the `permission_prompt` Notification, which is dated
+      // back to the claim. The Notification alone came ~6 s after the prompt,
+      // so every Claude alert came ~11 s after it rather than 5. A claim
+      // nothing sees (a background agent's ask, which Claude denies itself)
+      // never blocks, so never reaches here. A block that a Claude listing
+      // ends — Esc, or an approved tool running — leaves `blocked` like any
+      // other, and is retired below.
       debug("notify", "considering", {
         session: b.sessionId,
         agent: b.agentId,

@@ -32,14 +32,47 @@ export interface ProviderCapabilities {
    * never have seen, so its silence proves nothing.
    */
   liveness: "listing" | "pid";
+  /**
+   * #86 — the provider's session listing says whether a permission dialog is
+   * on screen, which no hook does for every way one opens or ends.
+   *
+   * Measured on Claude Code 2.1.291/2.1.312 (`claude agents --json`, polled by
+   * DMN-05): `waiting` while a dialog is open, `idle` once Esc dismissed it or
+   * the turn ended, `busy` while working. `waitingFor` says what a `waiting`
+   * session waits for — `"permission prompt"` for a tool's dialog, by the
+   * binary. Two hooks leave gaps it fills:
+   *
+   * - `PermissionRequest` is a claim, not a sighting — Claude also fires it for
+   *   asks that never show a dialog (read from the 2.1.312 binary) — so a
+   *   claimed dialog blocks once the listing, or the Notification, has seen it.
+   * - Esc at a dialog fires no hook at all (no `PermissionDenied`, `Stop`,
+   *   `StopFailure` or `PostToolUseFailure`), and an approved tool fires
+   *   nothing until it finishes. Without the listing, a dismissed prompt stays
+   *   blocked and reminding until the session's next event, and a long
+   *   approved tool reads as unanswered.
+   *
+   * `waiting` for anything else is not evidence: an MCP elicitation queued
+   * behind a dialog reads `waiting` / `"input needed"` for as long as it
+   * waits, whatever else is happening. The provider's lister translates these
+   * words into astir's (`DiscoveredSession.screen`; Claude's in
+   * `discovery/sessions.ts`), and the registry turns those into transitions
+   * (`reconcile`), never reading a provider's own (CAP-02).
+   */
+  listingClearsBlocks: boolean;
 }
 
 export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
   claude: {
     // The `defaultMode: auto` classifier answers in hundreds of milliseconds.
+    // Measured since #86, an approval it gives without a dialog fires no
+    // `PermissionRequest` at all. A dialog that is seen blocks from its
+    // `PermissionRequest`, so the dwell now runs from the moment the dialog
+    // was claimed rather than from the `Notification` ~6 s after it, and still
+    // absorbs any automatic answer that does follow a block.
     blockDwellMs: 5_000,
     fileWatch: true,
     liveness: "listing",
+    listingClearsBlocks: true,
   },
   codex: {
     // Its automatic reviewer answered the captured auto-reviewed request after
@@ -48,5 +81,8 @@ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
     fileWatch: false,
     // No session listing exists (verified against rust-v0.154.0).
     liveness: "pid",
+    // Nothing to read: its pid lister reports no status. Codex says Esc itself
+    // (`Interrupt`), so it does not need one.
+    listingClearsBlocks: false,
   },
 };

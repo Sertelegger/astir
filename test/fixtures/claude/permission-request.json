@@ -1,0 +1,94 @@
+{
+  "_capture": {
+    "note": "Captured from one permission dialog in a throwaway Claude Code session in default permission mode, by temporary command hooks that each wrote their payload to a file named by `date +%s%3N`, then sanitised by a script that refuses to write if any raw string of six or more characters survives outside a named allowlist. Do not hand-edit; re-capture instead. Keys are exactly as captured, in captured order. Kept verbatim: hook_event_name, permission_mode, effort.level, tool_name, notification_type, message. Ids are stable fakes in the captured format, so events that shared an id still share one, including the uuid inside transcript_path and scratchpad_dir. The home directory is /home/user, the repo is /home/user/repo, the profile directory is ~/.claude, and Claude's per-project directory names follow the fake cwd; the uid in /tmp/claude-<uid> is kept. Command text, the call's description and every value inside permission_suggestions are replaced by markers, keeping the list and its keys. afterMs is measured from the first record by the probe's own clock at each hook's start, so it includes a command hook's spawn time; #86's table, from another dialog, has PermissionRequest at +0.41s and the Notification at +6.58s.",
+    "provider": "claude",
+    "cliVersion": "2.1.312 (Claude Code)",
+    "capturedAt": "2026-10-28",
+    "settles": [
+      "PermissionRequest fired before the dialog, seconds before the Notification astir used to block on: here 1.1s after PreToolUse, and the permission_prompt Notification 6.4s after it.",
+      "PermissionRequest carries tool_name, tool_input and permission_suggestions, but no tool_use_id and no agent_id. This one is the main agent's, which is named by session_id.",
+      "PermissionRequest's tool_input is the PreToolUse's, unchanged.",
+      "The Notification names no tool: notification_type permission_prompt and a fixed message."
+    ],
+    "measuredAlongside": [
+      "Esc at the dialog fired no hook at all: no PermissionDenied, Stop, StopFailure or PostToolUseFailure.",
+      "When auto mode's classifier approved without a dialog, PermissionRequest did not fire: PreToolUse, then PostToolUse.",
+      "AskUserQuestion fired PermissionRequest (tool_name AskUserQuestion), then a permission_prompt Notification.",
+      "`claude agents --json` reported the session `waiting` while a dialog was open, `idle` after Esc or once the turn had ended, and `busy` while working. For AskUserQuestion it read `busy` at ~1s and `waiting` by ~7s."
+    ],
+    "measuredSince": [
+      "On 2.1.312, `claude agents --json` names what a waiting session waits for, as `waitingFor` beside `status: waiting`. Four of thirteen sessions on the machine read `waiting` with `waitingFor: input needed`, one of them while it was working."
+    ],
+    "readFromTheBinary": [
+      "PermissionRequest is not the dialog itself. Claude also runs PermissionRequest hooks for an ask that can never show one (shouldAvoidPermissionPrompts: a background agent, a headless session), and then denies the ask itself. Read from 2.1.312, not measured.",
+      "`waitingFor` is `permission prompt` for a tool's permission dialog; `input needed` for AskUserQuestion, an MCP elicitation, and an elicitation queued behind another dialog, which outranks everything, work included; and `dialog open`, `worker request`, `sandbox request` or `goal proposal` otherwise. Read from 2.1.296 to 2.1.312.",
+      "`claude agents --json` reports every status but `idle` and `waiting` as `busy`, so a session file's `shell` (idle with a background shell running) arrives as `busy`. Read from 2.1.296 to 2.1.312.",
+      "The permission_prompt Notification is sent only while the dialog is still up, once the user has been idle at it for 6s, checked every 6s. Read from 2.1.312."
+    ]
+  },
+  "sequence": [
+    {
+      "afterMs": 0,
+      "payload": {
+        "session_id": "bea6e61a-f90d-461a-babe-3e03fd7ea184",
+        "transcript_path": "/home/user/.claude/projects/-home-user-repo/bea6e61a-f90d-461a-babe-3e03fd7ea184.jsonl",
+        "cwd": "/home/user/repo",
+        "scratchpad_dir": "/tmp/claude-1000/-home-user-repo/bea6e61a-f90d-461a-babe-3e03fd7ea184/scratchpad",
+        "prompt_id": "5367e994-cfe6-4a4d-8c4e-1185b00d4c1a",
+        "permission_mode": "default",
+        "effort": {
+          "level": "medium"
+        },
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>",
+          "description": "<redacted>"
+        },
+        "tool_use_id": "toolu_01aOOWXTR0mmashEQU65MMgR"
+      }
+    },
+    {
+      "afterMs": 1116,
+      "payload": {
+        "session_id": "bea6e61a-f90d-461a-babe-3e03fd7ea184",
+        "transcript_path": "/home/user/.claude/projects/-home-user-repo/bea6e61a-f90d-461a-babe-3e03fd7ea184.jsonl",
+        "cwd": "/home/user/repo",
+        "scratchpad_dir": "/tmp/claude-1000/-home-user-repo/bea6e61a-f90d-461a-babe-3e03fd7ea184/scratchpad",
+        "prompt_id": "5367e994-cfe6-4a4d-8c4e-1185b00d4c1a",
+        "permission_mode": "default",
+        "effort": {
+          "level": "medium"
+        },
+        "hook_event_name": "PermissionRequest",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "<redacted>",
+          "description": "<redacted>"
+        },
+        "permission_suggestions": [
+          {
+            "type": "<redacted>",
+            "directories": [
+              "<redacted>"
+            ],
+            "destination": "<redacted>"
+          }
+        ]
+      }
+    },
+    {
+      "afterMs": 7488,
+      "payload": {
+        "session_id": "bea6e61a-f90d-461a-babe-3e03fd7ea184",
+        "transcript_path": "/home/user/.claude/projects/-home-user-repo/bea6e61a-f90d-461a-babe-3e03fd7ea184.jsonl",
+        "cwd": "/home/user/repo",
+        "scratchpad_dir": "/tmp/claude-1000/-home-user-repo/bea6e61a-f90d-461a-babe-3e03fd7ea184/scratchpad",
+        "prompt_id": "5367e994-cfe6-4a4d-8c4e-1185b00d4c1a",
+        "hook_event_name": "Notification",
+        "message": "Claude needs your permission",
+        "notification_type": "permission_prompt"
+      }
+    }
+  ]
+}

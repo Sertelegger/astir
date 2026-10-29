@@ -18,13 +18,27 @@ export type Kind =
 /** How CAP-05 resolved this agent's parent. `inferred` means "we guessed". */
 export type ParentSource = "sidecar" | "tooluse" | "inferred";
 
-/** Claude's Notification matcher values. The first three mean "come look". */
+/**
+ * Claude's Notification matcher values. The first three mean "come look".
+ *
+ * `permission_prompt` is also what Codex's `PermissionRequest` hook becomes:
+ * it is the only blocking signal Codex sends.
+ *
+ * `permission_request` is Claude's `PermissionRequest` hook (#86), and it does
+ * NOT mean "come look". Claude fires it before every dialog, ~6 s ahead of the
+ * Notification — but also for asks that can never show one (a background
+ * agent's, a headless session's), which it then denies itself. So it is a
+ * claim that a dialog may be open, not a sighting of one: the registry blocks
+ * on it, dated from it, only once the Notification or Claude's session listing
+ * has seen the dialog.
+ */
 export type NotificationKind =
   | "permission_prompt"
   | "agent_needs_input"
   | "worker_permission_prompt"
   | "idle_prompt"
   | "agent_completed"
+  | "permission_request"
   | "other";
 
 export interface ContractVersion {
@@ -109,6 +123,7 @@ const NOTIFICATION_KINDS = new Set<string>([
   "worker_permission_prompt",
   "idle_prompt",
   "agent_completed",
+  "permission_request",
   "other",
 ]);
 

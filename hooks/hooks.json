@@ -40,6 +40,23 @@
         ]
       }
     ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47000/hook/claude",
+            "timeout": 5,
+            "headers": {
+              "Authorization": "Bearer $ASTIR_TOKEN"
+            },
+            "allowedEnvVars": [
+              "ASTIR_TOKEN"
+            ]
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "hooks": [

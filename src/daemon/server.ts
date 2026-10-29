@@ -242,7 +242,6 @@ export class Daemon {
     ingested: 0,
     rejected: 0,
     duplicates: 0,
-    blocked: 0,
     /**
      * Daemon-wide totals for /healthz. The PER-SESSION versions on each
      * `SessionRecord` are what surfaces render; these answer "is anything
@@ -390,7 +389,9 @@ export class Daemon {
         // A surface reading an empty list can say "no one will be told", which
         // is the one thing silence cannot.
         delivery: { live: this.opts.deliveryLive?.() ?? [] },
-        counters: this.counters,
+        // `blocked` is the registry's: Claude's session listing begins blocks
+        // too (#86), and those never pass through ingest.
+        counters: { ...this.counters, blocked: this.opts.registry.blocksBegun() },
       });
     }
 
@@ -698,7 +699,6 @@ export class Daemon {
     if (result.applied && pid !== null) this.opts.registry.observePid(valid.event.sessionId, pid);
 
     if (result.becameBlocked) {
-      this.counters.blocked++;
       try {
         this.opts.onBlocked?.(result.becameBlocked);
       } catch {

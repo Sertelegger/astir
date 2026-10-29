@@ -58,6 +58,52 @@ release is cut, named and published is in
 
 ### Fixed
 
+- **A Claude alert came about 6 seconds late**
+  ([#86](https://github.com/Sertelegger/astir/issues/86)). astir waited for
+  Claude's `permission_prompt` notification, which arrives about six seconds
+  after the prompt appears, and then waited its own five seconds on top. It
+  now dates the wait from `PermissionRequest`, which Claude sends just before
+  the prompt, so the alert comes about five seconds after the prompt instead
+  of about eleven. `PermissionRequest` alone does not block, because Claude
+  also sends it for requests that never show a prompt (a background agent's,
+  which Claude then denies itself). The agent counts as blocked once the
+  prompt has been seen: Claude's session list (`claude agents --json`, which
+  astir already polls every 5 seconds) reports a `permission prompt` on
+  screen, or the notification arrives. When auto mode approves something
+  without a prompt, Claude sends no `PermissionRequest`, so nothing changes
+  there.
+- **Pressing Esc at a Claude prompt left the agent blocked**
+  ([#86](https://github.com/Sertelegger/astir/issues/86)). Claude sends nothing
+  when you dismiss a prompt, so astir kept counting the agent as blocked, and
+  kept reminding you, until the session did something else. astir now reads
+  the status the same session list reports. When it says the session is
+  `idle` (or `shell`, idle with a background shell running), the agent counts
+  as waiting on you, and an alert already sent is followed by a `resolved`.
+  When it says `busy` after it saw that agent's prompt, you approved it: a
+  command that runs a long time counts as running, not as a prompt you have
+  not answered, even if another agent asked for something since.
+- **A subagent's Claude prompt was reported as its parent's**
+  ([#86](https://github.com/Sertelegger/astir/issues/86)). Claude's
+  `permission_prompt` notification never says which agent it is about, so
+  astir put it on the main agent, which then stayed blocked, and reminding,
+  until the subagent finished. astir now gives it to the agent that asked for
+  the prompt and to the main agent only when no agent has asked. Claude sends
+  the notification once the prompt has been up 6 seconds, so a request made
+  less than 5 seconds before it is another prompt, and if several older ones
+  are open it is the most recent. One prompt blocks one agent and raises one
+  alert, and the subagent's parent shows as running it, not as blocked.
+- **A file changing while a Claude prompt was open counted as an answer**
+  ([#86](https://github.com/Sertelegger/astir/issues/86)). Claude reports a
+  watched file changing without saying which agent it was, so any write (your
+  editor's, another session's, a background agent's) ended the main agent's
+  block, sent a `resolved` and stopped the reminders, with the prompt still on
+  screen. Now only the blocked agent's own progress ends a block: it runs or
+  finishes a tool, ends its turn, stops, or its session ends or restarts. Or
+  Claude's session list shows the prompt has gone. A notification that blocks
+  nothing (from a mod, an MCP server, or one saying an agent finished) no
+  longer replaces the reason for a block either, which had kept Esc from
+  ending it. Nor does one saying another agent needs your input, which arrived
+  on the main agent and kept it blocked after Esc.
 - **A machine that cannot show a notification no longer reports that it did**
   ([#78](https://github.com/Sertelegger/astir/issues/78)).
   - On a Linux box with no `notify-send` or no desktop session, the local
@@ -88,6 +134,68 @@ release is cut, named and published is in
 
 ### Known limitations
 
+- **A Claude prompt you have answered or dismissed can still count as blocked
+  for up to one poll of Claude's session list (5 seconds)**
+  ([#86](https://github.com/Sertelegger/astir/issues/86)). That is how astir
+  learns it is over. If the alert goes out in that window, a `resolved`
+  follows.
+- **An `AskUserQuestion` prompt alerts after about 6 seconds, not 5**
+  ([#86](https://github.com/Sertelegger/astir/issues/86)). Claude's session
+  list reports it as `input needed`, which it also reports for other things,
+  so astir waits for Claude's own notification, which comes about 6 seconds
+  in if you are not at the keyboard.
+- **In a Claude session with an MCP request waiting in the background, Esc
+  after the alert still leaves the agent blocked until it does something
+  else** ([#86](https://github.com/Sertelegger/astir/issues/86)). While an MCP
+  server's request is queued behind another prompt, Claude's session list
+  reports the session as `waiting` for `input needed` the whole time, whatever
+  happens. So it cannot say the prompt is gone. This is how every Claude
+  prompt behaved before #86. A prompt dismissed there before its
+  notification is never counted at all.
+- **Esc at a Claude prompt while a background shell or agent is running
+  shows the agent as running a tool**
+  ([#86](https://github.com/Sertelegger/astir/issues/86)). Claude's session
+  list reports such a session as `busy`, which is also what an approved
+  command looks like. The block still ends and the alert is resolved. The
+  agent shows `tool-running` until it next does something.
+- **When agents in one Claude session ask for permission close together, an
+  alert can name the wrong one, or come late**
+  ([#86](https://github.com/Sertelegger/astir/issues/86)). Claude's session
+  list says a prompt is on screen, not whose. Until one has been seen, astir
+  takes a sighting to be the most recent request, because an older request may
+  be one you already approved, and blocking that agent would alert you about a
+  command already running. Once one has been seen, later sightings are taken
+  to be that prompt, and a request made meanwhile waits: it is alerted when the
+  first block ends, or by Claude's notification once its own prompt has been
+  up 6 seconds. The agent whose prompt you answered first counts as blocked
+  until the session list stops showing a prompt.
+- **A request Claude refuses on its own can be taken for a real prompt**
+  ([#86](https://github.com/Sertelegger/astir/issues/86)). In some contexts (a
+  resumed or forked agent, for example) Claude turns a background agent's
+  request down itself without showing a prompt. If that happens while another
+  agent's prompt is open and not yet seen, astir can count the background agent
+  as blocked. Claude's notification, sent 6 seconds into the real prompt if
+  you have not touched the terminal, corrects that before the background
+  agent's alert would go out, unless the two requests came within about a
+  second and a half of each other. Otherwise the background agent counts as
+  blocked until it next does something, and can be alerted. The real prompt is never dropped: astir keeps it while the session
+  list keeps showing a prompt, and alerts it as soon as the background agent's
+  block ends.
+- **A request is only matched to a prompt for 10 seconds**
+  ([#86](https://github.com/Sertelegger/astir/issues/86)). A prompt on screen
+  is seen within about 6 seconds, by the session list or Claude's
+  notification. After 10 seconds an unseen request is dropped, and a prompt
+  first seen later counts from when it was seen. A request passed over for
+  another while the session list showed a prompt is kept for 10 seconds after
+  the last such sighting instead. Claude's session list also reports other
+  dialogs as a `permission prompt`, including plan approval, approving a
+  message from another session, and browser setup. One of these can be taken
+  for a request made, or kept, in the 10 seconds before it. After that window
+  it never is.
+- **Only Claude's own permission prompts end when its session list goes
+  idle.** A notification about another agent needing input
+  (`agent_needs_input`) is not about this session's prompt, so it still ends
+  only when the agent does something.
 - **A Codex permission alert waits 30 seconds, not 5.** Codex's automatic
   reviewer answers many requests itself, and the one captured took ~12s; a
   shorter wait would alert you about decisions that were never yours. The

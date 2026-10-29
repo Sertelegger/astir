@@ -31,11 +31,33 @@ import {
  */
 export const SPAWN_TOOLS = new Set(["Agent", "Task"]);
 
+/**
+ * #86 — `PermissionRequest` dates a block; it does not prove one.
+ *
+ * Before a dialog opens Claude fires `PermissionRequest` (~0.4 s after
+ * `PreToolUse`, measured); the `permission_prompt` `Notification` comes ~6 s
+ * later, and it was the only one astir listened to, so every Claude alert came
+ * ~6 s late on top of the PSH-16 dwell
+ * (test/fixtures/claude/permission-request.json).
+ *
+ * But `PermissionRequest` is not "the dialog opened". Claude also runs it for
+ * an ask that can never show one — a background agent's, a headless
+ * session's — and then denies the ask itself (read from the 2.1.312 binary).
+ * So it becomes `permission_request`, which marks the agent's dialog as
+ * claimed. The registry blocks the agent, dated from the claim, once something
+ * has SEEN the dialog: Claude's session listing reading `waiting` for a
+ * `"permission prompt"`, or the Notification, which Claude sends only while
+ * the dialog is still up.
+ *
+ * Neither hook says when a dialog ends if the human presses Esc — nothing
+ * fires at all. The listing does (`listingClearsBlocks`, registry.reconcile).
+ */
 const KIND_BY_HOOK: Record<string, Kind> = {
   SessionStart: "session_start",
   PreToolUse: "pre_tool",
   PostToolUse: "post_tool",
   PostToolUseFailure: "tool_failed",
+  PermissionRequest: "notification",
   Notification: "notification",
   SubagentStart: "subagent_start",
   SubagentStop: "subagent_stop",
@@ -177,7 +199,16 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
   }
 
   let notificationKind: NotificationKind | null = null;
-  if (kind === "notification") {
+  if (hookName === "PermissionRequest") {
+    // It carries no `notification_type`, and read like a Notification it would
+    // come out `other` and be lost. Nor is it `permission_prompt`: Claude fires
+    // it for asks that never reach a screen too, so it marks a dialog the
+    // registry has not yet seen (`permission_request`). Whatever the tool —
+    // `AskUserQuestion` fires it as well, and that is a question the human must
+    // answer just the same. The tool is not carried: the PreToolUse before it
+    // already named it.
+    notificationKind = "permission_request";
+  } else if (kind === "notification") {
     const nt = typeof p.notification_type === "string" ? p.notification_type : "";
     notificationKind = NOTIFICATION_KINDS.has(nt) ? (nt as NotificationKind) : "other";
   }
