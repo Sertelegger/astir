@@ -748,7 +748,7 @@ describe("/healthz says which paths are live", () => {
     daemon = undefined;
   });
 
-  const start = async (opts: { deliveryLive?: () => string[] }) => {
+  const start = async (opts: { deliveryLive?: () => string[]; deliveryAttached?: () => string[] }) => {
     daemon = new Daemon({ token: "t".repeat(48), registry: new Registry({ nowMs: () => 0 }), ...opts });
     const port = await daemon.listen(0);
     // Unauthenticated, like the rest of /healthz: a surface must be able to
@@ -771,6 +771,22 @@ describe("/healthz says which paths are live", () => {
   it("carries names only — no reasons, no counts, nothing about sessions", async () => {
     const healthz = await start({ deliveryLive: () => ["local"] });
     expect(Object.keys((await healthz()).delivery ?? {})).toEqual(["live"]);
+  });
+
+  it("#82 — reports what is attached apart from what is live, read at request time", async () => {
+    // `attached` is "the daemon's last probe reached it", which a failed POST
+    // or a notifier that cannot show takes out of `live` and not out of this.
+    let attached = ["remote(http://127.0.0.1:47001/notify)"];
+    const healthz = await start({ deliveryLive: () => ["local"], deliveryAttached: () => attached });
+    expect((await healthz()).delivery).toEqual({
+      live: ["local"],
+      attached: ["remote(http://127.0.0.1:47001/notify)"],
+    });
+    // The probe detached it: the next answer says so.
+    attached = [];
+    expect((await healthz()).delivery).toEqual({ live: ["local"], attached: [] });
+    // Names only, like `live`.
+    expect(Object.keys((await healthz()).delivery ?? {})).toEqual(["live", "attached"]);
   });
 
   it("says nothing is live when nothing was wired, rather than implying a path", async () => {

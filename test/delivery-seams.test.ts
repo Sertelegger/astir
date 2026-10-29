@@ -30,7 +30,7 @@ import { daemonDeliveryLive, describeDelivery, describeNotifier } from "../src/c
 import { CONTRACT_VERSION } from "../src/contract/event.js";
 import { Daemon } from "../src/daemon/server.js";
 import { Registry } from "../src/model/registry.js";
-import { detectNotifier } from "../src/notify/detect.js";
+import { detectNotifier, PROBE_REASON } from "../src/notify/detect.js";
 import { Dispatcher, localTarget, NotifierWatch, remoteTarget } from "../src/notify/dispatch.js";
 import { buildEnvelope } from "../src/notify/envelope.js";
 import { NotifyLoop } from "../src/notify/loop.js";
@@ -38,6 +38,7 @@ import { createNotifierBackend, type NotifierBackend, type NotifyOutcome } from 
 import { NotifyPolicy } from "../src/notify/policy.js";
 import { NotifierServer } from "../src/notify/server.js";
 import { LINE_TEXT, runStatusLine } from "../src/status/line.js";
+import { httpOn, silentOn } from "./fixtures/sockets.js";
 
 const DAEMON_TOKEN = "d".repeat(48);
 const NOTIFY_TOKEN = "n".repeat(48);
@@ -106,19 +107,36 @@ async function notifierOn(port: number, opts: Partial<ConstructorParameters<type
   return { server, port: bound, close };
 }
 
-/** The daemon's side: its dispatcher behind a real `/healthz`, and what each surface makes of it. */
-async function daemonFor(dispatcher: Dispatcher, local: NotifierBackend, notifyPort: number) {
+/**
+ * The daemon's side: its dispatcher behind a real `/healthz`, and what each
+ * surface makes of it. Given its watch, wired as `runDaemon` wires it.
+ */
+async function daemonFor(
+  dispatcher: Dispatcher,
+  local: NotifierBackend,
+  notifyPort: number,
+  watch?: NotifierWatch,
+) {
   const registry = new Registry({ nowMs: () => Date.now() });
-  const daemon = new Daemon({ token: DAEMON_TOKEN, registry, deliveryLive: () => dispatcher.live() });
+  const daemon = new Daemon({
+    token: DAEMON_TOKEN,
+    registry,
+    deliveryLive: () => dispatcher.live(),
+    ...(watch !== undefined ? { deliveryAttached: () => watch.reached() } : {}),
+  });
   const port = await daemon.listen(0);
   closers.push(() => daemon.close());
 
   const healthz = async () =>
-    (await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()) as { delivery?: { live?: string[] } };
+    (await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()) as {
+      delivery?: { live?: string[]; attached?: string[] };
+    };
   return {
     registry,
     /** `/healthz.delivery.live` — what the line, astir-tui and doctor all read. */
     live: async () => (await healthz()).delivery?.live,
+    /** `/healthz.delivery.attached` — what the line vouches from (#82). */
+    attached: async () => (await healthz()).delivery?.attached,
     /** `astir status --line`, plain: the tmux segment. */
     line: () => runStatusLine({ session: null, json: false, port, notifyPort, timeoutMs: 1_500 }),
     /** What `astir doctor` says about who can reach you. */
@@ -274,12 +292,159 @@ describe("a healthy notifier is revived by the probe", () => {
     expect(line).toContain("delivery paths: none live (local: notify-send not found)");
   });
 
+  it("#82 — names a stale forward in the log, where it used to say `no tunnel`", async () => {
+    // What megabrain's daemon logged when the Mac disconnected: `went away (no
+    // tunnel)` — while an `ssh -R` from the dropped session still held the
+    // port, accepting and never answering.
+    const n = await notifierOn(0);
+    const dispatcher = new Dispatcher([localTarget(headless())]);
+    const watch = new NotifierWatch(dispatcher, NOTIFY_TOKEN);
+    watch.observe(await detectNotifier(n.port));
+    await n.close();
+    const stale = await silentOn(n.port);
+    closers.push(stale.close);
+
+    const line = watch.observe(await detectNotifier(n.port, 200));
+    expect(watch.url).toBeNull();
+    expect(line).toContain(`notifier on 127.0.0.1:${n.port} went away (${PROBE_REASON.silent})`);
+    expect(line).not.toContain("no tunnel");
+  });
+
+  it("#82 — still says `no tunnel` when nothing holds the port", async () => {
+    const n = await notifierOn(0);
+    const watch = new NotifierWatch(new Dispatcher([localTarget(headless())]), NOTIFY_TOKEN);
+    watch.observe(await detectNotifier(n.port));
+    await n.close();
+    expect(watch.observe(await detectNotifier(n.port, 200))).toContain("went away (no tunnel)");
+  });
+
   it("says nothing on a probe that changed nothing", async () => {
     const n = await notifierOn(0);
     const dispatcher = new Dispatcher([localTarget(headless())]);
     const watch = new NotifierWatch(dispatcher, NOTIFY_TOKEN);
     expect(watch.observe(await detectNotifier(n.port))).toMatch(/detected/);
     expect(watch.observe(await detectNotifier(n.port))).toBeNull();
+  });
+});
+
+/**
+ * #82, review:82 finding 4 — the line gives the notifier its whole budget only
+ * when the daemon vouches for it, and the vouch must mean "the daemon reaches
+ * it", not "it can deliver". A notifier that answers every probe stops being
+ * live after one failed POST, after a refusal the probe never clears, and
+ * while it cannot show — and over a slow link the line then called it hung
+ * and dropped every remote doorbell from the count. Real pieces throughout:
+ * the probe, the watch, the dispatcher, the daemon's `/healthz` and the line.
+ */
+describe("the line's vouch is 'the daemon reaches it', not 'it can deliver'", () => {
+  /** A floor that can show: the line's top words are then about the notifier. */
+  const desktop = (): NotifierBackend => ({
+    name: "desktop",
+    available: true,
+    capabilities: { click: false, replace: false, remove: false },
+    notify: () => Promise.resolve({ ok: true }),
+    remove: () => undefined,
+  });
+
+  /**
+   * A notifier over a slow link: its probe answers at once, its `/state` in
+   * 700 ms — past the line's half second, inside its whole budget. `post` is
+   * what it does with a doorbell.
+   */
+  async function slowLink(opts: { canShow?: boolean; post?: "ok" | "400" | "hang" } = {}, port = 0) {
+    const far = await httpOn((req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/healthz") {
+        res.end(JSON.stringify({ ok: true, role: "notifier", canShow: opts.canShow ?? true }));
+      } else if (req.url === "/state") {
+        const agent = {
+          host: "laptop",
+          repo: "web",
+          sessionId: "r1",
+          agentId: "main",
+          reason: "permission_prompt",
+          since: Date.now() - 60_000,
+          lastSeen: Date.now(),
+          acknowledged: false,
+        };
+        setTimeout(() => res.end(JSON.stringify({ agents: [agent], sessions: [] })), 700);
+      } else if (opts.post === "hang") {
+        // Never answers: the doorbell times out.
+      } else {
+        res.statusCode = opts.post === "400" ? 400 : 200;
+        res.end("{}");
+      }
+    }, port);
+    closers.push(far.close);
+    return far;
+  }
+
+  /** Attached as the probe attaches it, behind a real daemon. */
+  async function attach(n: { port: number }, postTimeoutMs?: number) {
+    const local = desktop();
+    const dispatcher = new Dispatcher([localTarget(local)]);
+    const watch = new NotifierWatch(dispatcher, NOTIFY_TOKEN, postTimeoutMs);
+    watch.observe(await detectNotifier(n.port));
+    const name = `remote(${watch.url})`;
+    const d = await daemonFor(dispatcher, local, n.port, watch);
+    return { dispatcher, watch, name, d };
+  }
+
+  const counted = (line: string) => {
+    expect(line).toContain("1 waiting on you");
+    expect(line).not.toContain(LINE_TEXT.notifierHung);
+  };
+
+  it("keeps vouching after a doorbell POST times out", async () => {
+    const n = await slowLink({ post: "hang" });
+    const { dispatcher, name, d } = await attach(n, 200);
+    expect(await d.attached()).toEqual([name]);
+
+    const [failed] = (await dispatcher.send(envelope("blocked"))).filter((o) => o.target === name);
+    expect(failed?.ok).toBe(false);
+    expect(await d.live(), "one failed POST: it cannot deliver").toEqual(["local"]);
+    expect(await d.attached(), "but the probe reached it, so it is still reached").toEqual([name]);
+    counted(await d.line());
+  });
+
+  it("keeps vouching after a refusal the probe never clears", async () => {
+    // A 400 — envelope skew between versions — latches until a POST succeeds,
+    // which on an idle machine can be hours.
+    const n = await slowLink({ post: "400" });
+    const { dispatcher, watch, name, d } = await attach(n);
+    await dispatcher.send(envelope("blocked"));
+    watch.observe(await detectNotifier(n.port));
+    expect(await d.live(), "still refused after the probe").toEqual(["local"]);
+    expect(await d.attached()).toEqual([name]);
+    counted(await d.line());
+  });
+
+  it("keeps vouching for a notifier that cannot show", async () => {
+    const n = await slowLink({ canShow: false });
+    const { name, d } = await attach(n);
+    expect(await d.live()).toEqual(["local"]);
+    expect(await d.attached()).toEqual([name]);
+    counted(await d.line());
+  });
+
+  it("follows the tunnel away and back: vouches again once the probe reaches it", async () => {
+    let n = await slowLink();
+    const { watch, name, d } = await attach(n);
+    expect(await d.attached()).toEqual([name]);
+
+    await n.close();
+    watch.observe(await detectNotifier(n.port, 200));
+    expect(await d.attached(), "the probe found nothing: detached").toEqual([]);
+
+    // Back before the next probe. The daemon cannot vouch for what it has not
+    // reached yet — that window is the probe interval's, and `attached` does
+    // not pretend to close it.
+    n = await slowLink({}, n.port);
+    expect(await d.line()).toContain(LINE_TEXT.notifierHung);
+
+    watch.observe(await detectNotifier(n.port));
+    expect(await d.attached(), "reattached by the probe").toEqual([name]);
+    counted(await d.line());
   });
 });
 

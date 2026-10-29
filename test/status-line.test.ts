@@ -9,6 +9,8 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { notifierUrl } from "../src/notify/detect.js";
+import { remoteTargetName } from "../src/notify/dispatch.js";
 import { RemoteView } from "../src/notify/remote.js";
 import type { RemoteAgentView } from "../src/status/fetch.js";
 import type { ProbeDeps } from "../src/status/focus.js";
@@ -18,6 +20,7 @@ import {
   LINE_TEXT,
   type LineDeps,
   type LineInput,
+  NOTIFIER_BUDGET_MS,
   runStatusLine,
   statusLine,
 } from "../src/status/line.js";
@@ -30,6 +33,7 @@ import type {
   StatusResult,
   StatusSession,
 } from "../src/status/types.js";
+import { closedPort, type Far, httpOn, silentOn } from "./fixtures/sockets.js";
 
 const SELF = "devbox";
 const NOW = 1_800_000_000_000;
@@ -1177,6 +1181,217 @@ describe("runStatusLine — off the socket", () => {
     expect(await pending).toBe(LINE_TEXT.unreachable);
   });
 
+  /** Answers `value` after `ms` — on whichever clock is installed. */
+  const answersIn =
+    <T>(ms: number, value: T) =>
+    (): Promise<T> =>
+      new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+
+  /** Settles a pending line, and says whether it has. */
+  const watch = (pending: Promise<string>) => {
+    const state = { settled: false };
+    void pending.then(() => {
+      state.settled = true;
+    });
+    return state;
+  };
+
+  it("#82 — gives a hung notifier half a second of the budget, not all of it", async () => {
+    // A stale `ssh -R` forward accepts and never answers. The line used to
+    // wait the whole 1.5s on it — every tmux refresh, every astir-tui tick.
+    expect(NOTIFIER_BUDGET_MS).toBe(500);
+    vi.useFakeTimers();
+    const pending = runStatusLine({ session: null, json: false }, deps({ fetchRemote: never }));
+    const line = watch(pending);
+    await vi.advanceTimersByTimeAsync(NOTIFIER_BUDGET_MS - 1);
+    expect(line.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(line.settled).toBe(true);
+    expect(await pending).toBe(LINE_TEXT.notifierHung);
+  });
+
+  it("#82 — counts a notifier that answers inside its half second", async () => {
+    vi.useFakeTimers();
+    const pending = runStatusLine(
+      { session: null, json: true },
+      deps({ fetchRemote: answersIn(NOTIFIER_BUDGET_MS - 1, { agents: [doorbell()], sessions: [] }) }),
+    );
+    await vi.advanceTimersByTimeAsync(NOTIFIER_BUDGET_MS);
+    const doc = JSON.parse(await pending) as { warnings: unknown[]; announced: number };
+    expect(doc.warnings).toEqual([]);
+    expect(doc.announced).toBe(1);
+  });
+
+  it("#82 — keeps the whole budget for the daemon, which the notifier's shorter one never cuts", async () => {
+    vi.useFakeTimers();
+    const b = body({ blockedCount: 1, sessions: [session({ agents: [announced({ inStateMs: 2 * MIN })] })] });
+    const pending = runStatusLine(
+      { session: null, json: false },
+      deps({ fetchStatus: answersIn(1_000, ok(b)), fetchRemote: never }),
+    );
+    const line = watch(pending);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(line.settled, "still waiting on the daemon past the notifier's deadline").toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(line.settled, "and no longer than it").toBe(true);
+    expect(await pending).toBe(`${LINE_TEXT.notifierHung} · 1 waiting on you · oldest 2m`);
+  });
+
+  it("#82 — uses what the notifier said after its own deadline, while the daemon was still answering", async () => {
+    // Its deadline is only how long the line will WAIT for it. An answer that
+    // is already in when the daemon's arrives is an answer, not a hang.
+    vi.useFakeTimers();
+    const pending = runStatusLine(
+      { session: null, json: true },
+      deps({
+        fetchStatus: answersIn(1_000, ok(body())),
+        fetchRemote: answersIn(700, { agents: [doorbell()], sessions: [] }),
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const doc = JSON.parse(await pending) as { warnings: unknown[]; announced: number };
+    expect(doc.warnings).toEqual([]);
+    expect(doc.announced).toBe(1);
+  });
+
+  it("#82 — never releases the notifier at its deadline, which would turn a hang into calm", async () => {
+    // `fetchRemote` says null — "no notifier here" — when its request is
+    // aborted. Released at its own deadline, a stale forward would be read
+    // as nothing there once the daemon answered.
+    vi.useFakeTimers();
+    let released = false;
+    const nullOnAbort = (_port: number, _timeoutMs: number, signal: AbortSignal): Promise<null> =>
+      new Promise((resolve) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            released = true;
+            resolve(null);
+          },
+          { once: true },
+        );
+      });
+    const pending = runStatusLine(
+      { session: null, json: false },
+      deps({ fetchStatus: answersIn(1_000, ok(body())), fetchRemote: nullOnAbort }),
+    );
+    const line = watch(pending);
+    await vi.advanceTimersByTimeAsync(NOTIFIER_BUDGET_MS);
+    expect(released, "not released at its own deadline").toBe(false);
+    await vi.advanceTimersByTimeAsync(1_000 - NOTIFIER_BUDGET_MS);
+    expect(line.settled, "over when the daemon answers").toBe(true);
+    expect(await pending).toBe(LINE_TEXT.notifierHung);
+    expect(released, "released once the line is done").toBe(true);
+  });
+
+  /**
+   * A daemon too old to say `attached`, whose `live` names the notifier on
+   * `port`: the line falls back to that.
+   */
+  const vouching = (port: number) => async () =>
+    health({ delivery: { live: ["local", remoteTargetName(notifierUrl(port))] } });
+
+  it("#82 — gives a notifier the daemon reaches the whole budget, so a slow one is not called hung", async () => {
+    // Over `ssh -R` a healthy notifier can take most of a second: two round
+    // trips across the link. The daemon's probe reached it, so it is waited
+    // for like the daemon itself.
+    vi.useFakeTimers();
+    const pending = runStatusLine(
+      { session: null, json: true, notifyPort: 47_001 },
+      deps({
+        fetchHealth: vouching(47_001),
+        fetchRemote: answersIn(1_000, { agents: [doorbell()], sessions: [] }),
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const doc = JSON.parse(await pending) as { warnings: unknown[]; announced: number };
+    expect(doc.warnings).toEqual([]);
+    expect(doc.announced).toBe(1);
+  });
+
+  it("#82 — still bounds a notifier the daemon reaches by the line's own budget", async () => {
+    vi.useFakeTimers();
+    const pending = runStatusLine(
+      { session: null, json: false, notifyPort: 47_001 },
+      deps({ fetchHealth: vouching(47_001), fetchRemote: never }),
+    );
+    const line = watch(pending);
+    await vi.advanceTimersByTimeAsync(DEFAULT_LINE_BUDGET_MS - 1);
+    expect(line.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toBe(LINE_TEXT.notifierHung);
+  });
+
+  /** A daemon that says what it has attached — and, apart, what can deliver. */
+  const attaching =
+    (port: number, live: string[] = ["local"]) =>
+    async () =>
+      health({ delivery: { live, attached: [remoteTargetName(notifierUrl(port))] } });
+
+  it("#82 — vouches from `attached`, which holds a notifier that cannot deliver but is reached", async () => {
+    // review:82, finding 4: `live` is "can deliver" — not after one failed
+    // POST, not while it cannot show. Neither makes it slow to answer.
+    vi.useFakeTimers();
+    const pending = runStatusLine(
+      { session: null, json: true, notifyPort: 47_001 },
+      deps({
+        fetchHealth: attaching(47_001),
+        fetchRemote: answersIn(1_000, { agents: [doorbell()], sessions: [] }),
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const doc = JSON.parse(await pending) as { warnings: unknown[]; announced: number };
+    expect(doc.warnings).toEqual([]);
+    expect(doc.announced).toBe(1);
+  });
+
+  it("#82 — believes `attached` over `live` when the daemon says both", async () => {
+    // Not attached is not reached, whatever `live` says: `live` is "can
+    // deliver", and a `--notify-url` target stays in it until a POST fails —
+    // through a stale forward, on an idle machine, indefinitely. Its daemon
+    // lists it as attached only while its `/state` reads are answered, and
+    // says `[]` from the first that is not.
+    vi.useFakeTimers();
+    const pending = runStatusLine(
+      { session: null, json: false, notifyPort: 47_001 },
+      deps({
+        fetchHealth: async () =>
+          health({ delivery: { live: ["local", remoteTargetName(notifierUrl(47_001))], attached: [] } }),
+        fetchRemote: never,
+      }),
+    );
+    const line = watch(pending);
+    await vi.advanceTimersByTimeAsync(NOTIFIER_BUDGET_MS);
+    expect(line.settled).toBe(true);
+    expect(await pending).toBe(LINE_TEXT.notifierHung);
+  });
+
+  it("#82 — keeps the cap for a notifier `attached` names on some other port", async () => {
+    vi.useFakeTimers();
+    const pending = runStatusLine(
+      { session: null, json: false, notifyPort: 47_001 },
+      deps({ fetchHealth: attaching(47_999), fetchRemote: never }),
+    );
+    const line = watch(pending);
+    await vi.advanceTimersByTimeAsync(NOTIFIER_BUDGET_MS);
+    expect(line.settled).toBe(true);
+    expect(await pending).toBe(LINE_TEXT.notifierHung);
+  });
+
+  it("#82 — keeps the cap when the daemon reaches a notifier on some other port", async () => {
+    // Only the notifier this line asks counts. A daemon given `--notify-url`
+    // elsewhere says nothing about what holds this port.
+    vi.useFakeTimers();
+    const pending = runStatusLine(
+      { session: null, json: false, notifyPort: 47_001 },
+      deps({ fetchHealth: vouching(47_999), fetchRemote: never }),
+    );
+    const line = watch(pending);
+    await vi.advanceTimersByTimeAsync(NOTIFIER_BUDGET_MS);
+    expect(line.settled).toBe(true);
+    expect(await pending).toBe(LINE_TEXT.notifierHung);
+  });
+
   it("leaves no timer behind when everything answers in time", async () => {
     // Without clearing it, every fast run held the process open for the
     // whole budget: 1.5s, measured, after a line that took 98ms.
@@ -1294,6 +1509,109 @@ describe("runStatusLine — off the socket", () => {
     );
     expect(out).toBe(LINE_TEXT.notifierHung);
     expect(signals.get("47501/state")?.aborted).toBe(true);
+  });
+});
+
+/**
+ * #82 — what a stale forward costs the line, measured on real sockets: a real
+ * HTTP daemon on one port, a socket that accepts and never answers on the
+ * other, and line.ts's own fetchers between them.
+ */
+describe("runStatusLine — a stale forward on real sockets", () => {
+  const open: Far[] = [];
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    for (const far of open.splice(0)) await far.close();
+  });
+
+  it("answers in about half a second, not the whole budget, and says the notifier is not answering", async () => {
+    vi.stubEnv("ASTIR_TOKEN", "t".repeat(48));
+    vi.stubEnv("ASTIR_NOTIFY_TOKEN", "t".repeat(48));
+    const daemon = await httpOn((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(req.url === "/healthz" ? health() : body()));
+    });
+    const stale = await silentOn();
+    open.push(daemon, stale);
+
+    const started = performance.now();
+    const out = await runStatusLine(
+      { session: null, json: false, port: daemon.port, notifyPort: stale.port },
+      { now: () => NOW, selfHost: SELF, focusable: () => false },
+    );
+    const took = performance.now() - started;
+    expect(out).toBe(LINE_TEXT.notifierHung);
+    expect(took).toBeGreaterThanOrEqual(NOTIFIER_BUDGET_MS - 20);
+    expect(took, "well inside the 1.5s it used to spend").toBeLessThan(DEFAULT_LINE_BUDGET_MS - 300);
+  });
+
+  /** A real notifier that answers `/state` after `ms`. */
+  const slowNotifier = (ms: number) =>
+    httpOn((_req, res) => {
+      setTimeout(() => {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ agents: [], sessions: [] }));
+      }, ms);
+    });
+
+  /** A real daemon whose `/healthz` lists `live`. */
+  const daemonSaying = (live: string[]) =>
+    httpOn((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(req.url === "/healthz" ? health({ delivery: { live } }) : body()));
+    });
+
+  it("waits for a slow notifier the daemon reaches, and stays calm", async () => {
+    // The review's R3: a real notifier answering in 700 ms. Capped at half a
+    // second regardless, that was "notifier not answering" on every tick.
+    vi.stubEnv("ASTIR_TOKEN", "t".repeat(48));
+    vi.stubEnv("ASTIR_NOTIFY_TOKEN", "t".repeat(48));
+    const notifier = await slowNotifier(700);
+    const daemon = await daemonSaying(["local", remoteTargetName(notifierUrl(notifier.port))]);
+    open.push(daemon, notifier);
+
+    const started = performance.now();
+    const out = await runStatusLine(
+      { session: null, json: false, port: daemon.port, notifyPort: notifier.port },
+      { now: () => NOW, selfHost: SELF, focusable: () => false },
+    );
+    expect(out).toBe("");
+    expect(performance.now() - started).toBeGreaterThanOrEqual(690);
+  });
+
+  it("does not wait for the same notifier when the daemon has dropped it", async () => {
+    vi.stubEnv("ASTIR_TOKEN", "t".repeat(48));
+    vi.stubEnv("ASTIR_NOTIFY_TOKEN", "t".repeat(48));
+    const notifier = await slowNotifier(700);
+    const daemon = await daemonSaying(["local"]);
+    open.push(daemon, notifier);
+
+    const started = performance.now();
+    const out = await runStatusLine(
+      { session: null, json: false, port: daemon.port, notifyPort: notifier.port },
+      { now: () => NOW, selfHost: SELF, focusable: () => false },
+    );
+    expect(out).toBe(LINE_TEXT.notifierHung);
+    // Loose: a 500 ms timer on a loaded box. The words above are what tell the
+    // cap from none — without it, the 700 ms answer arrives and the line is "".
+    expect(performance.now() - started, "well inside the 1.5s budget").toBeLessThan(
+      DEFAULT_LINE_BUDGET_MS - 300,
+    );
+  });
+
+  it("says nothing when nothing holds the notifier port", async () => {
+    vi.stubEnv("ASTIR_TOKEN", "t".repeat(48));
+    vi.stubEnv("ASTIR_NOTIFY_TOKEN", "t".repeat(48));
+    const daemon = await httpOn((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(req.url === "/healthz" ? health() : body()));
+    });
+    open.push(daemon);
+    const out = await runStatusLine(
+      { session: null, json: false, port: daemon.port, notifyPort: await closedPort() },
+      { now: () => NOW, selfHost: SELF, focusable: () => false },
+    );
+    expect(out).toBe("");
   });
 });
 

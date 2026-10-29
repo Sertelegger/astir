@@ -43,6 +43,8 @@
 
 import { hostname } from "node:os";
 import { DEFAULT_PORT } from "../config/paths.js";
+import { notifierUrl } from "../notify/detect.js";
+import { remoteTargetName } from "../notify/dispatch.js";
 import { sameHost, shortHost } from "../notify/envelope.js";
 import { mergeRemoteSessions } from "../notify/roster.js";
 import { humanDuration } from "./agents.js";
@@ -73,6 +75,37 @@ const STATE_ANNOUNCES = { major: 2, minor: 2 } as const;
  * describes the past.
  */
 export const DEFAULT_LINE_BUDGET_MS = 1_500;
+
+/**
+ * #82 — how long, inside that budget, the notifier may take before it counts
+ * as not answering, unless the daemon vouches for it. The daemon's fetches
+ * keep the whole budget.
+ *
+ * A stale `ssh -R` forward accepts and never answers, and the line used to
+ * wait the full 1.5s on it — on every tmux refresh and every astir-tui tick.
+ * But a notifier reached over `ssh -R` is not on loopback in any sense that
+ * makes it fast: 127.0.0.1:47001 is sshd, and the request crosses the link
+ * (and any VPN) at two round trips, channel open and then request and reply,
+ * after a fresh process's own start-up. A healthy one can take most of a
+ * second, and a cap alone would call it hung on every tick.
+ *
+ * So the cap applies only when the daemon does NOT list that notifier among
+ * the ones it has attached (`delivery.attached` on `/healthz`). The daemon
+ * probes it every 15s with a 1.5s timeout, and keeps it attached only while
+ * that reaches it — or, given it with `--notify-url`, which nothing probes,
+ * lists it only while its `/state` answers the read the daemon makes every 5s
+ * with a 2s timeout. Listed, it is healthy if slow, and gets the whole budget;
+ * not listed, the daemon has dropped it — a stale forward is exactly that — or
+ * has not reached it yet, and half a second is as long as a port the daemon
+ * itself cannot vouch for is worth waiting on.
+ *
+ * Not `delivery.live`, which is "can deliver": a notifier the probe reaches
+ * every time drops out of that after one failed POST, a refusal no probe
+ * clears, or while it cannot show — and read off `live`, the line called it
+ * hung and left its doorbells out of the count. `live` is read only from a
+ * daemon too old to say `attached`.
+ */
+export const NOTIFIER_BUDGET_MS = 500;
 
 /** The exact words, exported so a host's tests can assert against them. */
 export const LINE_TEXT = {
@@ -177,7 +210,7 @@ export interface LineInput {
   /** The DAEMON did not answer within the budget. Overrides everything else. */
   timedOut?: boolean;
   /**
-   * The notifier accepted the connection and did not answer within the budget
+   * The notifier accepted the connection and did not answer within its budget
    * (`remote` is then null). Not the same as no notifier: see `runStatusLine`.
    */
   remoteTimedOut?: boolean;
@@ -519,6 +552,19 @@ export interface LineDeps {
 }
 
 /**
+ * #82 — whether the daemon says it reaches the notifier on `notifyPort`: its
+ * `/healthz` lists that very target in `delivery.attached` — or, from a daemon
+ * too old to say that, among the live delivery paths. False when it cannot say
+ * (no `/healthz`, no `delivery`), which leaves the shorter cap on, as for any
+ * notifier nobody vouches for.
+ */
+function daemonReaches(health: HealthBody | null, notifyPort: number): boolean {
+  const delivery = health?.delivery;
+  const vouched = Array.isArray(delivery?.attached) ? delivery.attached : delivery?.live;
+  return Array.isArray(vouched) && vouched.includes(remoteTargetName(notifierUrl(notifyPort)));
+}
+
+/**
  * Fetch, decide, serialise. Returns the text to print; "" means print nothing.
  *
  * The three fetches start at once under ONE budget and one timer. When it runs
@@ -533,20 +579,31 @@ export interface LineDeps {
  * notifier here" — calm. A hung notifier must instead be seen as hung, which
  * only the budget, racing it, can see.
  *
+ * The notifier is raced against a shorter budget of its own,
+ * `NOTIFIER_BUDGET_MS` (#82), so a stale forward costs half a second rather
+ * than the whole budget — unless the daemon lists that notifier as attached,
+ * which means it reached it within the last 15s (its probe, or for a
+ * `--notify-url` notifier its last `/state` read), and then it gets the
+ * whole budget like the daemon's fetches. It is a race, never an abort:
+ * aborting the request would make `fetchRemote` say null, and an answer read
+ * after that would be calm. Its request stays open until the line's own abort
+ * releases it.
+ *
  * What the budget running out MEANS depends on who did not answer:
  *
  * - **The daemon** — nothing is known, so `astir unreachable`. Never "", which a
  *   tmux segment shows as calm, and never a stale value.
- * - **Only the notifier** — other machines' blocks are unknown, and nothing
- *   else is. This is the ordinary state of a box reached over `ssh -R` whose
- *   other end has gone to sleep: sshd still holds the forwarded port, accepts
- *   the connection, and never answers. Measured on the very machine #80 was
- *   filed for: 47000 answered in half a millisecond while 47001 hung for the
- *   full timeout. Printing `astir unreachable` there would hide this machine's
- *   own blocks, and hide #78's "nothing can notify you" — the true story, once
- *   the daemon's own probe drops the dead tunnel — behind a claim that astir
- *   itself cannot be reached. So the line is built from the daemon, remote
- *   counts are left out rather than guessed, and a warning says why.
+ * - **Only the notifier**, within its own budget — other machines' blocks are
+ *   unknown, and nothing else is. This is the ordinary state of a
+ *   box reached over `ssh -R` whose other end has gone to sleep: sshd still
+ *   holds the forwarded port, accepts the connection, and never answers.
+ *   Measured on the very machine #80 was filed for: 47000 answered in half a
+ *   millisecond while 47001 hung for the full timeout. Printing `astir
+ *   unreachable` there would hide this machine's own blocks, and hide #78's
+ *   "nothing can notify you" — the true story, once the daemon's own probe
+ *   drops the dead tunnel — behind a claim that astir itself cannot be
+ *   reached. So the line is built from the daemon, remote counts are left out
+ *   rather than guessed, and a warning says why.
  * - **Only the focus probe** (`--json`) — the rows say `focusable: false`, and
  *   nothing else changes. It starts with the fetches, under the same signal,
  *   so a notifier that spends the whole budget does not starve it, and the
@@ -566,6 +623,12 @@ export async function runStatusLine(opts: LineOpts, deps: Partial<LineDeps> = {}
   const expired = new Promise<null>((resolve) => {
     stop.signal.addEventListener("abort", () => resolve(null), { once: true });
   });
+  // #82 — the notifier's own, shorter deadline. Resolves; aborts nothing. Not
+  // capped at `budget`: when that is shorter, `expired` wins the race first.
+  let notifierTimer: ReturnType<typeof setTimeout> | undefined;
+  const notifierExpired = new Promise<null>((resolve) => {
+    notifierTimer = setTimeout(() => resolve(null), NOTIFIER_BUDGET_MS);
+  });
   const inner = budget * 2;
 
   let daemon: [HealthBody | null, StatusResult] | null = null;
@@ -584,7 +647,14 @@ export async function runStatusLine(opts: LineOpts, deps: Partial<LineDeps> = {}
     const focus =
       opts.json && focusable === undefined ? focusProbe(deps.probe ?? defaultProbeDeps(), stop.signal) : null;
     daemon = await Promise.race([Promise.all([health, status]), expired]);
-    if (daemon !== null) remote = await Promise.race([notifier, expired]);
+    // The notifier first: one that answered while the daemon was still being
+    // waited on wins over its own deadline, which may since have passed. Its
+    // own deadline only when the daemon does not vouch for it (#82).
+    if (daemon !== null) {
+      remote = await Promise.race(
+        daemonReaches(daemon[0], notifyPort) ? [notifier, expired] : [notifier, notifierExpired, expired],
+      );
+    }
     // The probe first: one that already answered wins over a budget that has
     // just run out.
     if (daemon !== null && focus !== null) focusable = (await Promise.race([focus, expired])) ?? NOWHERE;
@@ -594,6 +664,7 @@ export async function runStatusLine(opts: LineOpts, deps: Partial<LineDeps> = {}
     daemon = null;
   } finally {
     clearTimeout(timer);
+    clearTimeout(notifierTimer);
   }
   // Release whatever is still in flight; a no-op when everything answered.
   stop.abort();
