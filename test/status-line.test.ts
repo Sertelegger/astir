@@ -1392,6 +1392,102 @@ describe("runStatusLine — off the socket", () => {
     expect(await pending).toBe(LINE_TEXT.notifierHung);
   });
 
+  /**
+   * review:82 F1 — the daemon names a `--notify-url` target exactly as it was
+   * typed, and the line asks 127.0.0.1. Matched by spelling, `localhost` lost
+   * the vouch: a healthy notifier slower than half a second was "not
+   * answering" on every run, and its doorbells left the count. The same
+   * loopback port is the same notifier, however it is written.
+   */
+  const LOOPBACK_SPELLINGS: Array<[string, string, number]> = [
+    ["localhost", "http://localhost:47001/notify", 47_001],
+    ["LOCALHOST, as typed", "http://LOCALHOST:47001/notify", 47_001],
+    ["[::1]", "http://[::1]:47001/notify", 47_001],
+    ["127.0.0.2, the rest of 127/8", "http://127.0.0.2:47001/notify", 47_001],
+    ["127.1, the short form", "http://127.1:47001/notify", 47_001],
+    ["no port, which is http's 80", "http://localhost/notify", 80],
+    ["some other path", "http://127.0.0.1:47001/", 47_001],
+  ];
+
+  for (const [label, url, notifyPort] of LOOPBACK_SPELLINGS) {
+    for (const field of ["attached", "live"] as const) {
+      it(`#82 — vouches for ${label} in \`${field}\`: the same loopback port is the same notifier`, async () => {
+        vi.useFakeTimers();
+        const delivery =
+          field === "attached"
+            ? { live: ["local"], attached: [`remote(${url})`] }
+            : { live: ["local", `remote(${url})`] };
+        const pending = runStatusLine(
+          { session: null, json: true, notifyPort },
+          deps({
+            fetchHealth: async () => health({ delivery }),
+            fetchRemote: answersIn(1_000, { agents: [doorbell()], sessions: [] }),
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(1_000);
+        const doc = JSON.parse(await pending) as { warnings: unknown[]; announced: number };
+        expect(doc.warnings).toEqual([]);
+        expect(doc.announced).toBe(1);
+      });
+    }
+  }
+
+  const ELSEWHERE: Array<[string, string]> = [
+    // The daemon reaches a notifier on another machine's 47001; the line's
+    // 127.0.0.1:47001 is whatever holds this one's — a stale forward, say.
+    ["another host on the same port", "http://devbox:47001/notify"],
+    ["another address on the same port", "http://10.0.0.5:47001/notify"],
+    ["a name that only starts with 127", "http://127.example.com:47001/notify"],
+    ["loopback, on another port", "http://localhost:47002/notify"],
+    ["loopback with no port, which is 80", "http://localhost/notify"],
+    // The line asks over plain http; what the daemon reaches over TLS is not
+    // what answers that.
+    ["https", "https://127.0.0.1:47001/notify"],
+    ["not http at all", "ftp://127.0.0.1:47001/notify"],
+    ["not a URL", "not a url"],
+  ];
+
+  for (const [label, url] of ELSEWHERE) {
+    it(`#82 — keeps the cap for ${label}`, async () => {
+      vi.useFakeTimers();
+      const pending = runStatusLine(
+        { session: null, json: false, notifyPort: 47_001 },
+        deps({
+          fetchHealth: async () => health({ delivery: { live: ["local"], attached: [`remote(${url})`] } }),
+          fetchRemote: never,
+        }),
+      );
+      const line = watch(pending);
+      await vi.advanceTimersByTimeAsync(NOTIFIER_BUDGET_MS);
+      expect(line.settled).toBe(true);
+      expect(await pending).toBe(LINE_TEXT.notifierHung);
+    });
+  }
+
+  it("#82 — reads past what is not a target's name, from a daemon that sent it", async () => {
+    // `/healthz` answers without a token. An entry that is not a name must
+    // take neither the vouch nor the line with it.
+    vi.useFakeTimers();
+    const junk = [3, null, { url: "http://127.0.0.1:47001/notify" }, "remote(", "remote()", "local"];
+    const pending = runStatusLine(
+      { session: null, json: true, notifyPort: 47_001 },
+      deps({
+        fetchHealth: async () =>
+          health({
+            delivery: {
+              live: ["local"],
+              attached: [...junk, "remote(http://localhost:47001/notify)"] as unknown as string[],
+            },
+          }),
+        fetchRemote: answersIn(1_000, { agents: [doorbell()], sessions: [] }),
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const doc = JSON.parse(await pending) as { warnings: unknown[]; announced: number };
+    expect(doc.warnings).toEqual([]);
+    expect(doc.announced).toBe(1);
+  });
+
   it("leaves no timer behind when everything answers in time", async () => {
     // Without clearing it, every fast run held the process open for the
     // whole budget: 1.5s, measured, after a line that took 98ms.

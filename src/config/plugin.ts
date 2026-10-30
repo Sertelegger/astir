@@ -324,10 +324,13 @@ export function describeNotifier(
       // client — the client's own keepalive only makes the client give up.
       // Its process title says which session, if it is not obvious from the
       // PID alone; an interactive `ssh` (the README's flow) is `@pts/N`.
+      // OpenSSH 9.8 moved the per-session server into its own binary, so what
+      // holds the port can be named `sshd-session` rather than `sshd`.
       const forward = [
-        `${pad}- \`sshd\`: the stale forward. \`ps -o args= -p <pid>\` shows`,
-        `${pad}  \`sshd: <user>@pts/N\` for an interactive session, \`sshd: <user>@notty\``,
-        `${pad}  for a non-interactive one (\`sshd: <user>\` alone for \`ssh -N\`).`,
+        `${pad}- \`sshd\` (\`sshd-session\` on OpenSSH 9.8 and later): the stale forward.`,
+        `${pad}  \`ps -o args= -p <pid>\` shows \`sshd: <user>@pts/N\` for an interactive`,
+        `${pad}  session, \`sshd: <user>@notty\` for a non-interactive one (\`sshd: <user>\``,
+        `${pad}  alone for \`ssh -N\`).`,
         `${pad}  \`ClientAliveInterval 30\` and \`ClientAliveCountMax 3\` in this machine's`,
         `${pad}  sshd_config keep the next one from lingering (\`ServerAliveInterval\``,
         `${pad}  on the client alone does not end it)`,
@@ -369,8 +372,15 @@ export function describeNotifier(
     lines.push(`${pad}${rosters} roster(s) received`);
   }
   if (!supervised) {
-    // #69 — nothing restarts it, so this comes back at every reboot.
-    lines.push(`${pad}not supervised — it will not survive a reboot; \`astir autostart\` fixes that`);
+    // #69 — nothing restarts it, so this comes back at every reboot. And
+    // `astir autostart` is the fix only where it exists (review:82 F8):
+    // anywhere but macOS it refuses, and offered there it is a dead end.
+    if (autostartSupported(platform)) {
+      lines.push(`${pad}not supervised — it will not survive a reboot; \`astir autostart\` fixes that`);
+    } else {
+      lines.push(`${pad}not supervised — it will not survive a reboot; \`astir autostart\` is macOS only,`);
+      lines.push(`${pad}so start \`astir notifier\` from what runs at login (a systemd user unit, say)`);
+    }
   }
   return lines;
 }

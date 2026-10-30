@@ -78,3 +78,35 @@ export async function closedPort(): Promise<number> {
   await far.close();
   return far.port;
 }
+
+/**
+ * A port P that was just free, with `hold` listening on P + 1: for what
+ * derives one port from the other, as `astir doctor --port P` probes the
+ * notifier on P + 1. Searched in a fixed range, from a random start so two
+ * files running at once rarely meet, and well away from 47000/47001, which a
+ * live daemon and an `ssh -R` forward may hold on the machine running this.
+ */
+export async function adjacentTo(
+  hold: (port: number) => Promise<Far>,
+  lo = 58_600,
+  hi = 58_998,
+): Promise<{ port: number; far: Far }> {
+  const span = hi - lo;
+  const start = Math.floor(Math.random() * span);
+  for (let i = 0; i < span; i++) {
+    const port = lo + ((start + i) % span);
+    let far: Far;
+    try {
+      far = await hold(port + 1);
+    } catch {
+      continue;
+    }
+    try {
+      await (await serve(createServer(), port)).close();
+      return { port, far };
+    } catch {
+      await far.close();
+    }
+  }
+  throw new Error(`no two adjacent ports free in ${lo}–${hi}`);
+}

@@ -152,12 +152,23 @@ export const REMOTE_TIMEOUT_MS = 5_000;
 /**
  * The name a remote target is listed under in `Dispatcher.live()` and
  * `NotifierWatch.reached()`, and so in the daemon's `/healthz`
- * `delivery.live` and `delivery.attached`. One spelling: `status --line`
- * reads it back to learn whether the daemon reaches the notifier it is about
- * to ask (#82).
+ * `delivery.live` and `delivery.attached`. The URL is the one the target was
+ * given — a `--notify-url` exactly as it was typed — so a reader matches what
+ * it names by address, never by this string (#82): see `remoteTargetUrl`.
  */
 export function remoteTargetName(url: string): string {
   return `remote(${url})`;
+}
+
+/**
+ * #82 — the URL inside a `remoteTargetName`, or null for anything that is not
+ * one: `local`, or whatever else an unauthenticated `/healthz` answer held.
+ * `status --line` reads it back to learn whether the daemon reaches the
+ * notifier it is about to ask.
+ */
+export function remoteTargetUrl(name: unknown): string | null {
+  if (typeof name !== "string") return null;
+  return /^remote\((.+)\)$/s.exec(name)?.[1] ?? null;
 }
 
 /**

@@ -56,6 +56,20 @@ describe("doctor says whether a notifier exists", () => {
     expect(text(describeNotifier({ found: true }, true, 3))).not.toContain("not supervised");
   });
 
+  it("offers `astir autostart` for an unsupervised notifier only where it exists", () => {
+    // review:82 F8 — it is launchd only, and refuses everywhere else. Told
+    // "`astir autostart` fixes that" on Linux, you run it and get a refusal.
+    const mac = text(describeNotifier({ found: true }, false, 3, { platform: "darwin" }));
+    expect(mac).toContain("not supervised — it will not survive a reboot; `astir autostart` fixes that");
+    for (const platform of ["linux", "freebsd"]) {
+      const out = text(describeNotifier({ found: true }, false, 3, { platform }));
+      expect(out).toContain("not supervised — it will not survive a reboot");
+      expect(out).not.toContain("fixes that");
+      expect(out).toContain("`astir autostart` is macOS only");
+      expect(out).toContain("start `astir notifier`");
+    }
+  });
+
   it("says when the notifier it found cannot show anything", () => {
     // #78, round two — a headless `astir notifier` answers the probe like any
     // other, and refuses every doorbell. "running" alone reads as a way to
@@ -241,6 +255,51 @@ describe("doctor says whether a notifier exists", () => {
     expect(out).not.toContain("astir notifier");
     expect(out).not.toContain("ClientAliveInterval");
     expect(out).not.toContain("no tunnel");
+  });
+
+  it("#82 — names the per-session process newer OpenSSH runs a forward in", () => {
+    // review:82 F7 — OpenSSH 9.8 split the per-session server into its own
+    // binary, so `ss`, `lsof` and `ps` can name `sshd-session`, not `sshd`.
+    const out = text(describeNotifier(held(), false, null, { local: false, platform: "linux" }));
+    expect(out).toContain("- `sshd` (`sshd-session` on OpenSSH 9.8 and later): the stale forward");
+  });
+
+  it("#82 — takes `local` from `supervised` when it is not given", () => {
+    // review:82 F6 — the service installed is this machine's notifier on the
+    // port; no service, and nothing else said, is not.
+    const supervised = text(describeNotifier(held(), true, null, { platform: "linux" }));
+    expect(supervised.indexOf("the notifier on this machine has most likely hung")).toBeGreaterThan(-1);
+    expect(supervised.indexOf("`node`")).toBeLessThan(supervised.indexOf("`sshd`"));
+
+    const not = text(describeNotifier(held(), false, null, { platform: "linux" }));
+    expect(not.indexOf("most likely an ssh session that dropped")).toBeGreaterThan(-1);
+    expect(not.indexOf("`sshd`")).toBeLessThan(not.indexOf("`node`"));
+  });
+
+  /** Runs `fn` with `process.platform` reading `platform`, and puts it back. */
+  const onPlatform = <T>(platform: string, fn: () => T): T => {
+    const real = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+    Object.defineProperty(process, "platform", { ...real, value: platform });
+    try {
+      return fn();
+    } finally {
+      Object.defineProperty(process, "platform", real);
+    }
+  };
+
+  it("#82 — takes the platform from this process when it is not given", () => {
+    // review:82 F6 — doctor runs on the machine that holds the port, so its
+    // own platform is the one whose commands find the holder, and the one
+    // `astir autostart` does or does not exist on.
+    const before = process.platform;
+    for (const platform of ["freebsd", "darwin", "linux"]) {
+      const given = text(describeNotifier(held(), false, null, { local: false, platform }));
+      const taken = onPlatform(platform, () => text(describeNotifier(held(), false, null, { local: false })));
+      expect(taken, platform).toBe(given);
+      const found = onPlatform(platform, () => text(describeNotifier({ found: true }, false, 3)));
+      expect(found, platform).toBe(text(describeNotifier({ found: true }, false, 3, { platform })));
+    }
+    expect(process.platform).toBe(before);
   });
 
   it("says nothing about supervision when there is no notifier to supervise", () => {

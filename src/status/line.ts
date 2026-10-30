@@ -43,8 +43,8 @@
 
 import { hostname } from "node:os";
 import { DEFAULT_PORT } from "../config/paths.js";
-import { notifierUrl } from "../notify/detect.js";
-import { remoteTargetName } from "../notify/dispatch.js";
+import { isNotifierOn } from "../notify/detect.js";
+import { remoteTargetUrl } from "../notify/dispatch.js";
 import { sameHost, shortHost } from "../notify/envelope.js";
 import { mergeRemoteSessions } from "../notify/roster.js";
 import { humanDuration } from "./agents.js";
@@ -553,15 +553,23 @@ export interface LineDeps {
 
 /**
  * #82 — whether the daemon says it reaches the notifier on `notifyPort`: its
- * `/healthz` lists that very target in `delivery.attached` — or, from a daemon
- * too old to say that, among the live delivery paths. False when it cannot say
- * (no `/healthz`, no `delivery`), which leaves the shorter cap on, as for any
- * notifier nobody vouches for.
+ * `/healthz` lists, in `delivery.attached` — or, from a daemon too old to say
+ * that, among the live delivery paths — a target at that very port on
+ * loopback. Matched by address, not spelling: a `--notify-url` is named as it
+ * was typed, and `http://localhost:47001/notify` is the notifier this line
+ * asks at 127.0.0.1:47001. A host that is not loopback is another machine's
+ * port of the same number, and vouches for nothing here. False when it cannot
+ * say (no `/healthz`, no `delivery`), which leaves the shorter cap on, as for
+ * any notifier nobody vouches for.
  */
 function daemonReaches(health: HealthBody | null, notifyPort: number): boolean {
   const delivery = health?.delivery;
-  const vouched = Array.isArray(delivery?.attached) ? delivery.attached : delivery?.live;
-  return Array.isArray(vouched) && vouched.includes(remoteTargetName(notifierUrl(notifyPort)));
+  const vouched: unknown = Array.isArray(delivery?.attached) ? delivery.attached : delivery?.live;
+  if (!Array.isArray(vouched)) return false;
+  return vouched.some((name: unknown) => {
+    const url = remoteTargetUrl(name);
+    return url !== null && isNotifierOn(url, notifyPort);
+  });
 }
 
 /**

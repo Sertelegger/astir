@@ -13,13 +13,13 @@
  */
 
 import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { type Far, httpOn, silentOn } from "./fixtures/sockets.js";
+import { adjacentTo, type Far, httpOn, silentOn } from "./fixtures/sockets.js";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ENTRY = join(REPO, "dist", "cli", "main.js");
@@ -370,6 +370,139 @@ describe("built daemon artifact", () => {
 });
 
 /**
+ * #82 — what the built CLI runs with below: nothing from the developer's
+ * machine. No `~/.astir`, no `~/.ssh/config`, no token or port in the
+ * environment, and no `claude` on PATH for a daemon to poll.
+ */
+function cleanEnv(home: string): NodeJS.ProcessEnv {
+  const e: NodeJS.ProcessEnv = { ...process.env, HOME: home, ASTIR_NO_PERSIST: "1" };
+  for (const key of [
+    "ASTIR_PORT",
+    "ASTIR_NOTIFY_PORT",
+    "ASTIR_TOKEN",
+    "ASTIR_NOTIFY_TOKEN",
+    "ASTIR_NOTIFY_URL",
+    "CLAUDE_CONFIG_DIR",
+  ]) {
+    delete e[key];
+  }
+  // `node` is spawned by its own path; `ps` and the rest are in these.
+  if (process.platform !== "win32") e.PATH = "/usr/bin:/bin";
+  return e;
+}
+
+const NOTIFY_TOKEN = "notify-token-not-a-secret";
+
+/** `astir daemon` from the build, on a port of its own choosing; resolves once it answers. */
+async function startDaemon(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<{ proc: ChildProcess; port: number }> {
+  const child = spawn(
+    process.execPath,
+    [ENTRY, "daemon", "--port", "0", "--token", TOKEN, "--notify-token", NOTIFY_TOKEN, ...args],
+    { cwd: REPO, stdio: ["ignore", "pipe", "pipe"], env },
+  );
+  try {
+    const port = await new Promise<number>((resolve, reject) => {
+      let buf = "";
+      const timer = setTimeout(() => reject(new Error(`no port announced; stdout=${buf}`)), 15_000);
+      child.stdout?.on("data", (c: Buffer) => {
+        buf += c.toString();
+        const m = /listening on 127\.0\.0\.1:(\d+)/.exec(buf);
+        if (m?.[1]) {
+          clearTimeout(timer);
+          resolve(Number(m[1]));
+        }
+      });
+      child.on("exit", (code) => reject(new Error(`daemon exited early (code ${code}); stdout=${buf}`)));
+    });
+    await waitForReady(`http://127.0.0.1:${port}`);
+    return { proc: child, port };
+  } catch (err) {
+    child.kill("SIGTERM");
+    throw err;
+  }
+}
+
+interface Delivery {
+  live?: string[];
+  attached?: string[];
+}
+
+/** Polls the daemon's `/healthz` until its `delivery` is what `want` says, or the deadline; returns the last. */
+async function deliveryUntil(
+  port: number,
+  want: (d: Delivery | undefined) => boolean,
+  ms: number,
+): Promise<Delivery | undefined> {
+  const read = async () =>
+    (await json<{ delivery?: Delivery }>(await fetch(`http://127.0.0.1:${port}/healthz`))).delivery;
+  const deadline = Date.now() + ms;
+  let last = await read();
+  while (!want(last) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 100));
+    last = await read();
+  }
+  return last;
+}
+
+/**
+ * A notifier stand-in: says it is one (and whether it can show), answers
+ * `/state` after `stateMs` — one doorbell from another machine, or
+ * `stateStatus` when that is set — and takes any doorbell or roster push.
+ */
+function notifierStandIn(
+  opts: { stateMs?: number; stateStatus?: number; canShow?: boolean } = {},
+): Promise<Far> {
+  return httpOn((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/state") {
+      if (opts.stateStatus !== undefined) {
+        res.statusCode = opts.stateStatus;
+        res.end("{}");
+        return;
+      }
+      const agent = {
+        host: "laptop",
+        repo: "web",
+        sessionId: "r1",
+        agentId: "main",
+        reason: "permission_prompt",
+        since: Date.now() - 60_000,
+        lastSeen: Date.now(),
+        acknowledged: false,
+      };
+      setTimeout(() => res.end(JSON.stringify({ agents: [agent], sessions: [] })), opts.stateMs ?? 0);
+    } else if (req.url === "/healthz") {
+      res.end(JSON.stringify({ ok: true, role: "notifier", canShow: opts.canShow ?? true }));
+    } else {
+      req.resume();
+      res.end("{}");
+    }
+  });
+}
+
+const run = promisify(execFile);
+
+interface LineDoc {
+  warnings: Array<{ kind: string; text: string }>;
+  announced: number;
+}
+
+/** `astir status --line --json`, the built CLI, as astir-tui runs it. Async: the notifier lives in this process. */
+async function lineJson(daemonPort: number, notifyPort: number, env: NodeJS.ProcessEnv): Promise<LineDoc> {
+  const { stdout } = await run(
+    process.execPath,
+    [ENTRY, "status", "--line", "--json", "--port", String(daemonPort), "--notify-port", String(notifyPort)],
+    { env: { ...env, ASTIR_TOKEN: TOKEN, ASTIR_NOTIFY_TOKEN: NOTIFY_TOKEN }, timeout: 15_000 },
+  );
+  return JSON.parse(stdout) as LineDoc;
+}
+
+const NOT_ANSWERING = { kind: "unreachable", text: "astir: notifier not answering" };
+
+/**
  * #82 — a daemon started with `--notify-url`, as `astir --help` and the
  * install text tell another machine to start it, against a notifier that is
  * healthy and slow: `/state` in 700 ms, past the line's half second for a
@@ -381,150 +514,209 @@ describe("built daemon artifact", () => {
  * 500 ms and called it "notifier not answering" while the daemon listed it
  * live — and left its doorbells out of the count. The real CLI on both ends,
  * as the verifier reproduced it; only the notifier is a stand-in.
+ *
+ * Twice: as 127.0.0.1, and as `localhost` (review:82 F1). The daemon names
+ * the target as it was typed, and the line, which asks 127.0.0.1, matched
+ * that name by spelling — so `localhost` lost the vouch, and the line called
+ * the same healthy notifier hung on every run.
  */
-describe("built daemon with --notify-url vouches for the notifier it reads", () => {
-  const NOTIFY_TOKEN = "notify-token-not-a-secret";
-  const run = promisify(execFile);
+describe.each(["127.0.0.1", "localhost"])(
+  "built daemon with --notify-url http://%s:<port>/notify vouches for the notifier it reads",
+  (host) => {
+    let home: string;
+    let far: Far;
+    let daemon: { proc: ChildProcess; port: number } | undefined;
+    const name = () => `remote(http://${host}:${far.port}/notify)`;
+
+    beforeAll(async () => {
+      home = mkdtempSync(join(tmpdir(), "astir-notify-url-"));
+      far = await notifierStandIn({ stateMs: 700 });
+      daemon = await startDaemon(["--notify-url", `http://${host}:${far.port}/notify`], cleanEnv(home));
+    });
+
+    afterAll(async () => {
+      daemon?.proc.kill("SIGTERM");
+      await far?.close();
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    it("lists the notifier as attached once it has read its /state", async () => {
+      const d = await deliveryUntil(daemon?.port ?? 0, (d) => (d?.attached ?? []).length > 0, 5_000);
+      expect(d?.attached).toEqual([name()]);
+    }, 15_000);
+
+    it("so `status --line` waits for it and counts its doorbell, rather than calling it not answering", async () => {
+      const doc = await lineJson(daemon?.port ?? 0, far.port, cleanEnv(home));
+      expect(doc.warnings).toEqual([]);
+      expect(doc.announced).toBe(1);
+    }, 20_000);
+
+    it("stops vouching once the forward goes stale: the cap is back within a poll or two", async () => {
+      // review:82 finding 5 — nothing probes a `--notify-url` notifier, so a
+      // vouch read off `live` lasted until a POST failed, which on an idle
+      // machine is never. A poll that times out withdraws this one.
+      const port = far.port;
+      await far.close();
+      far = await silentOn(port);
+      // At worst one 5 s interval plus the poll's own 2 s timeout; the rest is
+      // slack for a loaded runner, and costs nothing once it says `[]`.
+      const d = await deliveryUntil(daemon?.port ?? 0, (d) => (d?.attached ?? []).length === 0, 15_000);
+      expect(d?.attached).toEqual([]);
+      const doc = await lineJson(daemon?.port ?? 0, port, cleanEnv(home));
+      expect(doc.announced).toBe(0);
+      expect(doc.warnings).toContainEqual(NOT_ANSWERING);
+    }, 30_000);
+  },
+);
+
+/**
+ * review:82 F4 — a `--notify-url` notifier that refuses the daemon's `/state`
+ * read (a token that does not match) still answered it: it is reached, and
+ * reached is all `attached` says. Whether it will take a doorbell is
+ * `delivery.live`'s question, not this one.
+ */
+describe("built daemon with --notify-url counts a refused /state as reached", () => {
   let home: string;
   let far: Far;
-  let daemonProc: ChildProcess | undefined;
-  let daemonPort: number;
-
-  /** The `/state` a slow link answers with: one doorbell from another machine. */
-  const slow = (): Promise<Far> =>
-    httpOn((req, res) => {
-      res.setHeader("content-type", "application/json");
-      if (req.method === "GET" && req.url === "/state") {
-        const agent = {
-          host: "laptop",
-          repo: "web",
-          sessionId: "r1",
-          agentId: "main",
-          reason: "permission_prompt",
-          since: Date.now() - 60_000,
-          lastSeen: Date.now(),
-          acknowledged: false,
-        };
-        setTimeout(() => res.end(JSON.stringify({ agents: [agent], sessions: [] })), 700);
-      } else if (req.url === "/healthz") {
-        res.end(JSON.stringify({ ok: true, role: "notifier", canShow: true }));
-      } else {
-        // A doorbell or the roster push: taken.
-        req.resume();
-        res.end("{}");
-      }
-    });
-
-  /** Nothing from the developer's machine: no `~/.astir`, no `~/.ssh/config`, no token in the environment. */
-  const env = (): NodeJS.ProcessEnv => {
-    const e: NodeJS.ProcessEnv = { ...process.env, HOME: home, ASTIR_NO_PERSIST: "1" };
-    for (const key of [
-      "ASTIR_PORT",
-      "ASTIR_NOTIFY_PORT",
-      "ASTIR_TOKEN",
-      "ASTIR_NOTIFY_TOKEN",
-      "ASTIR_NOTIFY_URL",
-    ]) {
-      delete e[key];
-    }
-    return e;
-  };
-
-  const attached = async (): Promise<string[] | undefined> =>
-    (
-      await json<{ delivery?: { attached?: string[] } }>(
-        await fetch(`http://127.0.0.1:${daemonPort}/healthz`),
-      )
-    ).delivery?.attached;
-
-  /** Polls `/healthz` until `attached` is what `want` says, or the deadline; returns the last answer. */
-  const attachedUntil = async (want: (a: string[] | undefined) => boolean, ms: number) => {
-    const deadline = Date.now() + ms;
-    let last = await attached();
-    while (!want(last) && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 100));
-      last = await attached();
-    }
-    return last;
-  };
-
-  /** `astir status --line --json`, the built CLI, as astir-tui runs it. Async: the notifier lives in this process. */
-  const line = async () => {
-    const { stdout } = await run(
-      process.execPath,
-      [ENTRY, "status", "--line", "--json", "--port", String(daemonPort), "--notify-port", String(far.port)],
-      { env: { ...env(), ASTIR_TOKEN: TOKEN, ASTIR_NOTIFY_TOKEN: NOTIFY_TOKEN }, timeout: 15_000 },
-    );
-    return JSON.parse(stdout) as { warnings: Array<{ kind: string; text: string }>; announced: number };
-  };
-
-  const name = () => `remote(http://127.0.0.1:${far.port}/notify)`;
+  let daemon: { proc: ChildProcess; port: number } | undefined;
 
   beforeAll(async () => {
-    home = mkdtempSync(join(tmpdir(), "astir-notify-url-"));
-    far = await slow();
-    daemonProc = spawn(
-      process.execPath,
-      [
-        ENTRY,
-        "daemon",
-        "--port",
-        "0",
-        "--token",
-        TOKEN,
-        "--notify-url",
-        `http://127.0.0.1:${far.port}/notify`,
-        "--notify-token",
-        NOTIFY_TOKEN,
-      ],
-      { cwd: REPO, stdio: ["ignore", "pipe", "pipe"], env: env() },
-    );
-    daemonPort = await new Promise<number>((resolve, reject) => {
-      let buf = "";
-      const timer = setTimeout(() => reject(new Error(`no port announced; stdout=${buf}`)), 15_000);
-      daemonProc?.stdout?.on("data", (c: Buffer) => {
-        buf += c.toString();
-        const m = /listening on 127\.0\.0\.1:(\d+)/.exec(buf);
-        if (m?.[1]) {
-          clearTimeout(timer);
-          resolve(Number(m[1]));
-        }
-      });
-      daemonProc?.on("exit", (code) =>
-        reject(new Error(`daemon exited early (code ${code}); stdout=${buf}`)),
-      );
-    });
-    await waitForReady(`http://127.0.0.1:${daemonPort}`);
+    home = mkdtempSync(join(tmpdir(), "astir-notify-401-"));
+    far = await notifierStandIn({ stateStatus: 401 });
+    daemon = await startDaemon(["--notify-url", `http://127.0.0.1:${far.port}/notify`], cleanEnv(home));
   });
 
   afterAll(async () => {
-    daemonProc?.kill("SIGTERM");
+    daemon?.proc.kill("SIGTERM");
     await far?.close();
     rmSync(home, { recursive: true, force: true });
   });
 
-  it("lists the notifier as attached once it has read its /state", async () => {
-    expect(await attachedUntil((a) => (a ?? []).length > 0, 5_000)).toEqual([name()]);
+  it("lists it as attached", async () => {
+    const d = await deliveryUntil(daemon?.port ?? 0, (d) => (d?.attached ?? []).length > 0, 7_000);
+    expect(d?.attached).toEqual([`remote(http://127.0.0.1:${far.port}/notify)`]);
   }, 15_000);
-
-  it("so `status --line` waits for it and counts its doorbell, rather than calling it not answering", async () => {
-    const doc = await line();
-    expect(doc.warnings).toEqual([]);
-    expect(doc.announced).toBe(1);
-  }, 20_000);
-
-  it("stops vouching once the forward goes stale: the cap is back within a poll or two", async () => {
-    // review:82 finding 5 — nothing probes a `--notify-url` notifier, so a
-    // vouch read off `live` lasted until a POST failed, which on an idle
-    // machine is never. A poll that times out withdraws this one.
-    const port = far.port;
-    await far.close();
-    far = await silentOn(port);
-    // At worst one 5 s interval plus the poll's own 2 s timeout; the rest is
-    // slack for a loaded runner, and costs nothing once it says `[]`.
-    expect(await attachedUntil((a) => (a ?? []).length === 0, 15_000)).toEqual([]);
-    const doc = await line();
-    expect(doc.announced).toBe(0);
-    expect(doc.warnings).toContainEqual({ kind: "unreachable", text: "astir: notifier not answering" });
-  }, 30_000);
 });
+
+/**
+ * review:82 F3 — a daemon with no `--notify-url` FINDS its notifier: it
+ * probes the notifier port (`--notify-port`, as the menu bar's and the TUI's
+ * line ask it) and attaches what answers as one. That wiring,
+ * `deliveryAttached → watch.reached()` in `runDaemon`, is what every probed
+ * machine's line reads, and no unit test reaches it: listing nothing, or
+ * listing what can deliver in its place, failed nothing.
+ *
+ * Two daemons, two stand-ins, both slow on `/state`: one that can show, and
+ * one that cannot — reached by every probe, and never live. The second is
+ * the case `attached` exists for.
+ */
+describe("built daemon vouches for the notifier its probe finds, whether or not it can deliver", () => {
+  let home: string;
+  const fars: Far[] = [];
+  const daemons: ChildProcess[] = [];
+  let shows: { far: Far; port: number };
+  let mute: { far: Far; port: number };
+
+  const name = (far: Far) => `remote(http://127.0.0.1:${far.port}/notify)`;
+
+  beforeAll(async () => {
+    home = mkdtempSync(join(tmpdir(), "astir-probed-"));
+    const start = async (canShow: boolean) => {
+      const far = await notifierStandIn({ stateMs: 700, canShow });
+      fars.push(far);
+      const d = await startDaemon(["--notify-port", String(far.port)], cleanEnv(home));
+      daemons.push(d.proc);
+      return { far, port: d.port };
+    };
+    [shows, mute] = await Promise.all([start(true), start(false)]);
+  });
+
+  afterAll(async () => {
+    for (const d of daemons) d.kill("SIGTERM");
+    for (const far of fars) await far.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("lists the notifier its probe reached as attached, and the line waits for it", async () => {
+    const d = await deliveryUntil(shows.port, (d) => (d?.attached ?? []).length > 0, 7_000);
+    expect(d?.attached).toEqual([name(shows.far)]);
+    expect(d?.live).toContain(name(shows.far));
+    const doc = await lineJson(shows.port, shows.far.port, cleanEnv(home));
+    expect(doc.warnings).not.toContainEqual(NOT_ANSWERING);
+    expect(doc.announced).toBe(1);
+  }, 25_000);
+
+  it("lists one that cannot show as attached too, though it is not live, and the line still waits for it", async () => {
+    const d = await deliveryUntil(mute.port, (d) => (d?.attached ?? []).length > 0, 7_000);
+    expect(d?.attached).toEqual([name(mute.far)]);
+    expect(d?.live ?? []).not.toContain(name(mute.far));
+    const doc = await lineJson(mute.port, mute.far.port, cleanEnv(home));
+    // Not `toEqual([])`: on a machine whose local path is dead too, nothing
+    // is live, and the line rightly says no one will be told.
+    expect(doc.warnings).not.toContainEqual(NOT_ANSWERING);
+    expect(doc.announced).toBe(1);
+  }, 25_000);
+});
+
+/**
+ * review:82 F5 — `doctor` on a port that accepts and never answers names two
+ * causes, the likelier first, and which is likelier is read off this
+ * machine: a `RemoteForward` for the notifier port in ~/.ssh/config means its
+ * own notifier serves that port, so a hang is most likely that notifier's.
+ * Without one, the port is most likely a forward from another machine left by
+ * a dropped session. `runDoctor` works that out; the order is all that shows.
+ *
+ * `doctor --port P` probes the notifier on P + 1, so the silent socket takes
+ * P + 1 of a pair found free — never 47000/47001.
+ */
+describe.skipIf(process.platform === "win32")(
+  "built doctor orders a silent notifier port's causes by this machine's pairing",
+  () => {
+    const open: Far[] = [];
+    const homes: string[] = [];
+
+    afterAll(async () => {
+      for (const far of open) await far.close();
+      for (const home of homes) rmSync(home, { recursive: true, force: true });
+    });
+
+    const doctor = async (paired: boolean) => {
+      const home = mkdtempSync(join(tmpdir(), "astir-doctor-82-"));
+      homes.push(home);
+      const { port, far } = await adjacentTo((p) => silentOn(p));
+      open.push(far);
+      if (paired) {
+        mkdirSync(join(home, ".ssh"));
+        // What `astir pair devbox` writes.
+        writeFileSync(
+          join(home, ".ssh", "config"),
+          `\nHost devbox\n  RemoteForward ${far.port} 127.0.0.1:${far.port}\n`,
+        );
+      }
+      const { stdout } = await run(process.execPath, [ENTRY, "doctor", "--port", String(port)], {
+        env: cleanEnv(home),
+        timeout: 20_000,
+      });
+      expect(stdout).toContain(`something holds 127.0.0.1:${far.port} but did not answer in time`);
+      return stdout;
+    };
+
+    it("names this machine's own notifier first when it forwards the port to another", async () => {
+      const out = await doctor(true);
+      const hung = out.indexOf("the notifier on this machine has most likely hung");
+      const forward = out.indexOf("left its `ssh -R` forward");
+      expect(hung).toBeGreaterThan(-1);
+      expect(forward).toBeGreaterThan(hung);
+      expect(out.indexOf("`node`")).toBeLessThan(out.indexOf("`sshd`"));
+    }, 30_000);
+
+    it("names a stale forward first when nothing here pairs the port", async () => {
+      const out = await doctor(false);
+      const forward = out.indexOf("most likely an ssh session that dropped left its `ssh -R` forward");
+      const hung = out.indexOf("a notifier on this machine has hung");
+      expect(forward).toBeGreaterThan(-1);
+      expect(hung).toBeGreaterThan(forward);
+      expect(out.indexOf("`sshd`")).toBeLessThan(out.indexOf("`node`"));
+    }, 30_000);
+  },
+);

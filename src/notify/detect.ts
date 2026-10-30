@@ -43,9 +43,38 @@ export const PROBE_REASON = {
   notNotifier: "something else is listening on this port",
 } as const;
 
-/** Where the notifier on this port is reached. One spelling, shared with the daemon's target names. */
+/** Where the notifier on this port is reached: the URL the probe attaches. */
 export function notifierUrl(port: number): string {
   return `http://127.0.0.1:${port}/notify`;
+}
+
+/** 127.0.0.0/8, `localhost` and `::1` — as `URL` spells a hostname: lower case, 127.1 widened, IPv6 bracketed. */
+function isLoopbackHost(hostname: string): boolean {
+  return (
+    hostname === "localhost" || hostname === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)
+  );
+}
+
+/**
+ * #82 — whether `url` is the notifier `status --line` asks on this machine's
+ * `port`, which it reaches as `notifierUrl(port)`: plain http to a loopback
+ * address on that port. By address, never by spelling: a `--notify-url`
+ * typed as `http://localhost:47001/notify` is the same notifier, and was
+ * read as another one. Not a host that is not loopback on the same port
+ * number, which is some other machine's port, not the one the line dials.
+ * False for anything that is not a URL.
+ */
+export function isNotifierOn(url: string, port: number): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:") return false;
+  // `URL` drops a port that is the scheme's default: 80, for http.
+  const effective = parsed.port === "" ? 80 : Number(parsed.port);
+  return effective === port && isLoopbackHost(parsed.hostname);
 }
 
 export interface DetectResult {

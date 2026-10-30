@@ -85,18 +85,28 @@ release is cut, named and published is in
   - The notifier probe now tells a refused port (no tunnel) from one that
     accepts and does not answer, one that hangs up, and one that does not
     speak HTTP, and the daemon's log line says which it saw.
-  - For a port that accepts and does not answer, `doctor` names both
-    causes — a notifier on this machine that hung, or a forward left by an
-    ssh session that dropped — the likelier one first, and says how to find
-    which process holds the port (`sudo lsof -iTCP:<port> -sTCP:LISTEN` on
-    macOS, `sudo ss -ltnp 'sport = :<port>'` on Linux, or `netstat` where
-    there is no `ss`) so you end that one.
-    A stale forward is `sshd`: `sshd: <user>@pts/N` for an interactive
-    session, `@notty` for one that is not; setting `ClientAliveInterval` /
-    `ClientAliveCountMax` in that machine's `sshd_config` keeps the next one
-    from lingering. A hung `astir notifier` you started by hand is told to
-    restart what you started. Only the notifier service on macOS is told
-    that `astir autostart` restarts it.
+  - For a port that accepts and does not answer, `doctor` (but for the one
+    exception below) names both causes — a notifier on this machine that
+    hung, or a forward left by an ssh session that dropped — the likelier
+    one first, and says how to find which process holds the port
+    (`sudo lsof -iTCP:<port> -sTCP:LISTEN` on macOS,
+    `sudo ss -ltnp 'sport = :<port>'` on Linux, or `netstat` where there is
+    no `ss`) so you end that one.
+    A stale forward is `sshd` (`sshd-session` on OpenSSH 9.8 and later):
+    `sshd: <user>@pts/N` for an interactive session, `@notty` for one that
+    is not; setting `ClientAliveInterval` / `ClientAliveCountMax` in that
+    machine's `sshd_config` keeps the next one from lingering. A hung
+    `astir notifier` you started by hand is told to restart what you
+    started.
+  - The exception is a Mac with the notifier service installed. The port is
+    that service's (an `ssh -R` forward of it listens on the other machine,
+    not this one), so there `doctor` names only a hung notifier: it says
+    `astir autostart` restarts it, and where its log is, and does not send
+    you looking for what holds the port.
+  - A notifier `doctor` finds running with nothing to restart it was told
+    "`astir autostart` fixes that" everywhere. That is macOS only, and
+    refuses anywhere else; there `doctor` now says so, and to start the
+    notifier from what runs at login.
   - A hang-up is a tunnel with nothing at its far end, and doctor says to
     start the notifier there. None of them is told to set up a tunnel any
     more.
@@ -115,6 +125,10 @@ release is cut, named and published is in
     drops out at the first that is not — so a stale forward there loses the
     whole budget within seconds, rather than keeping it until a doorbell
     fails.
+  - The line finds its notifier in that list by address, not by how the
+    name is spelled: `--notify-url http://localhost:47001/notify` (or any
+    loopback address on that port) is the notifier the line asks at
+    127.0.0.1:47001. One on another host is not, whatever its port.
 - `hooks/hooks.json` no longer carries a `_comment` key, which Claude Code
   reported as an unknown key on every session start. JSON has no comments; the
   prose moved to `hooks/README.md`.
