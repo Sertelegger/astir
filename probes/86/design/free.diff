@@ -1,0 +1,2246 @@
+# Candidate D ("free") prototype as a change on main 07c3935: src/, hooks/hooks.json, and the cross-version scorecard harness.
+# Built in a throwaway worktree at 280b316: it keeps 96d3367's plumbing (PermissionRequest -> permission_request, claudeScreen/screen, pollInto/observedAt, blocksBegun) and replaces its registry logic. Comments inherited from 96d3367 in normalize.ts/sessions.ts were not rewritten.
+# Not included: 96d3367's CHANGELOG/hooks README/claude-permission.test.ts, which describe the claim/sighting design. The harness reads fixtures from /home/dev/astir-d86-free-86/test/fixtures (280b316).
+diff --git a/hooks/hooks.json b/hooks/hooks.json
+index f5a6127..ac5474a 100644
+--- a/hooks/hooks.json
++++ b/hooks/hooks.json
+@@ -40,6 +40,23 @@
+         ]
+       }
+     ],
++    "PermissionRequest": [
++      {
++        "hooks": [
++          {
++            "type": "http",
++            "url": "http://127.0.0.1:47000/hook/claude",
++            "timeout": 5,
++            "headers": {
++              "Authorization": "Bearer $ASTIR_TOKEN"
++            },
++            "allowedEnvVars": [
++              "ASTIR_TOKEN"
++            ]
++          }
++        ]
++      }
++    ],
+     "PostToolUse": [
+       {
+         "hooks": [
+diff --git a/src/adapters/claude/normalize.ts b/src/adapters/claude/normalize.ts
+index 2625796..e9d0ec9 100644
+--- a/src/adapters/claude/normalize.ts
++++ b/src/adapters/claude/normalize.ts
+@@ -8,7 +8,7 @@
+  * misleading expectation for anyone adding a second provider.
+  */
+ 
+-import { randomUUID } from "node:crypto";
++import { createHash, randomUUID } from "node:crypto";
+ import type { NormalizeDeps, NormalizeResult } from "../types.js";
+ 
+ export type { NormalizeDeps, NormalizeResult, SidecarMeta } from "../types.js";
+@@ -31,11 +31,33 @@ import {
+  */
+ export const SPAWN_TOOLS = new Set(["Agent", "Task"]);
+ 
++/**
++ * #86 — `PermissionRequest` dates a block; it does not prove one.
++ *
++ * Before a dialog opens Claude fires `PermissionRequest` (~0.4 s after
++ * `PreToolUse`, measured); the `permission_prompt` `Notification` comes ~6 s
++ * later, and it was the only one astir listened to, so every Claude alert came
++ * ~6 s late on top of the PSH-16 dwell
++ * (test/fixtures/claude/permission-request.json).
++ *
++ * But `PermissionRequest` is not "the dialog opened". Claude also runs it for
++ * an ask that can never show one — a background agent's, a headless
++ * session's — and then denies the ask itself (read from the 2.1.312 binary).
++ * So it becomes `permission_request`, which marks the agent's dialog as
++ * claimed. The registry blocks the agent, dated from the claim, once something
++ * has SEEN the dialog: Claude's session listing reading `waiting` for a
++ * `"permission prompt"`, or the Notification, which Claude sends only while
++ * the dialog is still up.
++ *
++ * Neither hook says when a dialog ends if the human presses Esc — nothing
++ * fires at all. The listing does (`sessionDialogs`, registry.observeScreen).
++ */
+ const KIND_BY_HOOK: Record<string, Kind> = {
+   SessionStart: "session_start",
+   PreToolUse: "pre_tool",
+   PostToolUse: "post_tool",
+   PostToolUseFailure: "tool_failed",
++  PermissionRequest: "notification",
+   Notification: "notification",
+   SubagentStart: "subagent_start",
+   SubagentStop: "subagent_stop",
+@@ -104,6 +126,34 @@ export function resolveParent(
+   return { parentAgentId: null, parentSource: "inferred" };
+ }
+ 
++/** Stable JSON: object keys sorted, so equal inputs digest equally. */
++function stable(v: unknown): string {
++  if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
++  if (v !== null && typeof v === "object") {
++    const o = v as Record<string, unknown>;
++    return `{${Object.keys(o)
++      .sort()
++      .map((k) => `${JSON.stringify(k)}:${stable(o[k])}`)
++      .join(",")}}`;
++  }
++  return JSON.stringify(v) ?? "null";
++}
++
++/**
++ * #86 (design D) — an opaque digest naming one tool call by its tool and
++ * input. `PermissionRequest` has no `tool_use_id`, but its input is the call's,
++ * unchanged, so the digest ties an ask to the PostToolUse that ends the call.
++ * Not the agent: whether a subagent's PermissionRequest carries `agent_id` is
++ * read from the binary, not measured, and a key that needs it would never
++ * match. SEC-01: only the digest leaves this function.
++ */
++function callKeyOf(tool: unknown, input: unknown): string {
++  return createHash("sha256")
++    .update(`${typeof tool === "string" ? tool : ""}\u0000${stable(input)}`)
++    .digest("base64url")
++    .slice(0, 22);
++}
++
+ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): NormalizeResult {
+   let droppedPaths = 0;
+   // Read before anything can fail. `session_id` and `cwd` are Claude's field
+@@ -176,8 +226,28 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+     if (changeKind === "unlink") paths = [];
+   }
+ 
++  let callKey: string | null = null;
++  if (
++    kind === "pre_tool" ||
++    kind === "post_tool" ||
++    kind === "tool_failed" ||
++    hookName === "PermissionRequest"
++  ) {
++    callKey = callKeyOf(p.tool_name, p.tool_input);
++  }
++
+   let notificationKind: NotificationKind | null = null;
+-  if (kind === "notification") {
++  if (hookName === "PermissionRequest") {
++    tool = typeof p.tool_name === "string" ? p.tool_name : null;
++    // It carries no `notification_type`, and read like a Notification it would
++    // come out `other` and be lost. Nor is it `permission_prompt`: Claude fires
++    // it for asks that never reach a screen too, so it marks a dialog the
++    // registry has not yet seen (`permission_request`). Whatever the tool —
++    // `AskUserQuestion` fires it as well, and that is a question the human must
++    // answer just the same. The tool is not carried: the PreToolUse before it
++    // already named it.
++    notificationKind = "permission_request";
++  } else if (kind === "notification") {
+     const nt = typeof p.notification_type === "string" ? p.notification_type : "";
+     notificationKind = NOTIFICATION_KINDS.has(nt) ? (nt as NotificationKind) : "other";
+   }
+@@ -219,6 +289,7 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+       op,
+       ok,
+       notificationKind,
++      ...(callKey === null ? {} : { callKey }),
+     },
+   };
+ }
+diff --git a/src/cli/main.ts b/src/cli/main.ts
+index 6aaf9ab..643c5e6 100644
+--- a/src/cli/main.ts
++++ b/src/cli/main.ts
+@@ -35,7 +35,7 @@ import { probeDaemon } from "../daemon/detect.js";
+ import { BUILD_STAMP, Daemon } from "../daemon/server.js";
+ import { createPidLister, createProcessTable } from "../discovery/pids.js";
+ import { createSshLister, RemoteDiscovery } from "../discovery/remote.js";
+-import { createClaudeLister } from "../discovery/sessions.js";
++import { createClaudeLister, pollInto } from "../discovery/sessions.js";
+ import { Registry } from "../model/registry.js";
+ import { parseSnapshot } from "../model/snapshot.js";
+ import { detectNotifier } from "../notify/detect.js";
+@@ -405,6 +405,9 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
+ 
+   const tick = setInterval(() => {
+     registry.tick();
++    // #86 (design D) — a session's dialog has reached its dwell with no proof
++    // yet: ask the listing now rather than at the next 5 s poll. Once per dialog.
++    if (registry.dialogCheckDue()) reconcile();
+     void loop.pulse();
+   }, 1000);
+   tick.unref();
+@@ -433,16 +436,11 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
+   // a record exists here only once a hook has arrived under that id, so this is
+   // "the id the running session identifies itself as".
+   const lister = createClaudeLister({ known: (id) => registry.get(id) !== undefined });
+-  const reconcile = (): void => {
+-    void lister()
+-      .then((found) =>
+-        registry.reconcile(found?.sessions ?? null, {
+-          complete: found?.complete ?? false,
+-          provider: "claude",
+-        }),
+-      )
+-      .catch(() => undefined);
+-  };
++  // #86 — `pollInto` dates the answer from when the question was ASKED. The
++  // listing reads session status that starts and ends a permission block, and
++  // an answer to a poll begun before a dialog was claimed says nothing about
++  // it, however late it lands.
++  const reconcile = (): void => void pollInto(lister, registry, "claude");
+   // Codex has no session listing, so its sessions are vouched for by the pid
+   // their hook relay reported — see discovery/pids.ts. Without this nothing
+   // reaps a Codex session that dies without SessionEnd.
+diff --git a/src/contract/capabilities.ts b/src/contract/capabilities.ts
+index d7c67a6..5bcea08 100644
+--- a/src/contract/capabilities.ts
++++ b/src/contract/capabilities.ts
+@@ -32,14 +32,41 @@ export interface ProviderCapabilities {
+    * never have seen, so its silence proves nothing.
+    */
+   liveness: "listing" | "pid";
++  /**
++   * #86 (design D) — a permission dialog is a fact about the SESSION's screen,
++   * not about an agent, or null when the provider's dialogs are per agent.
++   *
++   * Claude: the `permission_prompt` Notification carries no agent context
++   * (2.1.312), `PermissionRequest` is an ask that may never show a dialog
++   * (background agents deny themselves), Esc fires no hook, and
++   * `claude agents --json` says per SESSION whether a permission dialog is on
++   * screen. So the registry keeps one dialog per session, carried by the main
++   * agent's row exactly as the Notification always was, and never decides
++   * which agent asked.
++   *
++   * `noticeAgeMs`: how long a dialog has certainly been on screen when the
++   * provider's `permission_prompt` notice arrives. Claude sends it once the
++   * user has been idle at the dialog for 6 s (2.1.312); measured 5.76 s after
++   * the dialog became visible (#86's table), so 5 s with a margin.
++   *
++   * Codex: null. Its PermissionRequest names the agent, and `Interrupt` says
++   * when Esc ended it, so a block stays the named agent's.
++   */
++  sessionDialogs: { noticeAgeMs: number } | null;
+ }
+ 
+ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+   claude: {
+     // The `defaultMode: auto` classifier answers in hundreds of milliseconds.
++    // Measured since #86, an approval it gives without a dialog fires no
++    // `PermissionRequest` at all. A dialog that is seen blocks from its
++    // `PermissionRequest`, so the dwell now runs from the moment the dialog
++    // was claimed rather than from the `Notification` ~6 s after it, and still
++    // absorbs any automatic answer that does follow a block.
+     blockDwellMs: 5_000,
+     fileWatch: true,
+     liveness: "listing",
++    sessionDialogs: { noticeAgeMs: 5_000 },
+   },
+   codex: {
+     // Its automatic reviewer answered the captured auto-reviewed request after
+@@ -48,5 +75,7 @@ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+     fileWatch: false,
+     // No session listing exists (verified against rust-v0.154.0).
+     liveness: "pid",
++    // Dialogs are per agent: PermissionRequest names it, Interrupt ends it.
++    sessionDialogs: null,
+   },
+ };
+diff --git a/src/contract/event.ts b/src/contract/event.ts
+index fb1c977..85f2796 100644
+--- a/src/contract/event.ts
++++ b/src/contract/event.ts
+@@ -18,13 +18,27 @@ export type Kind =
+ /** How CAP-05 resolved this agent's parent. `inferred` means "we guessed". */
+ export type ParentSource = "sidecar" | "tooluse" | "inferred";
+ 
+-/** Claude's Notification matcher values. The first three mean "come look". */
++/**
++ * Claude's Notification matcher values. The first three mean "come look".
++ *
++ * `permission_prompt` is also what Codex's `PermissionRequest` hook becomes:
++ * it is the only blocking signal Codex sends.
++ *
++ * `permission_request` is Claude's `PermissionRequest` hook (#86), and it does
++ * NOT mean "come look". Claude fires it before every dialog, ~6 s ahead of the
++ * Notification — but also for asks that can never show one (a background
++ * agent's, a headless session's), which it then denies itself. So it is a
++ * claim that a dialog may be open, not a sighting of one: the registry blocks
++ * on it, dated from it, only once the Notification or Claude's session listing
++ * has seen the dialog.
++ */
+ export type NotificationKind =
+   | "permission_prompt"
+   | "agent_needs_input"
+   | "worker_permission_prompt"
+   | "idle_prompt"
+   | "agent_completed"
++  | "permission_request"
+   | "other";
+ 
+ export interface ContractVersion {
+@@ -63,6 +77,18 @@ export interface AstirEvent {
+   op: Op | null;
+   ok: boolean | null;
+   notificationKind: NotificationKind | null;
++  /**
++   * #86 (design D) — which tool CALL this is about, as an opaque in-memory
++   * digest of the agent, tool name and tool input, or absent.
++   *
++   * Claude's `PermissionRequest` carries no `tool_use_id`, but its
++   * `tool_input` is the PreToolUse's unchanged, and the call's PostToolUse
++   * carries it too, so the same digest ties an ask to the end of its call.
++   * SEC-01: a digest of the payload, never the payload; it lives in memory,
++   * is never logged, persisted or sent, and nothing reads it but the
++   * registry's ask ledger.
++   */
++  callKey?: string | null;
+ }
+ 
+ /** DMN-03 bounds. Exceeding any of these is a rejection, never a silent clamp. */
+@@ -109,6 +135,7 @@ const NOTIFICATION_KINDS = new Set<string>([
+   "worker_permission_prompt",
+   "idle_prompt",
+   "agent_completed",
++  "permission_request",
+   "other",
+ ]);
+ 
+@@ -205,6 +232,7 @@ export function validateEvent(raw: unknown): ValidateResult {
+       op: op as Op | null,
+       ok: typeof r.ok === "boolean" ? r.ok : null,
+       notificationKind: (r.notificationKind as NotificationKind | undefined) ?? null,
++      ...(typeof r.callKey === "string" && r.callKey.length <= 128 ? { callKey: r.callKey } : {}),
+     },
+   };
+ }
+diff --git a/src/daemon/server.ts b/src/daemon/server.ts
+index d56be20..204c7df 100644
+--- a/src/daemon/server.ts
++++ b/src/daemon/server.ts
+@@ -242,7 +242,6 @@ export class Daemon {
+     ingested: 0,
+     rejected: 0,
+     duplicates: 0,
+-    blocked: 0,
+     /**
+      * Daemon-wide totals for /healthz. The PER-SESSION versions on each
+      * `SessionRecord` are what surfaces render; these answer "is anything
+@@ -390,7 +389,9 @@ export class Daemon {
+         // A surface reading an empty list can say "no one will be told", which
+         // is the one thing silence cannot.
+         delivery: { live: this.opts.deliveryLive?.() ?? [] },
+-        counters: this.counters,
++        // `blocked` is the registry's: Claude's session listing begins blocks
++        // too (#86), and those never pass through ingest.
++        counters: { ...this.counters, blocked: this.opts.registry.blocksBegun() },
+       });
+     }
+ 
+@@ -698,7 +699,6 @@ export class Daemon {
+     if (result.applied && pid !== null) this.opts.registry.observePid(valid.event.sessionId, pid);
+ 
+     if (result.becameBlocked) {
+-      this.counters.blocked++;
+       try {
+         this.opts.onBlocked?.(result.becameBlocked);
+       } catch {
+diff --git a/src/discovery/sessions.ts b/src/discovery/sessions.ts
+index b7cb8c4..e644bd4 100644
+--- a/src/discovery/sessions.ts
++++ b/src/discovery/sessions.ts
+@@ -8,6 +8,8 @@
+  */
+ 
+ import { execFile } from "node:child_process";
++import type { Provider } from "../contract/event.js";
++import type { Registry } from "../model/registry.js";
+ import { createTtyReader, isAttended, type TtyReader } from "./attended.js";
+ import { candidateConfigDirs } from "./profiles.js";
+ 
+@@ -17,6 +19,14 @@ export interface DiscoveredSession {
+   pid: number | null;
+   /** `status` for attached sessions, `state` for background ones. */
+   status: string | null;
++  /**
++   * #86 — what the provider's listing says is on the session's screen, in
++   * astir's words (SessionScreen). The lister translates; the registry reads
++   * only this, never a provider's own vocabulary (CAP-02). Absent when the
++   * listing says nothing it can be translated from — every lister but
++   * Claude's.
++   */
++  screen?: SessionScreen;
+   name: string | null;
+   /**
+    * Epoch ms the session started, when the provider reports it.
+@@ -35,6 +45,70 @@ export interface DiscoveredSession {
+   attended?: boolean;
+ }
+ 
++/**
++ * #86 — what is on a session's screen, as far as a permission dialog goes. It
++ * is what the registry reads to begin and end a block no hook reports on
++ * (`sessionDialogs`):
++ *
++ * - `permission-dialog`: a permission dialog is open. Which agent's, the
++ *   listing does not say.
++ * - `other-dialog`: something is on screen that is not known to be one. No
++ *   evidence either way.
++ * - `at-prompt`: nothing is on screen and the turn is over.
++ * - `working`: nothing is on screen and the session is working.
++ */
++export type SessionScreen = "permission-dialog" | "other-dialog" | "at-prompt" | "working";
++
++/**
++ * #86 — the one `waitingFor` that means "a permission dialog is on screen" in
++ * `claude agents --json`, which carries `waitingFor` beside `status:
++ * "waiting"` and nowhere else (the field measured on 2.1.312).
++ *
++ * Read from the binary (2.1.296–2.1.312): `"permission prompt"` is the DEFAULT,
++ * what every dialog reads that declares nothing else — a tool's permission
++ * dialog, but also plan approval, entering plan mode, a message from another
++ * session awaiting approval, browser and Chrome setup, computer-use approval
++ * and auto-mode setup proposals. The value was not seen live, because that
++ * takes starting a session. Were it ever different, a dialog would be seen by
++ * its Notification instead, ~6 s in — later, never not at all.
++ *
++ * `waiting` alone is not: `AskUserQuestion`, an MCP elicitation, and an
++ * elicitation queued BEHIND whatever is on top all read `"input needed"` —
++ * the last whether or not anything is on top, and for as long as it stays
++ * queued (four of thirteen sessions on the machine this was measured on read
++ * that, one while working). There are also `"dialog open"`, `"worker
++ * request"`, `"sandbox request"` and `"goal proposal"`.
++ */
++const CLAUDE_PERMISSION_DIALOG = "permission prompt";
++
++/**
++ * #86 — Claude statuses that mean "at its prompt, nothing on screen".
++ *
++ * `shell` is Claude's word for idle with a background shell still running (its
++ * session file, 2.1.312). `claude agents --json` folds it into `busy` today —
++ * everything but `idle` and `waiting` comes out `busy` (read from the binary,
++ * 2.1.296–2.1.312) — so it is here for the day that stops, not for anything
++ * astir sees now.
++ */
++const CLAUDE_AT_PROMPT = new Set(["idle", "shell"]);
++
++/**
++ * #86 — Claude statuses that mean "working". `--json` says `busy`; the others
++ * are the registry's own PROVIDER_BUSY words, kept so that nothing read as
++ * working before reads as anything else now.
++ */
++const CLAUDE_WORKING = new Set(["busy", "running", "working"]);
++
++/** #86 — Claude's listing, in astir's words. Undefined when it says nothing usable. */
++export function claudeScreen(status: string | null, waitingFor: string | null): SessionScreen | undefined {
++  if (status === null) return undefined;
++  if (status === "waiting")
++    return waitingFor === CLAUDE_PERMISSION_DIALOG ? "permission-dialog" : "other-dialog";
++  if (CLAUDE_AT_PROMPT.has(status)) return "at-prompt";
++  if (CLAUDE_WORKING.has(status)) return "working";
++  return undefined;
++}
++
+ /**
+  * `null` means "could not determine" — a missing binary, a timeout, unparseable
+  * output. That is deliberately distinct from `[]` ("no sessions are running"),
+@@ -57,12 +131,40 @@ export interface DiscoveryResult {
+ 
+ export type SessionLister = () => Promise<DiscoveryResult | null>;
+ 
++/**
++ * DMN-05 — run one poll and fold its answer into the registry. Never throws.
++ *
++ * The clock is read BEFORE the lister is called, and that time travels with
++ * the answer as `observedAt` (#86). A listing describes the session as it was
++ * when it was asked, and `claude agents --json` is a child process that can
++ * take a second or more; read the clock when the answer lands instead and an
++ * `idle` from before a dialog was claimed would be dated after it, and end it.
++ */
++export function pollInto(
++  lister: SessionLister,
++  registry: Pick<Registry, "reconcile">,
++  provider: Provider,
++  now: () => number = Date.now,
++): Promise<void> {
++  const observedAt = now();
++  return lister()
++    .then((found) => {
++      registry.reconcile(found?.sessions ?? null, {
++        complete: found?.complete ?? false,
++        provider,
++        observedAt,
++      });
++    })
++    .catch(() => undefined);
++}
++
+ interface RawAgent {
+   sessionId?: unknown;
+   cwd?: unknown;
+   pid?: unknown;
+   status?: unknown;
+   state?: unknown;
++  waitingFor?: unknown;
+   name?: unknown;
+   startedAt?: unknown;
+ }
+@@ -79,14 +181,17 @@ export function parseAgentsJson(stdout: string): DiscoveredSession[] | null {
+   const out: DiscoveredSession[] = [];
+   for (const item of parsed as RawAgent[]) {
+     if (typeof item?.sessionId !== "string") continue; // a session with no id is useless to us
++    const status =
++      typeof item.status === "string" ? item.status : typeof item.state === "string" ? item.state : null;
++    const screen = claudeScreen(status, typeof item.waitingFor === "string" ? item.waitingFor : null);
+     out.push({
+       sessionId: item.sessionId,
+       cwd: typeof item.cwd === "string" ? item.cwd : "",
+       pid: typeof item.pid === "number" ? item.pid : null,
+-      status:
+-        typeof item.status === "string" ? item.status : typeof item.state === "string" ? item.state : null,
++      status,
+       name: typeof item.name === "string" ? item.name : null,
+       startedAt: typeof item.startedAt === "number" ? item.startedAt : null,
++      ...(screen === undefined ? {} : { screen }),
+     });
+   }
+   return out;
+diff --git a/src/model/registry.ts b/src/model/registry.ts
+index df7980d..9989538 100644
+--- a/src/model/registry.ts
++++ b/src/model/registry.ts
+@@ -2,7 +2,7 @@
+ 
+ import { CAPABILITIES } from "../contract/capabilities.js";
+ import type { AstirEvent, ParentSource, Provider } from "../contract/event.js";
+-import type { DiscoveredSession } from "../discovery/sessions.js";
++import type { DiscoveredSession, SessionScreen } from "../discovery/sessions.js";
+ import { debug } from "../obs/debug.js";
+ import { RepoMap } from "./map.js";
+ import { identityMatches, SNAPSHOT_VERSION, type Snapshot, type SnapshotSession } from "./snapshot.js";
+@@ -42,6 +42,88 @@ const TURN_END = new Set<AgentState>(["waiting", "idle"]);
+  */
+ const PROVIDER_BUSY = new Set(["busy", "running", "working"]);
+ 
++/**
++ * #86 (design D) — a session's permission dialog.
++ *
++ * One per session, because one is what the screen shows and what Claude's
++ * listing reports; the registry never decides which agent it belongs to. It is
++ * carried by the main agent's row (agentId = sessionId), which is where the
++ * agent-less Notification always put it, so every surface, the notify loop,
++ * acknowledgement and the snapshot read it as they always have.
++ *
++ * - `since`: when it is dated to have opened — the newest ask made just
++ *   before the poll that saw it (ASK_WINDOW_MS), the poll itself, or
++ *   `noticeAgeMs` before a notice.
++ * - `seenAt`: the newest evidence it was still up — a poll's START that read a
++ *   permission dialog, or a notice's arrival. PSH-16's dwell is measured from
++ *   `since` to here (`proven`), never to now: Esc and an approved long tool
++ *   end a dialog silently, so time alone proves nothing about it.
++ * - `waitSeenAt`: the newest poll start that read the session `waiting`
++ *   during this dialog. A later `working` then means it was answered; a
++ *   `working` with none before it is no evidence (AskUserQuestion reads
++ *   `busy` for its first seconds).
++ * - `base`: what the main agent's own hooks say it is doing underneath.
++ */
++interface SessionDialog {
++  since: number;
++  seenAt: number;
++  /** `dialogCheckDue` asked for a confirming poll at this time. */
++  checkAskedAt?: number;
++  waitSeenAt: number | null;
++  base: {
++    state: AgentState;
++    reason: string | null;
++    since: number;
++    tool: string | null;
++    toolPath: string | null;
++  };
++}
++
++/** #86 (design D) — a PermissionRequest not yet ended by its call, its agent or the turn. */
++interface SessionAsk {
++  agentId: string;
++  /** `AstirEvent.callKey`: an in-memory digest, never logged or persisted. */
++  key: string | null;
++  at: number;
++}
++
++/**
++ * #86 (design D) — how far before a poll an ask may be and still date the
++ * dialog that poll saw. A dialog is visible ~0.4 s after its ask and polls
++ * begin every 5 s, so the first poll that sees it began under 5.4 s after the
++ * ask. An older ask is not this dialog's: it was approved, denied by Claude
++ * itself, or is queued, and dating from it would skip the dwell.
++ */
++export const ASK_WINDOW_MS = 6_000;
++/** Kept for the #86 probes, which import the old name. */
++export const CLAIM_WINDOW_MS = ASK_WINDOW_MS;
++/** #86 — an `idle` from a poll begun this soon after an ask may predate its dialog. */
++const LISTING_SETTLE_MS = 1_000;
++/**
++ * #86 (design D) — how recent the session's last INFORMATIVE listing reading
++ * (a dialog, at its prompt, or working) must be for the listing to decide when
++ * a dialog ends. Two missed polls. Past it — discovery down, a session no
++ * local listing reports, or one masked by a queued elicitation — a dialog
++ * ends the way a Notification block always did, on the main agent's own next
++ * event (07c3935).
++ */
++const LISTING_STALE_MS = 12_000;
++/** #86 (design D) — the ask ledger is bounded; the oldest goes first. */
++const MAX_ASKS = 32;
++
++/** #86 — an agent's own progress: what ended a block before #86. */
++const OWN_PROGRESS = new Set<AstirEvent["kind"]>([
++  "session_start",
++  "pre_tool",
++  "post_tool",
++  "tool_failed",
++  "stop",
++  "session_end",
++  "subagent_stop",
++]);
++/** #86 (design D) — the main agent's events after which no dialog can be on screen. */
++const TURN_OVER = new Set<AstirEvent["kind"]>(["stop", "session_start", "session_end"]);
++
+ export interface AgentRecord {
+   id: string;
+   provider: Provider;
+@@ -251,6 +333,16 @@ export interface SessionRecord {
+    * memory and starts being an observation.
+    */
+   restored?: boolean;
++  /** #86 (design D) — see SessionDialog. Never persisted, never on a surface. */
++  dialog?: SessionDialog | null;
++  /** #86 (design D) — pending asks (SessionAsk). In memory only. */
++  asks?: SessionAsk[];
++  /** #86 (design D) — the newest poll start folded in; an older answer is dropped. */
++  listingAt?: number | null;
++  /** #86 (design D) — the newest poll start whose reading was informative. */
++  informativeAt?: number | null;
++  /** #86 (design D) — the newest evidence that the session's last dialog had ended. */
++  dialogClearedAt?: number;
+ }
+ 
+ export interface RegistryOpts {
+@@ -333,6 +425,8 @@ export class Registry {
+   private silentByProvider = new Map<Provider, DiscoveredSession[]>();
+   /** Saved sessions awaiting a provider's confirmation. See `stageRestore`. */
+   private pendingRestore = new Map<string, SnapshotSession>();
++  /** OBS-01 — blocks begun, by any path. See `blocksBegun`. */
++  private blocks = 0;
+ 
+   constructor(opts: RegistryOpts) {
+     this.nowMs = opts.nowMs;
+@@ -388,7 +482,7 @@ export class Registry {
+             provider: s.provider,
+             cwd: s.cwd,
+             reason: a.blockedReason ?? "blocked",
+-            blockedForMs: Math.max(0, this.nowMs() - a.stateSince),
++            blockedForMs: this.blockedForMs(s, a),
+             restored: s.restored === true,
+             announcedAt: a.announcedAt,
+           });
+@@ -398,6 +492,51 @@ export class Registry {
+     return out;
+   }
+ 
++  /**
++   * PSH-16 — how long this block has PROVED itself, for the dwell.
++   *
++   * For a session dialog (#86, design D): from when it is dated to the newest
++   * evidence it was still up, because a Claude dialog ends silently (Esc, or
++   * an approved long tool) and elapsed time proves nothing. A hook block under
++   * it (agent_needs_input) proves itself by time, as every block always has.
++   */
++  private blockedForMs(s: SessionRecord, a: AgentRecord): number {
++    const now = this.nowMs();
++    const d = s.dialog;
++    if (d === null || d === undefined || a.id !== s.sessionId) return Math.max(0, now - a.stateSince);
++    const proven = Math.max(0, d.seenAt - d.since);
++    const under = d.base.state === "blocked" ? Math.max(0, now - d.base.since) : 0;
++    return Math.max(proven, under);
++  }
++
++  /**
++   * #86 (design D, optional) — whether a session's dialog has reached its
++   * dwell without proof, so the daemon should ask the listing now rather than
++   * at its next 5 s poll. One ask per dialog. Without it the proof comes from
++   * the next poll or the Notification (~6.2–6.6 s after the ask).
++   */
++  dialogCheckDue(): boolean {
++    const now = this.nowMs();
++    let due = false;
++    for (const s of this.sessions.values()) {
++      const d = s.dialog;
++      if (d === null || d === undefined || d.checkAskedAt !== undefined) continue;
++      const main = s.agents.get(s.sessionId);
++      if (main === undefined || main.announcedAt !== null) continue;
++      const dwell = CAPABILITIES[s.provider].blockDwellMs;
++      if (now - d.since >= dwell && d.seenAt - d.since < dwell) {
++        d.checkAskedAt = now;
++        due = true;
++      }
++    }
++    return due;
++  }
++
++  /** OBS-01 — how many times an agent has begun to wait on a human, by any path. */
++  blocksBegun(): number {
++    return this.blocks;
++  }
++
+   /** Count of agents blocked on a human and not yet acknowledged (PSH-08). */
+   blockedCount(): number {
+     let n = 0;
+@@ -529,6 +668,13 @@ export class Registry {
+     if (event.kind === "session_end") session.endedAt = this.nowMs();
+     else if (event.kind === "session_start") session.endedAt = null; // resumed
+ 
++    // #86 (design D) — a provider whose dialogs are the session's.
++    const dialogs = CAPABILITIES[session.provider].sessionDialogs;
++    if (dialogs !== null) {
++      const handled = this.applyDialogEvent(session, agent, event, dialogs.noticeAgeMs);
++      if (handled !== undefined) return handled;
++    }
++
+     const next = this.nextState(event, agent.state);
+     const becameBlocked =
+       next !== agent.state && HUMAN_BLOCKING.has(next)
+@@ -555,6 +701,256 @@ export class Registry {
+     return becameBlocked ? { applied: true, becameBlocked } : { applied: true };
+   }
+ 
++  /**
++   * #86 (design D) — an event in a session whose dialogs are the session's.
++   * Returns the result when it handled the event, or undefined to let the
++   * ordinary path (07c3935) apply it.
++   *
++   * 1. A PermissionRequest is an ask: it goes on the ledger and changes no
++   *    state. Claude fires it for asks that never show a dialog too.
++   * 2. A `permission_prompt` notice, whoever it names, is the session's
++   *    dialog, up for at least `noticeAgeMs`.
++   * 3. Anything else may resolve asks. A dialog then ends when the ledger
++   *    empties, when the main agent's turn is over, or, with no informative
++   *    listing, on the main agent's own progress (07c3935's rule).
++   * 4. While a dialog is up, the main agent's own events update what it is
++   *    doing underneath (`base`) and leave its row blocked.
++   */
++  private applyDialogEvent(
++    s: SessionRecord,
++    agent: AgentRecord,
++    ev: AstirEvent,
++    noticeAgeMs: number,
++  ): IngestResult | undefined {
++    const now = this.nowMs();
++    const asks = s.asks ?? [];
++    s.asks = asks;
++    if (ev.notificationKind === "permission_request") {
++      asks.push({ agentId: agent.id, key: ev.callKey ?? null, at: now });
++      while (asks.length > MAX_ASKS) asks.shift();
++      return { applied: true };
++    }
++    if (ev.kind === "notification" && ev.notificationKind === "permission_prompt") {
++      const opened = this.seeDialog(s, now - noticeAgeMs, now);
++      return opened
++        ? {
++            applied: true,
++            becameBlocked: { sessionId: s.sessionId, agentId: s.sessionId, kind: "permission_prompt" },
++          }
++        : { applied: true };
++    }
++
++    const before = asks.length;
++    this.resolveAsks(s, agent, ev);
++    const emptied = before > 0 && (s.asks ?? []).length === 0;
++    const d = s.dialog;
++    if (d === null || d === undefined) return undefined;
++
++    const isMain = agent.id === s.sessionId;
++    const fallback = !this.listingInformative(s, now);
++    const ends =
++      emptied || (isMain && TURN_OVER.has(ev.kind)) || (isMain && fallback && OWN_PROGRESS.has(ev.kind));
++    if (ends) {
++      debug("registry", "a hook ended the session's dialog", { session: s.sessionId, agent: agent.id });
++      if (isMain) {
++        // The ordinary path applies the main agent's own event to its row.
++        s.dialog = null;
++        s.dialogClearedAt = Math.max(s.dialogClearedAt ?? Number.NEGATIVE_INFINITY, now);
++        return undefined;
++      }
++      this.endDialog(s, now, "base");
++      return undefined;
++    }
++    if (!isMain) return undefined;
++
++    // The main agent acts while the session's dialog is up: a parallel call,
++    // or a dialog the listing will end. Its row stays blocked.
++    const b = d.base;
++    const blocking =
++      ev.kind === "notification" &&
++      (ev.notificationKind === "agent_needs_input" || ev.notificationKind === "worker_permission_prompt");
++    if (blocking) {
++      if (b.state !== "blocked") b.since = now;
++      b.state = "blocked";
++      b.reason = ev.notificationKind;
++    } else {
++      const next = this.nextState(ev, b.state);
++      if (next !== b.state) b.since = now;
++      b.state = next;
++      if (next !== "blocked") b.reason = null;
++    }
++    if (ev.kind === "pre_tool") {
++      b.tool = ev.tool;
++      b.toolPath = ev.paths[0] ?? null;
++    } else if (b.tool !== null) {
++      b.tool = null;
++      b.toolPath = null;
++    }
++    return { applied: true };
++  }
++
++  /** #86 (design D) — take resolved asks off the ledger. */
++  private resolveAsks(s: SessionRecord, agent: AgentRecord, ev: AstirEvent): void {
++    const asks = s.asks ?? [];
++    if (asks.length === 0) return;
++    if (ev.kind === "post_tool" || ev.kind === "tool_failed") {
++      // The call that asked has ended: approved and run, or failed.
++      // By the call's digest alone: an ask that landed on the main agent (a
++      // PermissionRequest without `agent_id`) still meets its call's end.
++      const i = ev.callKey ? asks.findIndex((q) => q.key === ev.callKey) : -1;
++      if (i >= 0) asks.splice(i, 1);
++      return;
++    }
++    if (ev.kind === "subagent_stop") {
++      s.asks = asks.filter((q) => q.agentId !== agent.id);
++      return;
++    }
++    if (agent.id === s.sessionId && TURN_OVER.has(ev.kind)) s.asks = [];
++  }
++
++  /** #86 (design D) — the listing has spoken for this session recently enough to be believed. */
++  private listingInformative(s: SessionRecord, now: number): boolean {
++    return (
++      s.informativeAt !== null && s.informativeAt !== undefined && now - s.informativeAt <= LISTING_STALE_MS
++    );
++  }
++
++  /** #86 (design D) — the main agent, which carries the session's dialog. */
++  private carrier(s: SessionRecord): AgentRecord {
++    let main = s.agents.get(s.sessionId);
++    if (main === undefined) {
++      main = this.ensureAgent(s, {
++        v: { major: 2, minor: 1 },
++        eventId: "",
++        provider: s.provider,
++        sessionId: s.sessionId,
++        ts: 0,
++        kind: "notification",
++        agentId: s.sessionId,
++        agentType: null,
++        parentAgentId: null,
++        parentSource: null,
++        tool: null,
++        description: null,
++        paths: [],
++        op: null,
++        ok: null,
++        notificationKind: null,
++      });
++    }
++    return main;
++  }
++
++  /**
++   * #86 (design D) — evidence that a dialog is on the session's screen at
++   * `at`, open since no later than `since`. Opens the session's dialog, or
++   * confirms the one already open. Evidence older than whatever ended the
++   * last dialog is ignored. Returns whether the main agent became blocked.
++   */
++  private seeDialog(s: SessionRecord, since: number, at: number): boolean {
++    if (at < (s.dialogClearedAt ?? Number.NEGATIVE_INFINITY)) return false;
++    const main = this.carrier(s);
++    const d = s.dialog;
++    if (d !== null && d !== undefined) {
++      d.seenAt = Math.max(d.seenAt, at);
++      // A notice can prove an older start than the poll that opened it.
++      if (main.announcedAt === null) d.since = Math.min(d.since, since);
++      return false;
++    }
++    s.dialog = {
++      since,
++      seenAt: at,
++      waitSeenAt: null,
++      base: {
++        state: main.state,
++        reason: main.blockedReason,
++        since: main.stateSince,
++        tool: main.tool,
++        toolPath: main.toolPath,
++      },
++    };
++    debug("registry", "the session's dialog opened", {
++      session: s.sessionId,
++      datedMsAgo: this.nowMs() - since,
++    });
++    main.blockedReason = "permission_prompt";
++    main.tool = null;
++    main.toolPath = null;
++    if (HUMAN_BLOCKING.has(main.state)) return false;
++    this.transition(main, "blocked", since);
++    return true;
++  }
++
++  /**
++   * #86 (design D) — the session's dialog has ended. The main agent goes back
++   * to what its own hooks say it is doing, or to `waiting` when the listing
++   * says the turn is over. A hook block underneath (agent_needs_input) stays,
++   * dated from its own arrival if nothing was announced yet (F5).
++   */
++  private endDialog(s: SessionRecord, at: number, how: "waiting" | "base"): void {
++    const d = s.dialog;
++    s.dialog = null;
++    s.dialogClearedAt = Math.max(s.dialogClearedAt ?? Number.NEGATIVE_INFINITY, at);
++    const main = s.agents.get(s.sessionId);
++    if (d === null || d === undefined || main === undefined || !HUMAN_BLOCKING.has(main.state)) return;
++    debug("registry", "the session's dialog ended", { session: s.sessionId, how });
++    const b = d.base;
++    if (b.state === "blocked") {
++      main.blockedReason = b.reason;
++      if (main.announcedAt === null && b.since > main.stateSince) {
++        main.blockedMs += b.since - main.stateSince;
++        main.stateSince = b.since;
++      }
++      return;
++    }
++    main.blockedReason = null;
++    const next: AgentState = how === "waiting" ? "waiting" : b.state;
++    this.transition(main, next);
++    if (next === "tool-running") {
++      main.tool = b.tool;
++      main.toolPath = b.toolPath;
++    }
++  }
++
++  /**
++   * #86 (design D) — what the listing says is on the session's screen, read
++   * against when the poll STARTED. Monotonic: an answer older than one already
++   * folded in is dropped, so a slow poll cannot undo a newer one.
++   *
++   * - `permission-dialog`: open or confirm the dialog, dated from the newest
++   *   ask made at most ASK_WINDOW_MS before the poll, else from the poll.
++   * - `other-dialog`: no evidence either way, but the session is `waiting`.
++   * - `at-prompt`: the turn is over; the dialog, if older than the poll, ended
++   *   (Esc), and so did every ask made before the poll could see it.
++   * - `working`: the dialog ended if a poll during it read `waiting` first.
++   */
++  private observeScreen(s: SessionRecord, screen: SessionScreen | undefined, at: number): void {
++    if (at < (s.listingAt ?? Number.NEGATIVE_INFINITY)) return;
++    s.listingAt = at;
++    if (screen === undefined) return;
++    if (screen !== "other-dialog") s.informativeAt = at;
++    const d = s.dialog;
++    switch (screen) {
++      case "permission-dialog": {
++        const asks = (s.asks ?? []).filter((q) => q.at <= at && at - q.at < ASK_WINDOW_MS);
++        const newest = asks.reduce<number | null>((m, q) => (m === null || q.at > m ? q.at : m), null);
++        this.seeDialog(s, newest ?? at, at);
++        if (s.dialog) s.dialog.waitSeenAt = Math.max(s.dialog.waitSeenAt ?? at, at);
++        return;
++      }
++      case "other-dialog":
++        if (d) d.waitSeenAt = Math.max(d.waitSeenAt ?? at, at);
++        return;
++      case "at-prompt":
++        s.asks = (s.asks ?? []).filter((q) => at - q.at < LISTING_SETTLE_MS);
++        if (d && at > d.seenAt) this.endDialog(s, at, "waiting");
++        return;
++      case "working":
++        if (d && d.waitSeenAt !== null && at > d.waitSeenAt) this.endDialog(s, at, "base");
++        return;
++    }
++  }
++
+   /** Advance wall-clock-derived transitions. Must be called periodically. */
+   tick(): void {
+     const now = this.nowMs();
+@@ -603,10 +999,14 @@ export class Registry {
+       // Discovery already answers this authoritatively, every five seconds, and
+       // its answer was being ignored here.
+       const providerBusy = s.status !== null && PROVIDER_BUSY.has(s.status);
++      // #86 (design D) — an agent whose ask may be the dialog on screen has not
++      // stopped: it is waiting for the answer. Only those, and only while the
++      // session's dialog is up (F4: not every agent in the session).
++      const asking = new Set(s.dialog ? (s.asks ?? []).map((q) => q.agentId) : []);
+       for (const a of s.agents.values()) {
+         if (IDLE_EXEMPT.has(a.state)) continue;
+         // Positive evidence that it is working. Do not contradict it.
+-        if (providerBusy) continue;
++        if (providerBusy || asking.has(a.id)) continue;
+         // With no word from the provider there is nothing to corroborate, so
+         // wait far longer before overriding what the hooks last told us — a
+         // long build must not be declared idle just because discovery is
+@@ -648,11 +1048,15 @@ export class Registry {
+   }
+ 
+   /** MOD-05 — bank the time spent in the state we are leaving. */
+-  private transition(agent: AgentRecord, next: AgentState): void {
++  private transition(agent: AgentRecord, next: AgentState, since?: number): void {
+     const now = this.nowMs();
+     if (agent.state === next) return; // not a transition; banking would double-count
+ 
+-    const elapsed = Math.max(0, now - agent.stateSince);
++    // #86 — `since` dates the new state earlier than now, for a block seen
++    // after it began. Never before the state being left began.
++    const at = Math.min(now, Math.max(since ?? now, agent.stateSince));
++    const elapsed = Math.max(0, at - agent.stateSince);
++    if (!HUMAN_BLOCKING.has(agent.state) && HUMAN_BLOCKING.has(next)) this.blocks++;
+     if (HUMAN_BLOCKING.has(agent.state)) {
+       agent.blockedMs += elapsed;
+     } else if (WORKING_STATES.has(agent.state)) {
+@@ -665,7 +1069,7 @@ export class Registry {
+     if (TURN_END.has(next)) agent.turnMs = 0;
+ 
+     agent.state = next;
+-    agent.stateSince = now;
++    agent.stateSince = at;
+     // A new state is a new situation: whatever the human dismissed is over.
+     agent.acknowledgedAt = null;
+     // And whatever they were told about. Cleared here rather than left for the
+@@ -692,6 +1096,11 @@ export class Registry {
+         invalidEvents: 0,
+         pid: null,
+         startedAt: null,
++        dialog: null,
++        asks: [],
++        listingAt: null,
++        informativeAt: null,
++        dialogClearedAt: Number.NEGATIVE_INFINITY,
+       };
+       this.sessions.set(sessionId, s);
+     }
+@@ -728,11 +1137,12 @@ export class Registry {
+    */
+   reconcile(
+     discovered: DiscoveredSession[] | null,
+-    opts: { complete?: boolean; provider?: Provider } = {},
++    opts: { complete?: boolean; provider?: Provider; observedAt?: number } = {},
+   ): { enriched: number; pruned: number } {
+     if (discovered === null) return { enriched: 0, pruned: 0 };
+     const complete = opts.complete ?? true;
+     const provider: Provider = opts.provider ?? "claude";
++    const observedAt = opts.observedAt ?? this.nowMs();
+     this.discoveryEverWorked.add(provider);
+ 
+     const live = new Set<string>();
+@@ -768,6 +1178,10 @@ export class Registry {
+       s.startedAt = d.startedAt;
+       if (d.attended !== undefined) s.attended = d.attended;
+       if (d.cwd) s.cwd = d.cwd;
++      // #86 (design D) — what the listing says is on this session's screen.
++      if (s.provider === provider && CAPABILITIES[provider].sessionDialogs !== null) {
++        this.observeScreen(s, d.screen, observedAt);
++      }
+       enriched++;
+     }
+ 
+@@ -963,6 +1377,24 @@ export class Registry {
+         announcedAt: null,
+       });
+     }
++    // #86 (design D) — a restored permission block is the session's dialog
++    // again, so the listing can confirm or end it; proven from now, because
++    // this daemon has seen nothing yet.
++    const main = s.agents.get(s.sessionId);
++    if (
++      CAPABILITIES[saved.provider].sessionDialogs !== null &&
++      main !== undefined &&
++      main.state === "blocked" &&
++      main.blockedReason === "permission_prompt"
++    ) {
++      const now = this.nowMs();
++      s.dialog = {
++        since: Math.min(now, main.stateSince),
++        seenAt: now,
++        waitSeenAt: null,
++        base: { state: "thinking", reason: null, since: main.stateSince, tool: null, toolPath: null },
++      };
++    }
+     return s;
+   }
+ 
+diff --git a/test/zz-free-score.test.ts b/test/zz-free-score.test.ts
+new file mode 100644
+index 0000000..b78188e
+--- /dev/null
++++ b/test/zz-free-score.test.ts
+@@ -0,0 +1,1166 @@
++/**
++ * #86 redesign, candidate D ("free") — one scorecard harness that runs
++ * unchanged against 07c3935 (main), 96d3367 (the held claim/sighting attempt)
++ * and the design-D prototype, through the REAL Registry, NotifyLoop,
++ * NotifyPolicy and Dispatcher on a fake clock.
++ *
++ * Cadence (the probes' `sim`): 100 ms steps; a listing poll begins every 5 s
++ * from `phase` and lands 300 ms later with what was on screen when it began;
++ * tick + pulse every 1 s. Hooks land before a poll landing at the same instant,
++ * both before the pulse. A screen function returning null means no poll ran
++ * (discovery down). On main, PermissionRequest is unmapped (no event) and the
++ * listing carries no `screen`, exactly as 07c3935 ships.
++ */
++import { appendFileSync, readFileSync } from "node:fs";
++import { describe, it } from "vitest";
++import { normalizeClaudeHook } from "../src/adapters/claude/normalize.js";
++import { normalizeCodexHook } from "../src/adapters/codex/normalize.js";
++import { type AstirEvent, CONTRACT_VERSION } from "../src/contract/event.js";
++import * as disc from "../src/discovery/sessions.js";
++import { Registry } from "../src/model/registry.js";
++import { type DeliveryTarget, Dispatcher } from "../src/notify/dispatch.js";
++import type { NotifyEnvelope } from "../src/notify/envelope.js";
++import { NotifyLoop } from "../src/notify/loop.js";
++import { NotifyPolicy } from "../src/notify/policy.js";
++
++const TAG = process.env.SCORE_TAG ?? "unknown";
++const LOG = process.env.SCORE_LOG ?? "/tmp/score.log";
++const CONFIRM = process.env.SCORE_CONFIRM === "1";
++/** How long a listing poll takes to land (the probes use 300 ms; `claude agents --json` can take a second or more). */
++const LAND = Number(process.env.SCORE_LAND ?? "300");
++const say = (line: string) => appendFileSync(LOG, `[${TAG}] ${line}\n`);
++
++type Payload = Record<string, unknown>;
++type Step = { afterMs: number; payload: Payload };
++const FIX = "/home/dev/astir-d86-free-86/test/fixtures";
++const capture = JSON.parse(readFileSync(`${FIX}/claude/permission-request.json`, "utf8")) as { sequence: Step[] };
++const codexCap = JSON.parse(readFileSync(`${FIX}/codex/capture.json`, "utf8")) as { escSequence: Step[] };
++const stepOf = (name: string) => {
++  const s = capture.sequence.find((x) => x.payload.hook_event_name === name);
++  if (s === undefined) throw new Error(name);
++  return s.payload;
++};
++const pre = stepOf("PreToolUse");
++const request = stepOf("PermissionRequest");
++const notification = stepOf("Notification");
++const SESSION = String(request.payload ?? request.session_id);
++const S = String(request.session_id);
++const CWD = String(request.cwd);
++const SUB = "a5cf41e52d9b8f355";
++const SUB2 = "b6df52f63e0c9a466";
++const BG = SUB2;
++const post = { ...pre, hook_event_name: "PostToolUse", tool_response: {} };
++const spawn = { ...pre, tool_name: "Agent", tool_use_id: "toolu_spawn", tool_input: { prompt: "<redacted>" } };
++const subPre = (id: string, toolUseId = `toolu_${id}`, input: unknown = pre.tool_input) => ({
++  ...pre,
++  agent_id: id,
++  tool_use_id: toolUseId,
++  tool_input: input,
++});
++const subClaim = (id: string, input: unknown = pre.tool_input) => ({ ...request, agent_id: id, tool_input: input });
++const subPost = (id: string, toolUseId = `toolu_${id}`, input: unknown = pre.tool_input) => ({
++  ...post,
++  agent_id: id,
++  tool_use_id: toolUseId,
++  tool_input: input,
++});
++/** A main-agent call with its own input, so parallel asks are distinct calls. */
++const mPre = (n: string) => ({ ...pre, tool_use_id: `toolu_${n}`, tool_input: { command: `<${n}>`, description: "d" } });
++const mAsk = (n: string) => ({ ...request, tool_input: { command: `<${n}>`, description: "d" } });
++const mPost = (n: string) => ({ ...post, tool_use_id: `toolu_${n}`, tool_input: { command: `<${n}>`, description: "d" } });
++const notice = notification;
++const needsInput = { ...notification, notification_type: "agent_needs_input", message: "<redacted>" };
++const subStop = (id: string) => ({ session_id: S, cwd: CWD, hook_event_name: "SubagentStop", agent_id: id });
++const fileChanged = { session_id: S, cwd: CWD, hook_event_name: "FileChanged", file_path: `${CWD}/src/x.ts`, event: "change" };
++const DIALOG = "permission prompt";
++void SESSION;
++
++const deps = { readSidecar: () => null, newId: () => "e1", realpath: (p: string) => p, now: () => 1_793_000_000 };
++// biome-ignore lint/suspicious/noExplicitAny: the namespace differs per tree
++const claudeScreen = (disc as any).claudeScreen as ((s: string | null, w: string | null) => string | undefined) | undefined;
++
++function harness() {
++  let t = 0;
++  let n = 0;
++  const now = () => t;
++  const sent: NotifyEnvelope[] = [];
++  const target: DeliveryTarget = { name: "test", live: () => true, deliver: async (e) => (sent.push(e), { ok: true }) };
++  const registry = new Registry({ nowMs: now });
++  const loop = new NotifyLoop({ registry, policy: new NotifyPolicy(), dispatcher: new Dispatcher([target]), now });
++  const hook = (payload: Payload, codex = false) => {
++    const r = codex
++      ? normalizeCodexHook(payload, { ...deps, newId: () => `c${++n}` })
++      : normalizeClaudeHook(payload, { ...deps, newId: () => `e${++n}` });
++    if (r.event === null) return undefined; // PermissionRequest is unmapped on main
++    return registry.apply(r.event, r.cwd);
++  };
++  const row = (status: string | null, waitingFor?: string, sessionId = S) => {
++    const screen = claudeScreen?.(status, waitingFor ?? null);
++    return { sessionId, cwd: CWD, pid: 4242, status, name: "repo", startedAt: null, ...(screen ? { screen } : {}) };
++  };
++  const poll = (status: string | null, startedAt = t, waitingFor?: string, rows?: unknown[]) =>
++    // biome-ignore lint/suspicious/noExplicitAny: observedAt is unknown to main's signature
++    (registry.reconcile as any)(rows ?? [row(status, waitingFor)], {
++      provider: "claude",
++      complete: true,
++      observedAt: startedAt,
++    });
++  const seen = (startedAt = t) => poll("waiting", startedAt, DIALOG);
++  const agent = (id = S) => registry.get(S)?.agents.get(id);
++  const pulse = async () => {
++    registry.tick();
++    await loop.pulse();
++  };
++  const pollFor = async (status: string | null, from: number, to: number, waitingFor?: string) => {
++    for (let at = from; at <= to; at += 5_000) {
++      t = at + 300;
++      poll(status, at, waitingFor);
++      t = at + 1_000;
++      await pulse();
++    }
++  };
++  return { registry, loop, sent, hook, poll, seen, agent, pulse, pollFor, at: (ms: number) => void (t = ms), now };
++}
++type H = ReturnType<typeof harness>;
++const who = (id: string) => (id === S ? "main" : id.slice(0, 3));
++const story = (h: H) => h.sent.map((e) => `${e.kind}:${who(e.session.agentId)}@${e.ts / 1000}`);
++
++type Sched = [number, Payload, boolean?];
++/** What the listing shows when a poll begins: [status, waitingFor], or null for "no poll ran". */
++type Screen = (at: number) => [string, string?] | null;
++
++async function sim(events: Sched[], screen: Screen, end: number, phase = 0) {
++  const h = harness();
++  const evs = [...events].sort((a, b) => a[0] - b[0]);
++  const pending: { land: number; start: number; s: [string, string?] }[] = [];
++  for (let ms = 0; ms <= end; ms += 100) {
++    h.at(ms);
++    while (evs.length > 0 && (evs[0] as Sched)[0] <= ms) {
++      const [, p, codex] = evs.shift() as Sched;
++      h.hook(p, codex === true);
++    }
++    if (ms >= phase && (ms - phase) % 5_000 === 0) {
++      const s = screen(ms);
++      if (s !== null) pending.push({ land: ms + LAND, start: ms, s });
++    }
++    for (const p of pending.filter((x) => x.land === ms)) h.poll(p.s[0], p.start, p.s[1]);
++    if (ms % 1_000 === 0) await h.pulse();
++    // Design D's optional confirming poll: the daemon asks the listing once a
++    // dialog reaches its dwell unproven (SCORE_CONFIRM=1, D tree only).
++    // biome-ignore lint/suspicious/noExplicitAny: only the D prototype has it
++    const due = (h.registry as any).dialogCheckDue;
++    if (CONFIRM && typeof due === "function" && due.call(h.registry)) {
++      const s = screen(ms);
++      if (s !== null) pending.push({ land: ms + LAND, start: ms, s });
++    }
++  }
++  return h;
++}
++const up = (from: number, to: number, after: [string, string?] = ["busy"]): Screen => (at) =>
++  at >= from && at < to ? ["waiting", DIALOG] : after;
++const firstAlert = (h: H, w = "main") => {
++  const a = h.sent.find((e) => e.kind === "blocked" && who(e.session.agentId) === w);
++  return a ? a.ts / 1000 : null;
++};
++const firstResolved = (h: H, w = "main") => {
++  const a = h.sent.find((e) => e.kind === "resolved" && who(e.session.agentId) === w);
++  return a ? a.ts / 1000 : null;
++};
++const PHASES = [0, 500, 1_000, 1_500, 2_000, 2_500, 3_000, 3_500, 4_000, 4_500];
++async function sweep(label: string, make: (phase: number) => Promise<H>, metric: (h: H) => string) {
++  const out: string[] = [];
++  for (const ph of PHASES) out.push(`ph${ph / 1000}:${metric(await make(ph))}`);
++  say(`${label}: ${out.join(" ")}`);
++}
++
++// ---------------------------------------------------------------------------
++// Baselines (i)-(x). Measured timeline (#86 table): PreToolUse 0, PermissionRequest
++// +0.41 s, dialog visible +0.82 s, Notification +6.58 s.
++// ---------------------------------------------------------------------------
++const lone = (opts: { notice?: boolean; answer?: number; post?: number; esc?: boolean } = {}): Sched[] => {
++  const ev: Sched[] = [
++    [0, pre],
++    [400, request],
++  ];
++  const answer = opts.answer ?? 60_000;
++  if (opts.notice !== false && answer > 6_600) ev.push([6_600, notice]);
++  if (!opts.esc) ev.push([opts.post ?? answer + 100, post]);
++  return ev;
++};
++const loneScreen = (answer: number, esc = false, toolEnd = answer + 100): Screen => (at) =>
++  at >= 800 && at < answer ? ["waiting", DIALOG] : at >= answer && esc ? ["idle"] : at >= answer && at < toolEnd ? ["busy"] : at < 800 ? ["busy"] : ["idle"];
++
++describe("baselines", () => {
++  it("(i) lone main Bash dialog: first alert (s after dialog visible at 0.8)", async () => {
++    await sweep(
++      "(i) alert-after-visible, Notification sent",
++      (ph) => sim(lone(), loneScreen(60_000), 80_000, ph),
++      (h) => `${firstAlert(h) === null ? "none" : ((firstAlert(h) as number) - 0.8).toFixed(1)}`,
++    );
++    await sweep(
++      "(i) alert-after-visible, no Notification (user active at the terminal)",
++      (ph) => sim(lone({ notice: false }), loneScreen(60_000), 80_000, ph),
++      (h) => `${firstAlert(h) === null ? "none" : ((firstAlert(h) as number) - 0.8).toFixed(1)}`,
++    );
++    const h = await sim(lone(), loneScreen(60_000), 80_000, 2_000);
++    say(`(i) story ph2: ${JSON.stringify(story(h))}`);
++  });
++
++  it("(ii) Esc: resolved after Esc at 20 s; and Esc at 3 s (inside the dwell)", async () => {
++    await sweep(
++      "(ii) Esc@20 resolved-after-Esc",
++      (ph) => sim(lone({ esc: true, answer: 20_000 }), loneScreen(20_000, true), 80_000, ph),
++      (h) => {
++        const r = firstResolved(h);
++        return `${r === null ? "NEVER" : (r - 20).toFixed(1)}/${h.agent()?.state}`;
++      },
++    );
++    await sweep(
++      "(ii) Esc@3 (inside dwell) alerts",
++      (ph) => sim(lone({ esc: true, answer: 3_000 }), loneScreen(3_000, true), 60_000, ph),
++      (h) => `${h.sent.filter((e) => e.kind === "blocked").length}/${h.agent()?.state}`,
++    );
++    const h = await sim(lone({ esc: true, answer: 20_000 }), loneScreen(20_000, true), 80_000, 2_000);
++    say(`(ii) story ph2: ${JSON.stringify(story(h))} main=${h.agent()?.state}`);
++  });
++
++  it("(iii) approval: quick tool, long tool, and approvals inside the dwell", async () => {
++    await sweep(
++      "(iii-a) approve@20 quick tool (Post 20.1): resolved-after-approval",
++      (ph) => sim(lone({ answer: 20_000 }), loneScreen(20_000), 80_000, ph),
++      (h) => `${firstResolved(h) === null ? "NEVER" : ((firstResolved(h) as number) - 20).toFixed(1)}`,
++    );
++    await sweep(
++      "(iii-b) approve@20 long tool (Post 120): resolved-after-approval",
++      (ph) => sim(lone({ answer: 20_000, post: 120_000 }), loneScreen(20_000, false, 120_000), 130_000, ph),
++      (h) => `${firstResolved(h) === null ? "NEVER" : ((firstResolved(h) as number) - 20).toFixed(1)}`,
++    );
++    await sweep(
++      "(iii-c) approve@3 long tool (Post 120): alerts sent",
++      (ph) => sim(lone({ answer: 3_000, post: 120_000 }), loneScreen(3_000, false, 120_000), 130_000, ph),
++      (h) => `${h.sent.filter((e) => e.kind === "blocked").length}`,
++    );
++    await sweep(
++      "(iii-d) approve@3 quick tool: alerts sent",
++      (ph) => sim(lone({ answer: 3_000 }), loneScreen(3_000), 60_000, ph),
++      (h) => `${h.sent.filter((e) => e.kind === "blocked").length}`,
++    );
++    await sweep(
++      "(iii-e) approve@5.5 long tool (between dwell and Notification): alerts sent",
++      (ph) => sim(lone({ answer: 5_500, post: 120_000 }), loneScreen(5_500, false, 120_000), 130_000, ph),
++      (h) => `${h.sent.filter((e) => e.kind === "blocked").length}`,
++    );
++  });
++
++  it("(iii-f) a poll begun just before a quick approval lands after its PostToolUse", async () => {
++    const h = await sim(lone({ answer: 20_050, post: 20_150 }), loneScreen(20_050, false, 20_150), 60_000, 0);
++    say(`(iii-f) approve@20.05, Post 20.15, poll begun 20.0 lands 20.3: ${JSON.stringify(story(h))} main=${h.agent()?.state}`);
++  });
++
++  it("(iv) auto mode: no PermissionRequest, no Notification", async () => {
++    await sweep(
++      "(iv) alerts",
++      (ph) => sim([[0, pre], [500, post]], () => ["busy"], 60_000, ph),
++      (h) => `${h.sent.length}`,
++    );
++  });
++
++  it("(v) a subagent's dialog", async () => {
++    const ev: Sched[] = [
++      [0, spawn],
++      [1_000, subPre(SUB)],
++      [1_410, subClaim(SUB)],
++      [7_580, notice],
++      [30_100, subPost(SUB)],
++      [40_000, subStop(SUB)],
++      [40_500, { ...post, tool_name: "Agent", tool_use_id: "toolu_spawn", tool_input: { prompt: "<redacted>" } }],
++    ];
++    await sweep(
++      "(v) blocked-alerts(who) / resolved-after-approval@30",
++      (ph) => sim(ev, (at) => (at >= 1_820 && at < 30_000 ? ["waiting", DIALOG] : ["busy"]), 70_000, ph),
++      (h) => {
++        const b = h.sent.filter((e) => e.kind === "blocked").map((e) => who(e.session.agentId));
++        const r = firstResolved(h);
++        const rs = h.sent.find((e) => e.kind === "resolved");
++        return `${b.length}(${[...new Set(b)].join("+")})/${rs ? (rs.ts / 1000 - 30).toFixed(1) : "NEVER"}${r === null ? "" : ""}`;
++      },
++    );
++    const h = await sim(ev, (at) => (at >= 1_820 && at < 30_000 ? ["waiting", DIALOG] : ["busy"]), 70_000, 2_000);
++    say(`(v) story ph2: ${JSON.stringify(story(h))} sub=${h.agent(SUB)?.state}`);
++  });
++
++  it("(v-b) a subagent's dialog whose PermissionRequest carries no agent_id", async () => {
++    const { agent_id: _drop, ...claimNoId } = subClaim(SUB);
++    const ev: Sched[] = [
++      [0, spawn],
++      [1_000, subPre(SUB)],
++      [1_410, claimNoId],
++      [7_580, notice],
++      [30_100, subPost(SUB)],
++      [40_000, subStop(SUB)],
++      [40_500, { ...post, tool_name: "Agent", tool_use_id: "toolu_spawn", tool_input: { prompt: "<redacted>" } }],
++    ];
++    await sweep(
++      "(v-b) no agent_id on the ask: blocked-alerts(who) / resolved-after-approval@30",
++      (ph) => sim(ev, (at) => (at >= 1_820 && at < 30_000 ? ["waiting", DIALOG] : ["busy"]), 70_000, ph),
++      (h) => {
++        const b = h.sent.filter((e) => e.kind === "blocked").map((e) => who(e.session.agentId));
++        const rs = h.sent.find((e) => e.kind === "resolved");
++        return `${b.length}(${[...new Set(b)].join("+")})/${rs ? (rs.ts / 1000 - 30).toFixed(1) : "NEVER"}`;
++      },
++    );
++    const h = await sim(ev, () => null, 70_000);
++    say(`(v-b) discovery down: ${JSON.stringify(story(h))}`);
++  });
++
++  it("(AUQ) AskUserQuestion: busy ~1 s, then waiting/input needed; answered or Esc at 20 s", async () => {
++    const auqIn = { questions: [{ question: "<redacted>" }] };
++    const aPre = { ...pre, tool_name: "AskUserQuestion", tool_use_id: "toolu_auq", tool_input: auqIn };
++    const aAsk = { ...request, tool_name: "AskUserQuestion", tool_input: auqIn };
++    const aPost = { ...post, tool_name: "AskUserQuestion", tool_use_id: "toolu_auq", tool_input: auqIn };
++    const scr = (end: number, esc: boolean): Screen => (at) =>
++      at < 7_000 ? ["busy"] : at < end ? ["waiting", "input needed"] : esc ? ["idle"] : ["busy"];
++    await sweep(
++      "(AUQ) answered@20: alert-after-visible / resolved-after-answer",
++      (ph) => sim([[0, aPre], [400, aAsk], [6_600, notice], [20_050, aPost]], scr(20_000, false), 60_000, ph),
++      (h) => `${firstAlert(h) === null ? "none" : ((firstAlert(h) as number) - 0.8).toFixed(1)}/${firstResolved(h) === null ? "NEVER" : ((firstResolved(h) as number) - 20).toFixed(1)}`,
++    );
++    await sweep(
++      "(AUQ) Esc@20: alert-after-visible / resolved-after-Esc",
++      (ph) => sim([[0, aPre], [400, aAsk], [6_600, notice]], scr(20_000, true), 60_000, ph),
++      (h) => `${firstAlert(h) === null ? "none" : ((firstAlert(h) as number) - 0.8).toFixed(1)}/${firstResolved(h) === null ? "NEVER" : ((firstResolved(h) as number) - 20).toFixed(1)}`,
++    );
++    await sweep(
++      "(AUQ) answered@4 (inside dwell, before Notification): alerts",
++      (ph) => sim([[0, aPre], [400, aAsk], [4_050, aPost]], scr(4_000, false), 60_000, ph),
++      (h) => `${h.sent.filter((e) => e.kind === "blocked").length}`,
++    );
++  });
++
++  it("(vi) a background ask Claude denies itself", async () => {
++    await sweep(
++      "(vi-a) bg self-denied alone: alerts",
++      (ph) =>
++        sim(
++          [
++            [0, subPre(BG, "toolu_bg")],
++            [400, subClaim(BG)],
++            [1_000, subPre(BG, "toolu_bg2", { command: "<next>" })],
++            [3_000, subPost(BG, "toolu_bg2", { command: "<next>" })],
++          ],
++          () => ["busy"],
++          60_000,
++          ph,
++        ),
++      (h) => `${h.sent.length}`,
++    );
++    for (const bgAt of [-7_000, -4_000, -2_000]) {
++      await sweep(
++        `(vi-b) bg self-denied ask ${(bgAt + 5_000) / 1000}s from main's ask: main-alert-after-visible / bg alerts / resolved-while-up`,
++        (ph) =>
++          sim(
++            ([
++              ...lone(),
++              [5_000 + bgAt, subPre(BG, "toolu_bg")],
++              [5_400 + bgAt, subClaim(BG)],
++              [6_000 + bgAt, subPre(BG, "toolu_bg2", { command: "<next>" })],
++            ] as Sched[]).map(([at, p]) => [at + 5_000, p] as Sched),
++            (at) => (at >= 5_800 && at < 65_000 ? ["waiting", DIALOG] : ["busy"]),
++            90_000,
++            ph,
++          ),
++        (h) => {
++          const a = firstAlert(h);
++          const bg = h.sent.filter((e) => e.kind === "blocked" && e.session.agentId === BG).length;
++          const early = h.sent.filter((e) => e.kind === "resolved" && e.ts / 1000 < 65).length;
++          return `${a === null ? "NONE" : (a - 5.8).toFixed(1)}/${bg}/${early}`;
++        },
++      );
++    }
++  });
++
++  it("(vii) parallel asks from one agent", async () => {
++    const ev: Sched[] = [
++      [0, mPre("A")],
++      [50, mPre("B")],
++      [400, mAsk("A")],
++      [450, mAsk("B")],
++      [6_600, notice], // A's
++      [20_100, mPost("A")], // A approved at 20
++      [26_200, notice], // B's
++      [40_100, mPost("B")], // B approved at 40
++    ];
++    await sweep(
++      "(vii) story",
++      (ph) => sim(ev, (at) => (at >= 800 && at < 40_000 ? ["waiting", DIALOG] : ["busy"]), 70_000, ph),
++      (h) => JSON.stringify(story(h)),
++    );
++  });
++
++  it("(viii) discovery down: Notification only", async () => {
++    const h1 = await sim(lone({ answer: 20_000 }), () => null, 80_000);
++    say(`(viii-a) approve@20 quick: ${JSON.stringify(story(h1))} main=${h1.agent()?.state}`);
++    const h2 = await sim(lone({ esc: true, answer: 20_000 }), () => null, 80_000);
++    say(`(viii-b) Esc@20, nothing after: ${JSON.stringify(story(h2))} main=${h2.agent()?.state}`);
++    const h2b = await sim([...lone({ esc: true, answer: 20_000 }), [45_000, mPre("next")]], () => null, 80_000);
++    say(`(viii-c) Esc@20, next turn's PreToolUse@45: ${JSON.stringify(story(h2b))} main=${h2b.agent()?.state}`);
++    const ev: Sched[] = [
++      [0, spawn],
++      [1_000, subPre(SUB)],
++      [1_410, subClaim(SUB)],
++      [7_580, notice],
++      [30_100, subPost(SUB)],
++      [90_000, subStop(SUB)],
++      [90_500, { ...post, tool_name: "Agent", tool_use_id: "toolu_spawn", tool_input: { prompt: "<redacted>" } }],
++    ];
++    const h3 = await sim(ev, () => null, 100_000);
++    say(`(viii-d) subagent's dialog approved@30, subagent runs to 90: ${JSON.stringify(story(h3))}`);
++    const h4 = await sim(lone({ answer: 3_000, post: 120_000 }), () => null, 130_000);
++    say(`(viii-e) approve@3 long tool: ${JSON.stringify(story(h4))}`);
++  });
++
++  it("(ix) remote: a session whose hooks reach this daemon but no local listing reports it", async () => {
++    // The listing answers, complete, without this session: it is never discovered here.
++    const h = harness();
++    const ev = lone({ answer: 20_000 });
++    const evs = [...ev].sort((a, b) => a[0] - b[0]);
++    for (let ms = 0; ms <= 60_000; ms += 100) {
++      h.at(ms);
++      while (evs.length > 0 && (evs[0] as Sched)[0] <= ms) h.hook((evs.shift() as Sched)[1]);
++      if (ms % 5_000 === 300) h.poll(null, ms - 300, undefined, []);
++      if (ms % 1_000 === 0) await h.pulse();
++    }
++    say(`(ix) unlisted session, approve@20: ${JSON.stringify(story(h))} main=${h.agent()?.state}`);
++  });
++
++  it("(x) Codex", async () => {
++    const [cPre, cAsk, cInt] = codexCap.escSequence.map((s) => s.payload) as [Payload, Payload, Payload];
++    const h1 = await sim(
++      [
++        [0, cPre, true],
++        [1_300, cAsk, true],
++        [5_900, cInt, true],
++      ],
++      () => null,
++      60_000,
++    );
++    say(`(x-a) Codex Esc at 5.9 s (inside 30 s dwell): ${JSON.stringify(story(h1))}`);
++    const h2 = await sim(
++      [
++        [0, cPre, true],
++        [1_300, cAsk, true],
++        [45_000, cInt, true],
++      ],
++      () => null,
++      60_000,
++    );
++    const csid = String(cAsk.session_id);
++    say(
++      `(x-b) Codex Esc at 45 s: ${JSON.stringify(h2.sent.map((e) => `${e.kind}:${e.session.agentId === csid ? "cx" : e.session.agentId}@${e.ts / 1000}`))}`,
++    );
++    // Codex sibling stall while another agent is blocked (S4c).
++    let t = 0;
++    let seq = 0;
++    const r = new Registry({ nowMs: () => t });
++    const ev = (over: Partial<AstirEvent>): AstirEvent => ({
++      v: CONTRACT_VERSION,
++      eventId: `c${++seq}`,
++      provider: "codex",
++      sessionId: "cx",
++      ts: 1_000 + seq,
++      kind: "pre_tool",
++      agentId: "cx",
++      agentType: null,
++      parentAgentId: null,
++      parentSource: null,
++      tool: "shell",
++      description: null,
++      paths: [],
++      op: null,
++      ok: null,
++      notificationKind: null,
++      ...over,
++    });
++    r.apply(ev({ agentId: "cx-sub", kind: "post_tool" }), "/repo");
++    r.apply(ev({ kind: "notification", notificationKind: "permission_prompt", tool: null }), "/repo");
++    t = 16 * 60_000;
++    r.tick();
++    say(`(x-c)=S4c Codex sibling at 16 min: ${r.get("cx")?.agents.get("cx-sub")?.state}`);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// The probes/86 timelines (hunt S1-S8, verify R1-R6, F1, RY/RX, M19, F3/F4,
++// DOCS), re-expressed on this harness with the probes' own hook times.
++// ---------------------------------------------------------------------------
++describe("probes/86 timelines", () => {
++  it("S1 / S1-control", async () => {
++    const h = await sim(
++      [
++        [0, subPre(SUB)],
++        [0, subClaim(SUB)],
++        [3_000, pre],
++        [3_000, request],
++        [8_500, request],
++        [9_400, notice],
++        [61_000, post],
++        [66_200, notice],
++        [120_000, subPost(SUB)],
++      ],
++      up(3_400, 90_000),
++      130_000,
++      4_000,
++    );
++    say(`S1: ${JSON.stringify(story(h))}`);
++    const c = await sim(
++      [
++        [0, subPre(SUB)],
++        [0, subClaim(SUB)],
++        [3_000, pre],
++        [3_000, request],
++        [9_400, notice],
++        [61_000, post],
++        [120_000, subPost(SUB)],
++      ],
++      up(3_400, 60_000),
++      130_000,
++      4_000,
++    );
++    say(`S1-control: ${JSON.stringify(story(c))}`);
++  });
++
++  it("S2 dead=false/true, S2b", async () => {
++    for (const dead of [false, true]) {
++      const h = await sim(
++        [
++          [0, pre],
++          [0, request],
++          [300, request],
++          ...((dead
++            ? [
++                [3_000, subPre(SUB2)],
++                [3_000, subClaim(SUB2)],
++                [45_000, subPre(SUB2, "toolu_bg2", { command: "<next>" })],
++              ]
++            : []) as Sched[]),
++          [6_400, notice],
++          [21_000, post],
++          [26_200, notice],
++        ],
++        up(400, 200_000),
++        180_000,
++        1_000,
++      );
++      say(`S2 dead=${dead}: ${JSON.stringify(story(h))} main=${h.agent()?.state}`);
++    }
++    const b = await sim(
++      [
++        [0, pre],
++        [0, request],
++        [3_000, subPre(SUB2)],
++        [3_000, subClaim(SUB2)],
++        [21_000, post],
++        [22_000, { ...pre, tool_name: "ExitPlanMode", tool_use_id: "toolu_plan", tool_input: {} }],
++        [45_000, subPre(SUB2, "toolu_bg2", { command: "<next>" })],
++      ],
++      (at) => ((at >= 400 && at < 20_000) || (at >= 22_400 && at < 90_000) ? ["waiting", DIALOG] : ["busy"]),
++      90_000,
++      1_000,
++    );
++    say(`S2b: ${JSON.stringify(story(b))}`);
++  });
++
++  it("S2c", async () => {
++    const h = await sim(
++      [
++        [0, subPre(SUB)],
++        [0, subClaim(SUB)],
++        [1_000, pre],
++        [1_000, request],
++        [1_300, request],
++        [7_600, notice],
++        [61_000, post],
++        [66_200, notice],
++        [300_000, subPost(SUB)],
++      ],
++      up(1_400, 400_000),
++      400_000,
++      2_000,
++    );
++    say(`S2c: ${JSON.stringify(story(h))} main=${h.agent()?.state} sub=${h.agent(SUB)?.state}`);
++  });
++
++  it("S3 notice=true/false", async () => {
++    for (const subNotice of [true, false]) {
++      const h = await sim(
++        [
++          [0, pre],
++          [0, request],
++          [2_000, subPre(SUB)],
++          [2_000, subClaim(SUB)],
++          ...((subNotice ? [[10_200, notice]] : []) as Sched[]),
++          [31_000, subPost(SUB)],
++          [64_000, post],
++        ],
++        up(400, 30_000),
++        70_000,
++        1_000,
++      );
++      say(`S3 notice=${subNotice}: ${JSON.stringify(story(h))}`);
++    }
++  });
++
++  it("S8", async () => {
++    const h = await sim(
++      [
++        [0, pre],
++        [0, request],
++        [500, subPre(SUB)],
++        [500, subClaim(SUB)],
++        [6_400, notice],
++        [21_000, post],
++        [41_000, subPost(SUB)],
++      ],
++      up(400, 40_000),
++      60_000,
++      0,
++    );
++    say(`S8: ${JSON.stringify(story(h))}`);
++  });
++
++  it("distinct-input variants: every call has its own tool_input, so the ledger is exercised per call", async () => {
++    const inp = (n: string) => ({ command: `<${n}>`, description: "d" });
++    const sP = (id: string, n: string) => subPre(id, `toolu_${n}`, inp(n));
++    const sA = (id: string, n: string) => subClaim(id, inp(n));
++    const sX = (id: string, n: string) => subPost(id, `toolu_${n}`, inp(n));
++    const s1 = await sim(
++      [
++        [0, sP(SUB, "s")],
++        [0, sA(SUB, "s")],
++        [3_000, mPre("A")],
++        [3_000, mAsk("A")],
++        [8_500, mAsk("B")],
++        [9_400, notice],
++        [61_000, mPost("A")],
++        [66_200, notice],
++        [90_100, mPost("B")],
++        [120_000, sX(SUB, "s")],
++      ],
++      up(3_400, 90_000),
++      130_000,
++      4_000,
++    );
++    say(`S1-distinct: ${JSON.stringify(story(s1))}`);
++    const s1c = await sim(
++      [
++        [0, sP(SUB, "s")],
++        [0, sA(SUB, "s")],
++        [3_000, mPre("A")],
++        [3_000, mAsk("A")],
++        [9_400, notice],
++        [61_000, mPost("A")],
++        [120_000, sX(SUB, "s")],
++      ],
++      up(3_400, 60_000),
++      130_000,
++      4_000,
++    );
++    say(`S1-control-distinct: ${JSON.stringify(story(s1c))}`);
++    const s2c = await sim(
++      [
++        [0, sP(SUB, "s")],
++        [0, sA(SUB, "s")],
++        [1_000, mPre("A")],
++        [1_000, mAsk("A")],
++        [1_300, mPre("B")],
++        [1_300, mAsk("B")],
++        [7_600, notice],
++        [61_000, mPost("A")],
++        [66_200, notice],
++        [300_000, sX(SUB, "s")],
++      ],
++      up(1_400, 400_000),
++      400_000,
++      2_000,
++    );
++    say(`S2c-distinct: ${JSON.stringify(story(s2c))} main=${s2c.agent()?.state}`);
++    for (const subNotice of [true, false]) {
++      const s3 = await sim(
++        [
++          [0, mPre("A")],
++          [0, mAsk("A")],
++          [2_000, sP(SUB, "s")],
++          [2_000, sA(SUB, "s")],
++          ...((subNotice ? [[10_200, notice]] : []) as Sched[]),
++          [31_000, sX(SUB, "s")],
++          [64_000, mPost("A")],
++        ],
++        up(400, 30_000),
++        70_000,
++        1_000,
++      );
++      say(`S3-distinct notice=${subNotice}: ${JSON.stringify(story(s3))}`);
++    }
++    const s8 = await sim(
++      [
++        [0, mPre("A")],
++        [0, mAsk("A")],
++        [500, sP(SUB, "s")],
++        [500, sA(SUB, "s")],
++        [6_400, notice],
++        [21_000, mPost("A")],
++        [41_000, sX(SUB, "s")],
++      ],
++      up(400, 40_000),
++      60_000,
++      0,
++    );
++    say(`S8-distinct: ${JSON.stringify(story(s8))}`);
++    const r1 = await sim(
++      [
++        [0, mPre("A")],
++        [0, mAsk("A")],
++        [1_000, sP(BG, "bg")],
++        [1_000, sA(BG, "bg")],
++        [6_400, notice],
++        [8_000, sP(BG, "bg2")],
++        [60_000, mPost("A")],
++      ],
++      up(400, 59_000),
++      120_000,
++      2_000,
++    );
++    say(`R1-distinct bgNext=8000: ${JSON.stringify(story(r1))}`);
++  });
++
++  it("S4 / S4b (decay)", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(spawn);
++    h.at(100);
++    h.hook(subPre(SUB));
++    h.at(5_000);
++    h.hook(subPost(SUB));
++    h.at(10_000);
++    h.hook(subPre(SUB2));
++    h.hook(subClaim(SUB2));
++    h.at(16_200);
++    h.hook(notice);
++    await h.pollFor("waiting", 11_000, 600_000, DIALOG);
++    say(`S4 at 600 s: SUB=${h.agent(SUB)?.state} activeMs=${h.agent(SUB)?.activeMs} SUB2=${h.agent(SUB2)?.state} main=${h.agent()?.state}`);
++    const b = harness();
++    b.at(0);
++    b.hook(spawn);
++    b.at(100);
++    b.hook(subPre(SUB));
++    b.at(5_000);
++    b.hook(subPost(SUB));
++    b.at(6_000);
++    b.hook(needsInput);
++    await b.pollFor("idle", 10_000, 3_600_000);
++    say(`S4b at 1 h: main=${b.agent()?.state} SUB=${b.agent(SUB)?.state}`);
++  });
++
++  it("S5 / S5b (agent_needs_input during a permission block)", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre);
++    h.hook(request);
++    h.at(1_300);
++    h.seen(1_000);
++    h.at(3_000);
++    await h.loop.pulse();
++    h.hook(needsInput);
++    const mid = `${h.agent()?.state}/${h.agent()?.blockedReason}`;
++    h.at(4_300);
++    h.poll("idle", 4_000);
++    for (let at = 5_000; at <= 120_000; at += 1_000) {
++      h.at(at);
++      await h.pulse();
++    }
++    say(`S5: ${JSON.stringify(story(h))} mid=${mid} main=${h.agent()?.state}/${h.agent()?.blockedReason}`);
++    const b = harness();
++    b.at(0);
++    b.hook(pre);
++    b.hook(request);
++    b.at(500);
++    b.hook(needsInput);
++    const m1 = `${b.agent()?.state}/${b.agent()?.blockedReason}`;
++    b.at(6_400);
++    b.hook(notice);
++    const m2 = `${b.agent()?.state}/${b.agent()?.blockedReason}`;
++    await b.pollFor("idle", 10_000, 20_000);
++    say(`S5b: ${m1} -> ${m2} -> ${b.agent()?.state}/${b.agent()?.blockedReason} ${JSON.stringify(story(b))}`);
++  });
++
++  it("S6a-d (discovery down / windows / masked)", async () => {
++    const a = harness();
++    a.at(0);
++    a.hook(pre);
++    a.hook(request);
++    for (let at = 1_000; at <= 6_000; at += 1_000) {
++      a.at(at);
++      await a.pulse();
++    }
++    a.at(6_400);
++    a.hook(notice);
++    for (let at = 7_000; at <= 12_000; at += 1_000) {
++      a.at(at);
++      await a.pulse();
++    }
++    say(`S6a: ${JSON.stringify(story(a))} stateSince=${a.agent()?.stateSince}`);
++    const b = harness();
++    b.at(0);
++    b.hook(subPre(SUB));
++    b.hook(subClaim(SUB));
++    b.at(9_999);
++    b.hook(pre);
++    b.at(16_000);
++    say(`S6b: owner=${b.hook(notice)?.becameBlocked?.agentId === S ? "main" : b.hook(notice)?.becameBlocked?.agentId} main=${b.agent()?.state}`);
++    const c = harness();
++    c.at(0);
++    c.hook(subPre(SUB));
++    c.hook(subClaim(SUB));
++    c.at(1_000);
++    c.hook(pre);
++    c.at(7_600);
++    const r = c.hook(notice);
++    say(`S6c: owner=${r?.becameBlocked ? who(r.becameBlocked.agentId) : "none"} main=${c.agent()?.state} sub=${c.agent(SUB)?.state}`);
++    const d = await sim(
++      [
++        [0, pre],
++        [0, request],
++        [2_000, subPre(SUB)],
++        [2_000, subClaim(SUB)],
++        [6_400, notice],
++        [30_000, post],
++        [35_700, notice],
++      ],
++      () => ["waiting", "input needed"],
++      60_000,
++      1_000,
++    );
++    say(`S6d masked: ${JSON.stringify(story(d))} main=${d.agent()?.state}`);
++  });
++
++  it("S7 / VR3-86-5 / F6 (blocks counted)", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre);
++    h.hook(request);
++    h.at(300);
++    h.poll("busy", 0);
++    h.at(3_000);
++    h.hook(subPre(SUB2));
++    h.hook(subClaim(SUB2));
++    h.at(5_300);
++    h.seen(5_000);
++    // biome-ignore lint/suspicious/noExplicitAny: not on main
++    const begun = (h.registry as any).blocksBegun?.bind(h.registry);
++    const before = begun?.();
++    h.at(6_400);
++    h.hook(notice);
++    say(`S7: blocksBegun before=${before} after=${begun?.()} blockedCount=${h.registry.blockedCount()} main=${h.agent()?.state} sub2=${h.agent(SUB2)?.state}`);
++  });
++
++  it("RY / RX (VR3-86-1, VR3-86-2)", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre);
++    h.hook(request);
++    h.at(1_000);
++    h.hook(subPre(SUB, "toolu_s"));
++    h.hook(subClaim(SUB));
++    h.at(1_300);
++    h.seen(500);
++    h.at(3_000);
++    h.hook(request);
++    h.at(5_300);
++    h.seen(5_000);
++    h.at(6_000);
++    await h.loop.pulse();
++    h.at(6_400);
++    h.hook(notice);
++    h.at(7_000);
++    await h.loop.pulse();
++    say(`RY: ${JSON.stringify(story(h))} main=${h.agent()?.state} sub=${h.agent(SUB)?.state}`);
++    const x = harness();
++    x.at(0);
++    x.hook(pre);
++    x.hook(notice);
++    x.at(1_000);
++    await x.loop.pulse();
++    x.at(3_000);
++    x.hook(subPre(SUB, "toolu_s"));
++    x.hook(subClaim(SUB));
++    x.at(5_000);
++    await x.loop.pulse();
++    x.at(10_000);
++    x.hook(request);
++    x.at(11_000);
++    await x.loop.pulse();
++    x.at(12_000);
++    x.hook(notice);
++    x.at(13_000);
++    await x.loop.pulse();
++    say(`RX: ${JSON.stringify(story(x))} main=${x.agent()?.state} sub=${x.agent(SUB)?.state}`);
++  });
++
++  it("DOCS lone young claim (VR3-86-3/6)", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre);
++    h.at(3_000);
++    h.hook(subPre(SUB));
++    h.hook(subClaim(SUB));
++    h.at(6_400);
++    h.hook(notice);
++    say(`DOCS: main=${h.agent()?.state}/${h.agent()?.blockedReason} sub=${h.agent(SUB)?.state}`);
++  });
++
++  it("R1 / R2 / R3 / R4 / R5", async () => {
++    for (const bgNext of [3_000, 5_000, 8_000, 15_000, 40_000]) {
++      const h = await sim(
++        [
++          [0, pre],
++          [0, request],
++          [1_000, subPre(BG, "toolu_bg")],
++          [1_000, subClaim(BG)],
++          [6_400, notice],
++          [bgNext, subPre(BG, "toolu_bg2", { command: "<next>" })],
++          [60_000, post],
++        ],
++        up(400, 59_000),
++        120_000,
++        2_000,
++      );
++      say(`R1 bgNext=${bgNext}: ${JSON.stringify(story(h))}`);
++    }
++    for (const bgNext of [4_000, 9_000, 20_000]) {
++      const h = await sim(
++        [
++          [0, pre],
++          [0, request],
++          [3_000, subPre(BG, "toolu_bg")],
++          [3_000, subClaim(BG)],
++          [6_400, notice],
++          [bgNext, subPre(BG, "toolu_bg2", { command: "<next>" })],
++          [60_000, post],
++        ],
++        up(400, 59_000),
++        120_000,
++        1_000,
++      );
++      say(`R2 bgNext=${bgNext}: ${JSON.stringify(story(h))}`);
++    }
++    {
++      const h = await sim(
++        [
++          [0, spawn],
++          [100, subPre(SUB)],
++          [1_100, subClaim(SUB)],
++          [7_500, notice],
++        ],
++        up(1_500, 90_000),
++        100_000,
++        0,
++      );
++      say(`R3: ${JSON.stringify(story(h))} main=${h.agent()?.state} sub=${h.agent(SUB)?.state}`);
++    }
++    {
++      const h = await sim(
++        [
++          [0, pre],
++          [0, request],
++          [5_500, { ...needsInput, message: "x needs your input" }],
++        ],
++        (at) => (at >= 400 && at < 6_000 ? ["waiting", DIALOG] : ["idle"]),
++        200_000,
++        1_000,
++      );
++      say(`R4: ${JSON.stringify(story(h).slice(0, 4))}… n=${h.sent.length} main=${h.agent()?.state}/${h.agent()?.blockedReason}`);
++    }
++    for (const dlgAt of [6_000, 9_000, 12_000, 30_000]) {
++      const h = await sim(
++        [
++          [0, pre],
++          [0, request],
++        ],
++        (at) => (at >= dlgAt && at < dlgAt + 30_000 ? ["waiting", DIALOG] : ["busy"]),
++        120_000,
++        1_000,
++      );
++      say(`R5 dlgAt=${dlgAt}: ${JSON.stringify(story(h))}`);
++    }
++  });
++
++  it("R6 sweep", async () => {
++    let lost = 0;
++    let total = 0;
++    let bgA = 0;
++    let early = 0;
++    let latSum = 0;
++    let latMax = 0;
++    for (const bgAt of [500, 1_500, 3_000, 5_000]) {
++      for (const bgDelay of [2_000, 4_000, 6_000, 8_000, 12_000, 20_000]) {
++        for (const phase of [0, 1_000, 2_000, 3_000, 4_000]) {
++          const h = await sim(
++            [
++              [0, pre],
++              [0, request],
++              [bgAt, subPre(BG, "toolu_bg")],
++              [bgAt, subClaim(BG)],
++              [6_400, notice],
++              [bgAt + bgDelay, subPre(BG, "toolu_bg2", { command: "<next>" })],
++              [60_000, post],
++            ],
++            up(400, 59_000),
++            70_000,
++            phase,
++          );
++          total++;
++          const a = firstAlert(h);
++          if (a === null) lost++;
++          else {
++            latSum += a;
++            latMax = Math.max(latMax, a);
++          }
++          bgA += h.sent.filter((e) => e.kind === "blocked" && e.session.agentId === BG).length;
++          early += h.sent.filter((e) => e.kind === "resolved" && e.ts / 1000 < 59).length;
++        }
++      }
++    }
++    say(
++      `R6: main never alerted ${lost}/${total}; bg alerts ${bgA}; resolved-while-up ${early}; main alert mean ${(latSum / (total - lost)).toFixed(2)} s max ${latMax} s`,
++    );
++  }, 300_000);
++
++  it("F1 variants", async () => {
++    const longTool = 10 * 60_000;
++    const base: Sched[] = [
++      [0, pre],
++      [0, request],
++      [longTool, post],
++    ];
++    const cases: Record<string, { ev: Sched[]; screen: Screen }> = {
++      control: { ev: base, screen: up(400, 4_000) },
++      P2_bg_claim_then_next_event: {
++        ev: [...base, [3_000, subPre(SUB, "toolu_s")], [3_000, subClaim(SUB)], [3_500, subPre(SUB, "toolu_s2", { command: "<n>" })]],
++        screen: up(400, 4_000),
++      },
++      P3_queued_sub_answered_5s: {
++        ev: [...base, [3_000, subPre(SUB, "toolu_s")], [3_000, subClaim(SUB)], [5_500, subPost(SUB, "toolu_s")]],
++        screen: up(400, 5_000),
++      },
++      P4_sub_dialog_still_up_at_6s: {
++        ev: [...base, [3_000, subPre(SUB, "toolu_s")], [3_000, subClaim(SUB)], [21_500, subPost(SUB, "toolu_s")]],
++        screen: up(400, 21_000),
++      },
++    };
++    for (const [name, c] of Object.entries(cases)) {
++      const h = await sim(c.ev, c.screen, longTool - 1_000, 1_000);
++      say(`F1 ${name}: ${h.agent()?.state} ${JSON.stringify(story(h))}`);
++    }
++  }, 120_000);
++
++  it("M19c / M33c", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre);
++    h.hook(request);
++    h.at(1_300);
++    h.seen(1_000);
++    h.at(6_300);
++    h.poll("idle", 6_000);
++    h.at(8_300);
++    h.seen(8_000);
++    h.at(8_400);
++    await h.loop.pulse();
++    say(`M19c: ${h.agent()?.state} ${JSON.stringify(story(h))}`);
++    const m = harness();
++    m.at(0);
++    m.hook(notice);
++    m.at(2_000);
++    m.hook(request);
++    m.at(2_300);
++    m.seen(1_000);
++    m.at(6_300);
++    m.poll("busy", 6_000);
++    say(`M33c: ${m.agent()?.state}`);
++  });
++
++  it("F3busy / F4 FileChanged", async () => {
++    const out: string[] = [];
++    for (const nt of ["plugin_notification", "idle_prompt", "agent_completed"]) {
++      const h = harness();
++      h.at(0);
++      h.hook(pre);
++      h.hook(request);
++      h.at(6_300);
++      h.seen(6_000);
++      h.at(6_500);
++      h.hook({ ...notice, notification_type: nt, message: "m" });
++      await h.pollFor("busy", 11_000, 120_000);
++      out.push(`${nt}->${h.agent()?.state}:${JSON.stringify(story(h))}`);
++    }
++    say(`F3busy: ${out.join(" ")}`);
++    const f: string[] = [];
++    for (const fcAt of [500, 2_000, 5_000, 7_000, 30_000]) {
++      const h = harness();
++      h.at(0);
++      h.hook(pre);
++      h.hook(request);
++      h.at(fcAt);
++      h.hook(fileChanged);
++      h.at(4_300);
++      h.seen(4_000);
++      h.at(5_000);
++      await h.loop.pulse();
++      h.at(6_400);
++      h.hook(notice);
++      await h.pollFor("waiting", 9_000, 130_000, DIALOG);
++      f.push(`fc@${fcAt / 1000}->${h.agent()?.state}:${JSON.stringify(story(h).slice(0, 3))}`);
++    }
++    say(`F4: ${f.join(" ")}`);
++  });
++
++  it("extra: stale listing answer lands after a newer one (poll overlap)", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre);
++    h.hook(request);
++    h.at(1_300);
++    h.seen(1_000);
++    h.at(20_300);
++    h.poll("idle", 20_000); // Esc at 19 s, seen idle by the poll begun at 20 s
++    h.at(21_000);
++    h.poll("waiting", 14_000, DIALOG); // a slow poll begun at 14 s lands late
++    for (let at = 22_000; at <= 40_000; at += 1_000) {
++      h.at(at);
++      await h.pulse();
++    }
++    say(`stale-overlap: main=${h.agent()?.state} ${JSON.stringify(story(h))}`);
++  });
++
++  it("extra: two sessions, one dialog each, independent", async () => {
++    const h = harness();
++    const S2 = "11111111-2222-3333-4444-555555555555";
++    h.at(0);
++    h.hook(pre);
++    h.hook(request);
++    h.hook({ ...pre, session_id: S2 });
++    h.at(400);
++    h.hook({ ...request, session_id: S2 });
++    for (let at = 1_000; at <= 30_000; at += 1_000) {
++      h.at(at);
++      if (at % 5_000 === 1_000) {
++        h.poll(null, at, undefined, [
++          { sessionId: S, cwd: CWD, pid: 1, status: "waiting", name: "a", startedAt: null, ...(claudeScreen ? { screen: claudeScreen("waiting", DIALOG) } : {}) },
++          { sessionId: S2, cwd: CWD, pid: 2, status: at < 10_000 ? "waiting" : "idle", name: "b", startedAt: null, ...(claudeScreen ? { screen: claudeScreen(at < 10_000 ? "waiting" : "idle", DIALOG) } : {}) },
++        ]);
++      }
++      await h.pulse();
++    }
++    say(`two-sessions: ${JSON.stringify(h.sent.map((e) => `${e.kind}:${e.session.sessionId === S ? "A" : "B"}@${e.ts / 1000}`))}`);
++  });
++});

@@ -23,6 +23,11 @@ few files point at the worktree they ran in, so fix those up.
 - `skeptics/`: independent reproductions by the skeptics who upheld each
   finding.
 
+- `design/`: the redesign panel (four candidates, each prototyped and scored
+  against these timelines, then judged). Start with `design/DESIGN.md`; the
+  judge's harness and the recommended C+ prototype diff are in
+  `design/judge/`. Raw run output was left out; the harness regenerates it.
+
 Measured facts these timelines rely on (Claude Code 2.1.291/2.1.312):
 PermissionRequest ~0.4 s after PreToolUse, dialog visible ~0.8 s, Notification
 ~6.2–6.6 s after PermissionRequest, Esc fires no hook, the listing reads

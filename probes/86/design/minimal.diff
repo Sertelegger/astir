@@ -1,0 +1,2208 @@
+diff --git a/hooks/hooks.json b/hooks/hooks.json
+index f5a6127..ac5474a 100644
+--- a/hooks/hooks.json
++++ b/hooks/hooks.json
+@@ -40,6 +40,23 @@
+         ]
+       }
+     ],
++    "PermissionRequest": [
++      {
++        "hooks": [
++          {
++            "type": "http",
++            "url": "http://127.0.0.1:47000/hook/claude",
++            "timeout": 5,
++            "headers": {
++              "Authorization": "Bearer $ASTIR_TOKEN"
++            },
++            "allowedEnvVars": [
++              "ASTIR_TOKEN"
++            ]
++          }
++        ]
++      }
++    ],
+     "PostToolUse": [
+       {
+         "hooks": [
+diff --git a/src/adapters/claude/normalize.ts b/src/adapters/claude/normalize.ts
+index 2625796..5b0f3d5 100644
+--- a/src/adapters/claude/normalize.ts
++++ b/src/adapters/claude/normalize.ts
+@@ -31,11 +31,33 @@ import {
+  */
+ export const SPAWN_TOOLS = new Set(["Agent", "Task"]);
+ 
++/**
++ * #86 — `PermissionRequest` dates a block; it does not prove one.
++ *
++ * Before a dialog opens Claude fires `PermissionRequest` (~0.4 s after
++ * `PreToolUse`, measured); the `permission_prompt` `Notification` comes ~6 s
++ * later, and it was the only one astir listened to, so every Claude alert came
++ * ~6 s late on top of the PSH-16 dwell
++ * (test/fixtures/claude/permission-request.json).
++ *
++ * But `PermissionRequest` is not "the dialog opened". Claude also runs it for
++ * an ask that can never show one — a background agent's, a headless
++ * session's — and then denies the ask itself (read from the 2.1.312 binary).
++ * So it becomes `permission_request`, which marks the agent's dialog as
++ * claimed. The registry blocks the agent, dated from the claim, once something
++ * has SEEN the dialog: Claude's session listing reading `waiting` for a
++ * `"permission prompt"`, or the Notification, which Claude sends only while
++ * the dialog is still up.
++ *
++ * Neither hook says when a dialog ends if the human presses Esc — nothing
++ * fires at all. The listing does (`listingClearsBlocks`, registry.reconcile).
++ */
+ const KIND_BY_HOOK: Record<string, Kind> = {
+   SessionStart: "session_start",
+   PreToolUse: "pre_tool",
+   PostToolUse: "post_tool",
+   PostToolUseFailure: "tool_failed",
++  PermissionRequest: "notification",
+   Notification: "notification",
+   SubagentStart: "subagent_start",
+   SubagentStop: "subagent_stop",
+@@ -177,7 +199,16 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+   }
+ 
+   let notificationKind: NotificationKind | null = null;
+-  if (kind === "notification") {
++  if (hookName === "PermissionRequest") {
++    // It carries no `notification_type`, and read like a Notification it would
++    // come out `other` and be lost. Nor is it `permission_prompt`: Claude fires
++    // it for asks that never reach a screen too, so it marks a dialog the
++    // registry has not yet seen (`permission_request`). Whatever the tool —
++    // `AskUserQuestion` fires it as well, and that is a question the human must
++    // answer just the same. The tool is not carried: the PreToolUse before it
++    // already named it.
++    notificationKind = "permission_request";
++  } else if (kind === "notification") {
+     const nt = typeof p.notification_type === "string" ? p.notification_type : "";
+     notificationKind = NOTIFICATION_KINDS.has(nt) ? (nt as NotificationKind) : "other";
+   }
+diff --git a/src/cli/main.ts b/src/cli/main.ts
+index 6aaf9ab..ad5c79f 100644
+--- a/src/cli/main.ts
++++ b/src/cli/main.ts
+@@ -35,7 +35,7 @@ import { probeDaemon } from "../daemon/detect.js";
+ import { BUILD_STAMP, Daemon } from "../daemon/server.js";
+ import { createPidLister, createProcessTable } from "../discovery/pids.js";
+ import { createSshLister, RemoteDiscovery } from "../discovery/remote.js";
+-import { createClaudeLister } from "../discovery/sessions.js";
++import { createClaudeLister, pollInto } from "../discovery/sessions.js";
+ import { Registry } from "../model/registry.js";
+ import { parseSnapshot } from "../model/snapshot.js";
+ import { detectNotifier } from "../notify/detect.js";
+@@ -433,16 +433,11 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
+   // a record exists here only once a hook has arrived under that id, so this is
+   // "the id the running session identifies itself as".
+   const lister = createClaudeLister({ known: (id) => registry.get(id) !== undefined });
+-  const reconcile = (): void => {
+-    void lister()
+-      .then((found) =>
+-        registry.reconcile(found?.sessions ?? null, {
+-          complete: found?.complete ?? false,
+-          provider: "claude",
+-        }),
+-      )
+-      .catch(() => undefined);
+-  };
++  // #86 — `pollInto` dates the answer from when the question was ASKED. The
++  // listing reads session status that starts and ends a permission block, and
++  // an answer to a poll begun before a dialog was claimed says nothing about
++  // it, however late it lands.
++  const reconcile = (): void => void pollInto(lister, registry, "claude");
+   // Codex has no session listing, so its sessions are vouched for by the pid
+   // their hook relay reported — see discovery/pids.ts. Without this nothing
+   // reaps a Codex session that dies without SessionEnd.
+diff --git a/src/contract/capabilities.ts b/src/contract/capabilities.ts
+index d7c67a6..96d45a5 100644
+--- a/src/contract/capabilities.ts
++++ b/src/contract/capabilities.ts
+@@ -32,6 +32,22 @@ export interface ProviderCapabilities {
+    * never have seen, so its silence proves nothing.
+    */
+   liveness: "listing" | "pid";
++  /**
++   * #86 — the provider's session listing says when nothing is on screen, so
++   * it can end a permission block that no hook ends. Claude's `claude agents
++   * --json` reads `idle` once Esc dismissed a dialog (measured, 2.1.291/
++   * 2.1.312), and Esc fires no hook at all. The lister translates that into
++   * `DiscoveredSession.screen`; the registry reads only that word.
++   */
++  listingEndsPermissionBlocks: boolean;
++  /**
++   * #86 (variant c0) — how long a permission dialog has been on screen, at
++   * least, when the provider's `permission_prompt` notification arrives; 0
++   * when that notification is the ask itself. Claude sends it only once the
++   * dialog has been up 6 s (read from 2.1.312; measured 6.2–6.6 s after
++   * `PermissionRequest`, the dialog visible ~0.4 s after it).
++   */
++  promptNoticeAgeMs: number;
+ }
+ 
+ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+@@ -40,6 +56,8 @@ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+     blockDwellMs: 5_000,
+     fileWatch: true,
+     liveness: "listing",
++    listingEndsPermissionBlocks: true,
++    promptNoticeAgeMs: 5_000,
+   },
+   codex: {
+     // Its automatic reviewer answered the captured auto-reviewed request after
+@@ -48,5 +66,10 @@ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+     fileWatch: false,
+     // No session listing exists (verified against rust-v0.154.0).
+     liveness: "pid",
++    // Nothing to read, and Codex says Esc itself (`Interrupt`).
++    listingEndsPermissionBlocks: false,
++    // Codex's `permission_prompt` is its `PermissionRequest`, sent BEFORE its
++    // automatic review: the block it makes has proved nothing yet.
++    promptNoticeAgeMs: 0,
+   },
+ };
+diff --git a/src/contract/event.ts b/src/contract/event.ts
+index fb1c977..4c8630c 100644
+--- a/src/contract/event.ts
++++ b/src/contract/event.ts
+@@ -18,13 +18,27 @@ export type Kind =
+ /** How CAP-05 resolved this agent's parent. `inferred` means "we guessed". */
+ export type ParentSource = "sidecar" | "tooluse" | "inferred";
+ 
+-/** Claude's Notification matcher values. The first three mean "come look". */
++/**
++ * Claude's Notification matcher values. The first three mean "come look".
++ *
++ * `permission_prompt` is also what Codex's `PermissionRequest` hook becomes:
++ * it is the only blocking signal Codex sends.
++ *
++ * `permission_request` is Claude's `PermissionRequest` hook (#86), and it does
++ * NOT mean "come look". Claude fires it before every dialog, ~6 s ahead of the
++ * Notification — but also for asks that can never show one (a background
++ * agent's, a headless session's), which it then denies itself. So it is a
++ * claim that a dialog may be open, not a sighting of one: the registry blocks
++ * on it, dated from it, only once the Notification or Claude's session listing
++ * has seen the dialog.
++ */
+ export type NotificationKind =
+   | "permission_prompt"
+   | "agent_needs_input"
+   | "worker_permission_prompt"
+   | "idle_prompt"
+   | "agent_completed"
++  | "permission_request"
+   | "other";
+ 
+ export interface ContractVersion {
+@@ -109,6 +123,7 @@ const NOTIFICATION_KINDS = new Set<string>([
+   "worker_permission_prompt",
+   "idle_prompt",
+   "agent_completed",
++  "permission_request",
+   "other",
+ ]);
+ 
+diff --git a/src/discovery/sessions.ts b/src/discovery/sessions.ts
+index b7cb8c4..49a500d 100644
+--- a/src/discovery/sessions.ts
++++ b/src/discovery/sessions.ts
+@@ -8,6 +8,8 @@
+  */
+ 
+ import { execFile } from "node:child_process";
++import type { Provider } from "../contract/event.js";
++import type { Registry } from "../model/registry.js";
+ import { createTtyReader, isAttended, type TtyReader } from "./attended.js";
+ import { candidateConfigDirs } from "./profiles.js";
+ 
+@@ -17,6 +19,14 @@ export interface DiscoveredSession {
+   pid: number | null;
+   /** `status` for attached sessions, `state` for background ones. */
+   status: string | null;
++  /**
++   * #86 — what the provider's listing says is on the session's screen, in
++   * astir's words (SessionScreen). The lister translates; the registry reads
++   * only this, never a provider's own vocabulary (CAP-02). Absent when the
++   * listing says nothing it can be translated from — every lister but
++   * Claude's.
++   */
++  screen?: SessionScreen;
+   name: string | null;
+   /**
+    * Epoch ms the session started, when the provider reports it.
+@@ -35,6 +45,70 @@ export interface DiscoveredSession {
+   attended?: boolean;
+ }
+ 
++/**
++ * #86 — what is on a session's screen, as far as a permission dialog goes. It
++ * is what the registry reads to begin and end a block no hook reports on
++ * (`listingClearsBlocks`):
++ *
++ * - `permission-dialog`: a permission dialog is open. Which agent's, the
++ *   listing does not say.
++ * - `other-dialog`: something is on screen that is not known to be one. No
++ *   evidence either way.
++ * - `at-prompt`: nothing is on screen and the turn is over.
++ * - `working`: nothing is on screen and the session is working.
++ */
++export type SessionScreen = "permission-dialog" | "other-dialog" | "at-prompt" | "working";
++
++/**
++ * #86 — the one `waitingFor` that means "a permission dialog is on screen" in
++ * `claude agents --json`, which carries `waitingFor` beside `status:
++ * "waiting"` and nowhere else (the field measured on 2.1.312).
++ *
++ * Read from the binary (2.1.296–2.1.312): `"permission prompt"` is the DEFAULT,
++ * what every dialog reads that declares nothing else — a tool's permission
++ * dialog, but also plan approval, entering plan mode, a message from another
++ * session awaiting approval, browser and Chrome setup, computer-use approval
++ * and auto-mode setup proposals. The value was not seen live, because that
++ * takes starting a session. Were it ever different, a dialog would be seen by
++ * its Notification instead, ~6 s in — later, never not at all.
++ *
++ * `waiting` alone is not: `AskUserQuestion`, an MCP elicitation, and an
++ * elicitation queued BEHIND whatever is on top all read `"input needed"` —
++ * the last whether or not anything is on top, and for as long as it stays
++ * queued (four of thirteen sessions on the machine this was measured on read
++ * that, one while working). There are also `"dialog open"`, `"worker
++ * request"`, `"sandbox request"` and `"goal proposal"`.
++ */
++const CLAUDE_PERMISSION_DIALOG = "permission prompt";
++
++/**
++ * #86 — Claude statuses that mean "at its prompt, nothing on screen".
++ *
++ * `shell` is Claude's word for idle with a background shell still running (its
++ * session file, 2.1.312). `claude agents --json` folds it into `busy` today —
++ * everything but `idle` and `waiting` comes out `busy` (read from the binary,
++ * 2.1.296–2.1.312) — so it is here for the day that stops, not for anything
++ * astir sees now.
++ */
++const CLAUDE_AT_PROMPT = new Set(["idle", "shell"]);
++
++/**
++ * #86 — Claude statuses that mean "working". `--json` says `busy`; the others
++ * are the registry's own PROVIDER_BUSY words, kept so that nothing read as
++ * working before reads as anything else now.
++ */
++const CLAUDE_WORKING = new Set(["busy", "running", "working"]);
++
++/** #86 — Claude's listing, in astir's words. Undefined when it says nothing usable. */
++export function claudeScreen(status: string | null, waitingFor: string | null): SessionScreen | undefined {
++  if (status === null) return undefined;
++  if (status === "waiting")
++    return waitingFor === CLAUDE_PERMISSION_DIALOG ? "permission-dialog" : "other-dialog";
++  if (CLAUDE_AT_PROMPT.has(status)) return "at-prompt";
++  if (CLAUDE_WORKING.has(status)) return "working";
++  return undefined;
++}
++
+ /**
+  * `null` means "could not determine" — a missing binary, a timeout, unparseable
+  * output. That is deliberately distinct from `[]` ("no sessions are running"),
+@@ -57,12 +131,40 @@ export interface DiscoveryResult {
+ 
+ export type SessionLister = () => Promise<DiscoveryResult | null>;
+ 
++/**
++ * DMN-05 — run one poll and fold its answer into the registry. Never throws.
++ *
++ * The clock is read BEFORE the lister is called, and that time travels with
++ * the answer as `observedAt` (#86). A listing describes the session as it was
++ * when it was asked, and `claude agents --json` is a child process that can
++ * take a second or more; read the clock when the answer lands instead and an
++ * `idle` from before a dialog was claimed would be dated after it, and end it.
++ */
++export function pollInto(
++  lister: SessionLister,
++  registry: Pick<Registry, "reconcile">,
++  provider: Provider,
++  now: () => number = Date.now,
++): Promise<void> {
++  const observedAt = now();
++  return lister()
++    .then((found) => {
++      registry.reconcile(found?.sessions ?? null, {
++        complete: found?.complete ?? false,
++        provider,
++        observedAt,
++      });
++    })
++    .catch(() => undefined);
++}
++
+ interface RawAgent {
+   sessionId?: unknown;
+   cwd?: unknown;
+   pid?: unknown;
+   status?: unknown;
+   state?: unknown;
++  waitingFor?: unknown;
+   name?: unknown;
+   startedAt?: unknown;
+ }
+@@ -79,14 +181,17 @@ export function parseAgentsJson(stdout: string): DiscoveredSession[] | null {
+   const out: DiscoveredSession[] = [];
+   for (const item of parsed as RawAgent[]) {
+     if (typeof item?.sessionId !== "string") continue; // a session with no id is useless to us
++    const status =
++      typeof item.status === "string" ? item.status : typeof item.state === "string" ? item.state : null;
++    const screen = claudeScreen(status, typeof item.waitingFor === "string" ? item.waitingFor : null);
+     out.push({
+       sessionId: item.sessionId,
+       cwd: typeof item.cwd === "string" ? item.cwd : "",
+       pid: typeof item.pid === "number" ? item.pid : null,
+-      status:
+-        typeof item.status === "string" ? item.status : typeof item.state === "string" ? item.state : null,
++      status,
+       name: typeof item.name === "string" ? item.name : null,
+       startedAt: typeof item.startedAt === "number" ? item.startedAt : null,
++      ...(screen === undefined ? {} : { screen }),
+     });
+   }
+   return out;
+diff --git a/src/model/registry.ts b/src/model/registry.ts
+index df7980d..17ad7aa 100644
+--- a/src/model/registry.ts
++++ b/src/model/registry.ts
+@@ -42,6 +42,29 @@ const TURN_END = new Set<AgentState>(["waiting", "idle"]);
+  */
+ const PROVIDER_BUSY = new Set(["busy", "running", "working"]);
+ 
++/**
++ * #86 (candidate C) — how far back a `permission_prompt` notification looks
++ * for the ask that dates it. The notification comes ~6.2–6.6 s after
++ * `PermissionRequest` (measured, 2.1.291/2.1.312); ten seconds covers that
++ * with room for a late hook. A wider window only banks more running time as
++ * blocked (G4): it can never make an alert that would not otherwise fire,
++ * because the notification itself is sent only while a dialog is up.
++ */
++const ASK_WINDOW_MS = 10_000;
++/** #86 (candidate C) — the `ref` dating variant prefers an ask at least this old. */
++const ASK_MIN_AGE_MS = 5_000;
++/**
++ * #86 (candidate C) — a listing must have STARTED at least this long after a
++ * block's date before its `at-prompt` is believed to end the block.
++ */
++const LISTING_SETTLE_MS = 1_000;
++
++/** #86 prototype knobs — measurement only, not part of the design. */
++function knob(name: string, fallback: string): string {
++  const v = typeof process !== "undefined" ? process.env[name] : undefined;
++  return v === undefined || v === "" ? fallback : v;
++}
++
+ export interface AgentRecord {
+   id: string;
+   provider: Provider;
+@@ -79,6 +102,12 @@ export interface AgentRecord {
+   lastActivityMs: number;
+   /** Why this agent is blocked, e.g. `permission_prompt`. Null when not blocked. */
+   blockedReason: string | null;
++  /**
++   * #86 (C+busy variant only) — when a poll begun during this permission
++   * block last found a dialog on the session's screen. A later `working`
++   * then means that dialog was answered. Cleared by every state change.
++   */
++  waitSeenAt?: number | null;
+   /**
+    * What this agent was sent to do, from the sidecar. Set once at spawn and
+    * never cleared — it is the agent's standing brief, not its current state.
+@@ -240,6 +269,16 @@ export interface SessionRecord {
+   startedAt: number | null;
+   /** DMN-11 — false when no human is sitting at it (a plugin or script drives it). */
+   attended?: boolean;
++  /**
++   * #86 (candidate C) — wall ms of this session's recent permission asks
++   * (`permission_request`), newest last, none older than ASK_WINDOW_MS.
++   *
++   * Session-level on purpose: an ask names no dialog, and nothing here tries
++   * to say whose it was. It only dates a block that a `permission_prompt`
++   * notification makes — the dialog that notification reports opened about
++   * when the session last asked. Never persisted, on no surface.
++   */
++  asks?: number[];
+   /**
+    * This state came from the crash-recovery snapshot, not from an event.
+    *
+@@ -505,6 +544,15 @@ export class Registry {
+     // corrected — which is why the flag says "restored" rather than nothing.
+     session.restored = false;
+     this.heard(event.sessionId);
++    // #86 (candidate C) — an ask is a date, not an event about any agent. It
++    // changes no agent's state, tool or activity: Claude also fires it for asks
++    // that never show a dialog (a background agent's, which it denies itself),
++    // so nothing may block on it, and it does not say whose dialog it is.
++    if (event.notificationKind === "permission_request") {
++      const now = this.nowMs();
++      session.asks = [...(session.asks ?? []).filter((t) => now - t <= ASK_WINDOW_MS), now];
++      return { applied: true };
++    }
+     const agent = this.ensureAgent(session, event);
+     if (agent.description === null && event.description !== null) {
+       agent.description = event.description;
+@@ -550,11 +598,46 @@ export class Registry {
+       agent.toolPath = null;
+     }
+ 
+-    this.transition(agent, next);
++    // #86 (candidate C) — a permission_prompt notification is sent only once
++    // its dialog has been up ~6 s, so the block it makes began then, not now.
++    const since =
++      becameBlocked && event.notificationKind === "permission_prompt"
++        ? this.promptOpenedAt(session, event.provider)
++        : undefined;
++    this.transition(agent, next, since);
+ 
+     return becameBlocked ? { applied: true, becameBlocked } : { applied: true };
+   }
+ 
++  /**
++   * #86 (candidate C) — when the dialog a `permission_prompt` notification
++   * reports was opened, as best this session can say. Only a date: the block
++   * goes where it always went (the notification's agent), and an earlier date
++   * only spends PSH-16's dwell sooner. It cannot make an alert by itself — the
++   * notification is sent only while a dialog is still up.
++   *
++   * `lit` (the brief): the session's newest ask within ASK_WINDOW_MS.
++   * `ref`: the newest ask at least ASK_MIN_AGE_MS old, else `lit`.
++   * `c0`: no ask at all — the provider's declared notice age.
++   * `none`: now (main's dating).
++   */
++  private promptOpenedAt(session: SessionRecord, provider: Provider): number | undefined {
++    const now = this.nowMs();
++    const mode = knob("D86_DATING", "lit");
++    if (mode === "none") return undefined;
++    if (mode === "c0") {
++      const age = CAPABILITIES[provider].promptNoticeAgeMs;
++      return age > 0 ? now - age : undefined;
++    }
++    const asks = (session.asks ?? []).filter((t) => now - t <= ASK_WINDOW_MS);
++    if (asks.length === 0) return undefined;
++    if (mode === "ref") {
++      const old = asks.filter((t) => now - t >= ASK_MIN_AGE_MS);
++      if (old.length > 0) return Math.max(...old);
++    }
++    return Math.max(...asks);
++  }
++
+   /** Advance wall-clock-derived transitions. Must be called periodically. */
+   tick(): void {
+     const now = this.nowMs();
+@@ -647,12 +730,20 @@ export class Registry {
+     }
+   }
+ 
+-  /** MOD-05 — bank the time spent in the state we are leaving. */
+-  private transition(agent: AgentRecord, next: AgentState): void {
++  /**
++   * MOD-05 — bank the time spent in the state we are leaving.
++   *
++   * `since` dates the new state earlier than now (#86): a block that began
++   * before the notification that reported it. Never before the state being
++   * left began — that time is already banked, and an ask from before it (an
++   * approved tool that has since finished) is not this dialog's.
++   */
++  private transition(agent: AgentRecord, next: AgentState, since?: number): void {
+     const now = this.nowMs();
+     if (agent.state === next) return; // not a transition; banking would double-count
+ 
+-    const elapsed = Math.max(0, now - agent.stateSince);
++    const at = Math.min(now, Math.max(since ?? now, agent.stateSince));
++    const elapsed = Math.max(0, at - agent.stateSince);
+     if (HUMAN_BLOCKING.has(agent.state)) {
+       agent.blockedMs += elapsed;
+     } else if (WORKING_STATES.has(agent.state)) {
+@@ -665,7 +756,9 @@ export class Registry {
+     if (TURN_END.has(next)) agent.turnMs = 0;
+ 
+     agent.state = next;
+-    agent.stateSince = now;
++    agent.stateSince = at;
++    // #86 (C+busy variant) — a dialog seen belongs to the block it was seen in.
++    agent.waitSeenAt = null;
+     // A new state is a new situation: whatever the human dismissed is over.
+     agent.acknowledgedAt = null;
+     // And whatever they were told about. Cleared here rather than left for the
+@@ -728,11 +821,14 @@ export class Registry {
+    */
+   reconcile(
+     discovered: DiscoveredSession[] | null,
+-    opts: { complete?: boolean; provider?: Provider } = {},
++    opts: { complete?: boolean; provider?: Provider; observedAt?: number } = {},
+   ): { enriched: number; pruned: number } {
+     if (discovered === null) return { enriched: 0, pruned: 0 };
+     const complete = opts.complete ?? true;
+     const provider: Provider = opts.provider ?? "claude";
++    // #86 — when the poll that produced `discovered` STARTED. Its answer is
++    // about the screen then, however late it lands.
++    const observedAt = opts.observedAt ?? this.nowMs();
+     this.discoveryEverWorked.add(provider);
+ 
+     const live = new Set<string>();
+@@ -768,6 +864,9 @@ export class Registry {
+       s.startedAt = d.startedAt;
+       if (d.attended !== undefined) s.attended = d.attended;
+       if (d.cwd) s.cwd = d.cwd;
++      if (s.provider === provider && CAPABILITIES[provider].listingEndsPermissionBlocks) {
++        this.settleFromListing(s, d, observedAt);
++      }
+       enriched++;
+     }
+ 
+@@ -915,6 +1014,44 @@ export class Registry {
+     };
+   }
+ 
++  /**
++   * #86 (candidate C) — Esc at a permission dialog fires no hook; the
++   * provider's listing is the only thing that says the dialog is gone.
++   *
++   * `at-prompt` (nothing on screen, turn over), from a poll begun at least
++   * LISTING_SETTLE_MS after a permission block's date, ends that block: the
++   * human has the floor, so the agent is `waiting`. Only `permission_prompt`
++   * blocks: nobody has measured what the listing shows for the others.
++   *
++   * Nothing here BEGINS a block, and nothing here picks an agent: every
++   * permission block in the session ends, because a screen with nothing on it
++   * has no dialog for any of them.
++   *
++   * C+busy variant (`D86_BUSY=1`, not the candidate): a poll that finds any
++   * dialog on screen during the block records it, and a later `working` ends
++   * the block as answered (`tool-running`).
++   */
++  private settleFromListing(s: SessionRecord, d: DiscoveredSession, observedAt: number): void {
++    const screen = d.screen;
++    if (screen === undefined) return;
++    const busyRule = knob("D86_BUSY", "0") === "1";
++    const idleRule = knob("D86_IDLE", "1") === "1";
++    for (const a of s.agents.values()) {
++      if (!HUMAN_BLOCKING.has(a.state) || a.blockedReason !== "permission_prompt") continue;
++      if (observedAt - a.stateSince < LISTING_SETTLE_MS) continue;
++      if (screen === "at-prompt" && idleRule) {
++        debug("reconcile", "listing ended a permission block", { session: s.sessionId, agent: a.id, screen });
++        a.blockedReason = null;
++        this.transition(a, "waiting");
++      } else if (busyRule && (screen === "permission-dialog" || screen === "other-dialog")) {
++        a.waitSeenAt = Math.max(a.waitSeenAt ?? observedAt, observedAt);
++      } else if (busyRule && screen === "working" && a.waitSeenAt != null && observedAt > a.waitSeenAt) {
++        a.blockedReason = null;
++        this.transition(a, "tool-running");
++      }
++    }
++  }
++
+   silent(): DiscoveredSession[] {
+     return [...this.silentByProvider.values()].flat();
+   }
+diff --git a/test/zz-d86-replay.test.ts b/test/zz-d86-replay.test.ts
+new file mode 100644
+index 0000000..4caa024
+--- /dev/null
++++ b/test/zz-d86-replay.test.ts
+@@ -0,0 +1,1601 @@
++/**
++ * #86 redesign panel, candidate C (minimal change from main) — one replay of
++ * every probes/86 timeline plus the baseline behaviours, through the REAL
++ * Registry and NotifyLoop on a fake clock. The same file runs unchanged in a
++ * 07c3935 tree (main), a 96d3367 tree (held) and the candidate tree, so every
++ * cell of the scorecard comes from the same harness.
++ *
++ * Tree-neutral on purpose: a listing row is built by the tree's own
++ * `parseAgentsJson` from what `claude agents --json` prints (status +
++ * waitingFor), so each tree reads exactly what its lister would give it; a
++ * hook the tree does not map (PermissionRequest on main) is skipped, as the
++ * daemon would answer it with nothing.
++ *
++ * Output: one JSON line per case to $D86_OUT (default ./d86.jsonl).
++ */
++import { appendFileSync, readFileSync } from "node:fs";
++import { dirname, join } from "node:path";
++import { fileURLToPath } from "node:url";
++import { describe, it } from "vitest";
++import { normalizeClaudeHook } from "../src/adapters/claude/normalize.js";
++import { normalizeCodexHook } from "../src/adapters/codex/normalize.js";
++import { type AstirEvent, CONTRACT_VERSION } from "../src/contract/event.js";
++import { parseAgentsJson } from "../src/discovery/sessions.js";
++import { Registry } from "../src/model/registry.js";
++import { type DeliveryTarget, Dispatcher } from "../src/notify/dispatch.js";
++import type { NotifyEnvelope } from "../src/notify/envelope.js";
++import { NotifyLoop } from "../src/notify/loop.js";
++import { NotifyPolicy } from "../src/notify/policy.js";
++
++const root = join(dirname(fileURLToPath(import.meta.url)), "..");
++const OUT = process.env.D86_OUT ?? join(root, "d86.jsonl");
++const out = (id: string, data: Record<string, unknown>) => appendFileSync(OUT, `${JSON.stringify({ id, ...data })}\n`);
++
++type Payload = Record<string, unknown>;
++type Step = { afterMs: number; payload: Payload };
++const capture = JSON.parse(
++  readFileSync(join(root, "test", "fixtures", "claude", "permission-request.json"), "utf8"),
++) as { sequence: Step[] };
++const codexCap = JSON.parse(readFileSync(join(root, "test", "fixtures", "codex", "capture.json"), "utf8")) as Record<
++  string,
++  Step[]
++>;
++const stepOf = (name: string) => {
++  const s = capture.sequence.find((x) => x.payload.hook_event_name === name);
++  if (s === undefined) throw new Error(name);
++  return s;
++};
++const pre = stepOf("PreToolUse");
++const request = stepOf("PermissionRequest");
++const notification = stepOf("Notification");
++const SESSION = String(request.payload.session_id);
++const CWD = String(request.payload.cwd);
++const SUB = "a5cf41e52d9b8f355";
++const SUB2 = "b6df52f63e0c9a466";
++const BG = SUB2;
++const post = { ...pre.payload, hook_event_name: "PostToolUse", tool_response: {} };
++const spawn = { ...pre.payload, tool_name: "Agent", tool_use_id: "toolu_spawn", tool_input: { prompt: "<redacted>" } };
++const spawnPost = { ...spawn, hook_event_name: "PostToolUse", tool_response: {} };
++const subPre = (id: string, toolUseId = `toolu_${id}`) => ({ ...pre.payload, agent_id: id, tool_use_id: toolUseId });
++const subPost = (id: string, toolUseId = `toolu_${id}`) => ({ ...post, agent_id: id, tool_use_id: toolUseId });
++const subClaim = (id: string) => ({ ...request.payload, agent_id: id });
++const needsInput = { ...notification.payload, notification_type: "agent_needs_input", message: "<redacted>" };
++const fileChanged = {
++  session_id: SESSION,
++  cwd: CWD,
++  hook_event_name: "FileChanged",
++  file_path: `${CWD}/src/x.ts`,
++  event: "change",
++};
++const DIALOG = "permission prompt";
++const who = (e: NotifyEnvelope) => (e.session.agentId === SESSION ? "main" : e.session.agentId.slice(0, 3));
++const deps = { readSidecar: () => null, newId: () => "e1", realpath: (p: string) => p, now: () => 1_793_000_000 };
++
++function harness() {
++  let t = 0;
++  let n = 0;
++  const now = () => t;
++  const sent: NotifyEnvelope[] = [];
++  const target: DeliveryTarget = {
++    name: "test",
++    live: () => true,
++    deliver: async (e) => {
++      sent.push(e);
++      return { ok: true };
++    },
++  };
++  const registry = new Registry({ nowMs: now });
++  const loop = new NotifyLoop({ registry, policy: new NotifyPolicy(), dispatcher: new Dispatcher([target]), now });
++  let ingestBlocked = 0;
++  const applyEvent = (ev: AstirEvent | null, cwd: string) => {
++    if (ev === null) return undefined; // unmapped by this tree
++    const r = registry.apply(ev, cwd);
++    if (r.becameBlocked) ingestBlocked++;
++    return r;
++  };
++  const hook = (payload: Payload) => {
++    const r = normalizeClaudeHook(payload, { ...deps, newId: () => `e${++n}` });
++    return applyEvent(r.event, r.cwd);
++  };
++  const codexHook = (payload: Payload) => {
++    const r = normalizeCodexHook(payload, { ...deps, newId: () => `c${++n}` });
++    return applyEvent(r.event, r.cwd);
++  };
++  /** A raw event, for the probes that drove the registry below the adapter. */
++  const raw = (over: Partial<AstirEvent>, provider: "claude" | "codex" = "claude") =>
++    applyEvent(
++      {
++        v: CONTRACT_VERSION,
++        eventId: `r${++n}`,
++        provider,
++        sessionId: SESSION,
++        ts: 1_000 + n,
++        kind: "pre_tool",
++        agentId: SESSION,
++        agentType: null,
++        parentAgentId: null,
++        parentSource: null,
++        tool: "Bash",
++        description: null,
++        paths: [],
++        op: null,
++        ok: null,
++        notificationKind: null,
++        ...over,
++      } as AstirEvent,
++      CWD,
++    );
++  /** One `claude agents --json` answer, begun at `startedAt`, folded in now. */
++  const poll = (status: string | null, waitingFor?: string, startedAt: number = t) => {
++    const row: Record<string, unknown> = { sessionId: SESSION, cwd: CWD, pid: 4242, status, name: "repo" };
++    if (waitingFor !== undefined) row.waitingFor = waitingFor;
++    const rows = parseAgentsJson(JSON.stringify([row]));
++    registry.reconcile(rows, { provider: "claude", complete: true, observedAt: startedAt } as never);
++  };
++  const pulse = async () => {
++    registry.tick();
++    await loop.pulse();
++  };
++  const agent = (id = SESSION) => registry.get(SESSION)?.agents.get(id);
++  const begun = () => {
++    const r = registry as unknown as { blocksBegun?: () => number };
++    return typeof r.blocksBegun === "function" ? r.blocksBegun() : ingestBlocked;
++  };
++  return {
++    registry,
++    loop,
++    sent,
++    hook,
++    codexHook,
++    raw,
++    poll,
++    pulse,
++    agent,
++    begun,
++    at: (ms: number) => {
++      t = ms;
++    },
++    now,
++  };
++}
++type H = ReturnType<typeof harness>;
++const story = (h: H) => h.sent.map((e) => `${e.kind}:${who(e)}@${Math.round(e.ts / 100) / 10}`);
++const st = (h: H, id = SESSION) => {
++  const a = h.agent(id);
++  return a ? `${a.state}${a.blockedReason ? `(${a.blockedReason})` : ""}` : "none";
++};
++
++type Screen = (at: number) => [string | null, string?];
++const DLG =
++  (from: number, to: number, after: [string | null, string?] = ["busy"]): Screen =>
++  (at) =>
++    at >= from && at < to ? ["waiting", DIALOG] : after;
++
++/**
++ * The daemon's cadence on one clock: each hook at its time; a poll begun every
++ * 5 s from `phase`, landing `land` ms later with what was on screen when it
++ * began (none when `screen` is null: discovery down); a tick and a pulse every
++ * second, offset by `pulseAt`. Same instant: hooks, then polls, then the pulse.
++ */
++async function run(o: {
++  hooks: Array<[number, Payload]>;
++  screen: Screen | null;
++  until: number;
++  phase?: number;
++  land?: number;
++  pulseAt?: number;
++  samples?: number[];
++}) {
++  const h = harness();
++  const steps: Array<{ at: number; order: number; go: () => unknown }> = [];
++  for (const [at, payload] of o.hooks) steps.push({ at, order: 0, go: () => h.hook(payload) });
++  if (o.screen !== null) {
++    const screen = o.screen;
++    for (let b = o.phase ?? 0; b <= o.until; b += 5_000) {
++      const [status, waitingFor] = screen(b);
++      steps.push({ at: b + (o.land ?? 300), order: 1, go: () => h.poll(status, waitingFor, b) });
++    }
++  }
++  for (let at = o.pulseAt ?? 0; at <= o.until; at += 1_000) steps.push({ at, order: 2, go: () => h.pulse() });
++  const samples: Record<string, string> = {};
++  for (const s of o.samples ?? []) steps.push({ at: s, order: 3, go: () => (samples[`@${s / 1000}`] = st(h)) });
++  steps.sort((a, b) => a.at - b.at || a.order - b.order);
++  for (const s of steps) {
++    h.at(s.at);
++    await s.go();
++  }
++  return { h, samples };
++}
++const firstAlert = (h: H, w = "main") => {
++  const e = h.sent.find((x) => x.kind === "blocked" && who(x) === w);
++  return e ? e.ts : null;
++};
++const firstResolved = (h: H, w = "main", after = 0) => {
++  const e = h.sent.find((x) => x.kind === "resolved" && who(x) === w && x.ts >= after);
++  return e ? e.ts : null;
++};
++const quant = (xs: number[]) => {
++  const s = [...xs].sort((a, b) => a - b);
++  if (s.length === 0) return null;
++  return { n: s.length, min: s[0], med: s[Math.floor(s.length / 2)], max: s[s.length - 1] };
++};
++
++// ---------------------------------------------------------------------------
++describe("baselines (i)-(x)", () => {
++  it("(i) lone main Bash dialog: alert latency from the dialog (visible PR+0.4 s)", async () => {
++    // PreToolUse at 0, PR at 0.4, dialog visible 0.8, Notification PR+{6.2,6.4,6.6}; up until 60 s.
++    const lat: number[] = [];
++    const fromNotice: number[] = [];
++    let example: string[] = [];
++    for (const gap of [6_200, 6_400, 6_600])
++      for (const phase of [0, 1_000, 2_000, 3_000, 4_000])
++        for (const pulseAt of [0, 250, 500, 750]) {
++          const N = 400 + gap;
++          const { h } = await run({
++            hooks: [
++              [0, pre.payload],
++              [400, request.payload],
++              [N, notification.payload],
++              [60_500, post],
++            ],
++            screen: DLG(800, 60_000),
++            until: 70_000,
++            phase,
++            pulseAt,
++          });
++          const a = firstAlert(h);
++          if (a !== null) {
++            lat.push(a - 800);
++            fromNotice.push(a - N);
++          }
++          if (gap === 6_400 && phase === 0 && pulseAt === 0) example = story(h);
++        }
++    out("i", { alertFromDialogMs: quant(lat), alertFromNoticeMs: quant(fromNotice), runs: 60, example });
++  });
++
++  it("(i-late) the user was typing: Notification at the 12 s check", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, pre.payload],
++        [400, request.payload],
++        [12_800, notification.payload],
++        [60_500, post],
++      ],
++      screen: DLG(800, 60_000),
++      until: 70_000,
++    });
++    out("i-late", { story: story(h), alertFromDialogMs: (firstAlert(h) ?? Number.NaN) - 800 });
++  });
++
++  it("(ii) Esc at the dialog: resolved latency after Esc, and end state", async () => {
++    const lat: number[] = [];
++    const ends = new Set<string>();
++    let example: string[] = [];
++    for (const esc of [10_000, 20_300, 33_700])
++      for (const phase of [0, 1_000, 2_000, 3_000, 4_000]) {
++        const { h } = await run({
++          hooks: [
++            [0, pre.payload],
++            [400, request.payload],
++            [6_800, notification.payload],
++          ],
++          screen: (at) => (at >= 800 && at < esc ? ["waiting", DIALOG] : at >= esc ? ["idle"] : ["busy"]),
++          until: 200_000,
++          phase,
++        });
++        const r = firstResolved(h, "main", esc);
++        if (r !== null) lat.push(r - esc);
++        ends.add(st(h));
++        if (esc === 20_300 && phase === 0) example = story(h);
++      }
++    out("ii", {
++      resolvedAfterEscMs: quant(lat),
++      resolvedRuns: lat.length,
++      runs: 15,
++      endStates: [...ends],
++      example,
++    });
++  });
++
++  it("(ii-early) Esc before the Notification (3 s), and right after it (6.9 s)", async () => {
++    for (const esc of [3_000, 6_900]) {
++      const { h } = await run({
++        hooks: [
++          [0, pre.payload],
++          [400, request.payload],
++          ...(esc > 6_800 ? ([[6_800, notification.payload]] as Array<[number, Payload]>) : []),
++        ],
++        screen: (at) => (at >= 800 && at < esc ? ["waiting", DIALOG] : at >= esc ? ["idle"] : ["busy"]),
++        until: 120_000,
++        phase: 1_000,
++      });
++      out(`ii-esc@${esc / 1000}`, { story: story(h), end: st(h) });
++    }
++  });
++
++  it("(iii) approval: short tool, long tool, and approval just after the Notification", async () => {
++    const cases: Record<string, { approve: number; postAt: number }> = {
++      "short@20": { approve: 20_000, postAt: 20_500 },
++      "long@20-200": { approve: 20_000, postAt: 200_000 },
++      "long@7.1-200": { approve: 7_100, postAt: 200_000 },
++      "short@7.1": { approve: 7_100, postAt: 7_600 },
++    };
++    for (const [name, c] of Object.entries(cases)) {
++      const { h } = await run({
++        hooks: [
++          [0, pre.payload],
++          [400, request.payload],
++          [6_800, notification.payload],
++          [c.postAt, post],
++        ],
++        screen: (at) => (at >= 800 && at < c.approve ? ["waiting", DIALOG] : ["busy"]),
++        until: 240_000,
++        phase: 2_000,
++      });
++      out(`iii-${name}`, { story: story(h), end: st(h) });
++    }
++  });
++
++  it("(iv) auto mode: the classifier approves, no PermissionRequest, no Notification", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, pre.payload],
++        [300, post],
++      ],
++      screen: () => ["busy"],
++      until: 60_000,
++    });
++    out("iv", { story: story(h), end: st(h) });
++  });
++
++  it("(v) a subagent's dialog: approved at 30 s, the subagent works on to 200 s", async () => {
++    for (const subAfter of ["working", "quick"]) {
++      const hooks: Array<[number, Payload]> = [
++        [0, spawn],
++        [1_000, subPre(SUB)],
++        [1_400, subClaim(SUB)],
++        [7_800, notification.payload],
++        [30_500, subPost(SUB)],
++      ];
++      if (subAfter === "working") {
++        for (let at = 40_000; at < 200_000; at += 10_000) {
++          hooks.push([at, subPre(SUB, `toolu_w${at}`)]);
++          hooks.push([at + 2_000, subPost(SUB, `toolu_w${at}`)]);
++        }
++        hooks.push([200_000, spawnPost]);
++      } else hooks.push([31_000, spawnPost]);
++      const { h } = await run({
++        hooks,
++        screen: (at) => (at >= 1_800 && at < 30_000 ? ["waiting", DIALOG] : ["busy"]),
++        until: 230_000,
++        phase: 1_000,
++        samples: [60_000, 120_000],
++      });
++      out(`v-${subAfter}`, {
++        story: story(h),
++        alerts: h.sent.filter((e) => e.kind === "blocked").length,
++        subAt20: "see story",
++        end: st(h),
++        sub: st(h, SUB),
++      });
++    }
++  });
++
++  it("(v-decay) R3: the child whose dialog is up, and its parent", async () => {
++    const { h, samples } = await run({
++      hooks: [
++        [0, spawn],
++        [100, subPre(SUB)],
++        [1_100, subClaim(SUB)],
++        [7_500, notification.payload],
++      ],
++      screen: DLG(1_500, 90_000),
++      until: 100_000,
++      samples: [40_000, 95_000],
++    });
++    out("v-decay", { story: story(h), main: st(h), sub: st(h, SUB), samples });
++  });
++
++  it("(vi) a self-denied background ask alone, and before a real prompt", async () => {
++    {
++      const { h } = await run({
++        hooks: [
++          [0, subPre(BG)],
++          [100, subClaim(BG)],
++          [300, subPre(BG, "toolu_bg2")],
++        ],
++        screen: () => ["busy"],
++        until: 60_000,
++      });
++      out("vi-alone", { story: story(h), main: st(h), bg: st(h, BG) });
++    }
++    // with a real main prompt: delay vs the same run without the bg ask
++    const deltas: number[] = [];
++    let lost = 0;
++    let bgAlerts = 0;
++    for (const bgAt of [500, 1_500, 3_000, 5_000, 6_300])
++      for (const phase of [0, 2_000, 4_000]) {
++        const base: Array<[number, Payload]> = [
++          [0, pre.payload],
++          [400, request.payload],
++          [6_800, notification.payload],
++          [60_500, post],
++        ];
++        const bg: Array<[number, Payload]> = [
++          [bgAt, subPre(BG, "toolu_bg")],
++          [bgAt + 100, subClaim(BG)],
++          [bgAt + 2_000, subPre(BG, "toolu_bg2")],
++        ];
++        const a = await run({ hooks: [...base, ...bg], screen: DLG(800, 60_000), until: 70_000, phase });
++        const c = await run({ hooks: base, screen: DLG(800, 60_000), until: 70_000, phase });
++        const fa = firstAlert(a.h);
++        const fc = firstAlert(c.h);
++        if (fa === null) lost++;
++        else if (fc !== null) deltas.push(fa - fc);
++        bgAlerts += a.h.sent.filter((e) => e.kind === "blocked" && who(e) !== "main").length;
++      }
++    out("vi-with-real", { runs: 15, mainLost: lost, bgAlerts, alertDelayVsNoBgMs: quant(deltas) });
++  });
++
++  it("(vii) parallel asks from one agent: A then B, B shown after A is approved", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, pre.payload],
++        [400, request.payload],
++        [100, { ...pre.payload, tool_use_id: "toolu_B" }],
++        [700, request.payload],
++        [6_800, notification.payload], // A's
++        [10_500, post], // A approved at 10 s; B on screen from 10 s
++        [16_400, notification.payload], // B's
++        [40_500, { ...post, tool_use_id: "toolu_B" }], // B approved at 40 s
++      ],
++      screen: DLG(800, 40_000),
++      until: 60_000,
++      phase: 1_000,
++    });
++    out("vii", { story: story(h), end: st(h), note: "B visible from 10.0 s" });
++  });
++
++  it("(viii) discovery down: alert, then Esc (no listing at all)", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, pre.payload],
++        [400, request.payload],
++        [6_800, notification.payload],
++      ],
++      screen: null,
++      until: 200_000,
++    });
++    out("viii", { story: story(h), end: st(h), note: "Esc at 20 s; nothing reports it" });
++  });
++
++  it("(x) Codex: auto-reviewed request, Esc (Interrupt), human approval at 40 s", async () => {
++    const seq = async (name: string, steps: Array<[number, Payload]>, until: number) => {
++      const h = harness();
++      const all: Array<{ at: number; order: number; go: () => unknown }> = steps.map(([at, p]) => ({
++        at,
++        order: 0,
++        go: () => h.codexHook(p),
++      }));
++      for (let at = 0; at <= until; at += 1_000) all.push({ at, order: 2, go: () => h.pulse() });
++      all.sort((a, b) => a.at - b.at || a.order - b.order);
++      for (const s of all) {
++        h.at(s.at);
++        await s.go();
++      }
++      const sid = String(steps[0]?.[1].session_id);
++      const a = h.registry.get(sid)?.agents.get(sid);
++      out(`x-${name}`, {
++        story: h.sent.map((e) => `${e.kind}@${Math.round(e.ts / 100) / 10}`),
++        end: a ? `${a.state}${a.blockedReason ? `(${a.blockedReason})` : ""}` : "none",
++      });
++    };
++    const ps = codexCap.permissionSequence ?? [];
++    await seq(
++      "auto-reviewed",
++      ps.map((s) => [s.afterMs, s.payload]),
++      60_000,
++    );
++    const es = codexCap.escSequence ?? [];
++    await seq(
++      "esc",
++      es.map((s) => [s.afterMs, s.payload]),
++      60_000,
++    );
++    await seq(
++      "human@40",
++      [
++        [0, ps[0]?.payload ?? {}],
++        [63, ps[1]?.payload ?? {}],
++        [40_000, ps[2]?.payload ?? {}],
++      ],
++      90_000,
++    );
++  });
++});
++
++// ---------------------------------------------------------------------------
++describe("hunt S1-S8", () => {
++  it("S1 + control", async () => {
++    const s1 = await run({
++      hooks: [
++        [0, subPre(SUB)],
++        [0, subClaim(SUB)],
++        [3_000, pre.payload],
++        [3_000, request.payload],
++        [8_500, request.payload],
++        [9_400, notification.payload],
++        [61_000, post],
++        [66_200, notification.payload],
++        [120_000, subPost(SUB)],
++      ],
++      screen: (at) => (at >= 3_400 && at < 90_000 ? ["waiting", DIALOG] : ["busy"]),
++      until: 130_000,
++      phase: 4_000,
++    });
++    out("S1", { story: story(s1.h), end: st(s1.h), sub: st(s1.h, SUB) });
++    const c = await run({
++      hooks: [
++        [0, subPre(SUB)],
++        [0, subClaim(SUB)],
++        [3_000, pre.payload],
++        [3_000, request.payload],
++        [9_400, notification.payload],
++        [61_000, post],
++        [120_000, subPost(SUB)],
++      ],
++      screen: (at) => (at >= 3_400 && at < 60_000 ? ["waiting", DIALOG] : ["busy"]),
++      until: 130_000,
++      phase: 4_000,
++    });
++    out("S1-control", { story: story(c.h), end: st(c.h) });
++  });
++
++  for (const dead of [false, true])
++    it(`S2 dead=${dead}`, async () => {
++      const { h } = await run({
++        hooks: [
++          [0, pre.payload],
++          [0, request.payload],
++          [300, request.payload],
++          ...(dead
++            ? ([
++                [3_000, subPre(SUB2)],
++                [3_000, subClaim(SUB2)],
++                [45_000, subPre(SUB2, "toolu_bg2")],
++              ] as Array<[number, Payload]>)
++            : []),
++          [6_400, notification.payload],
++          [21_000, post],
++          [26_200, notification.payload],
++        ],
++        screen: DLG(400, 200_000),
++        until: 180_000,
++        phase: 1_000,
++      });
++      out(`S2 dead=${dead}`, { story: story(h), end: st(h) });
++    });
++
++  it("S2b", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, pre.payload],
++        [0, request.payload],
++        [3_000, subPre(SUB2)],
++        [3_000, subClaim(SUB2)],
++        [21_000, post],
++        [22_000, { ...pre.payload, tool_name: "ExitPlanMode", tool_use_id: "toolu_plan" }],
++        [45_000, subPre(SUB2, "toolu_bg2")],
++      ],
++      screen: (at) => ((at >= 400 && at < 20_000) || (at >= 22_400 && at < 90_000) ? ["waiting", DIALOG] : ["busy"]),
++      until: 90_000,
++      phase: 1_000,
++    });
++    out("S2b", { story: story(h), end: st(h) });
++  });
++
++  for (const notice of [true, false])
++    it(`S3 notice=${notice}`, async () => {
++      const { h } = await run({
++        hooks: [
++          [0, pre.payload],
++          [0, request.payload],
++          [2_000, subPre(SUB)],
++          [2_000, subClaim(SUB)],
++          ...(notice ? ([[10_200, notification.payload]] as Array<[number, Payload]>) : []),
++          [31_000, subPost(SUB)],
++          [64_000, post],
++        ],
++        screen: DLG(400, 30_000),
++        until: 70_000,
++        phase: 1_000,
++      });
++      out(`S3 notice=${notice}`, { story: story(h), end: st(h), sub: st(h, SUB) });
++    });
++
++  it("S4 dead subagent while another's dialog is up (600 s)", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(spawn);
++    h.at(100);
++    h.hook(subPre(SUB));
++    h.at(5_000);
++    h.hook(subPost(SUB));
++    h.at(10_000);
++    h.hook(subPre(SUB2));
++    h.hook(subClaim(SUB2));
++    h.at(16_200);
++    h.hook(notification.payload);
++    for (let at = 11_000; at <= 600_000; at += 5_000) {
++      h.at(at + 300);
++      h.poll("waiting", DIALOG, at);
++      h.at(at + 1_000);
++      await h.pulse();
++    }
++    out("S4", { sub: st(h, SUB), subActiveMs: h.agent(SUB)?.activeMs, main: st(h), sub2: st(h, SUB2) });
++  });
++
++  it("S4b agent_needs_input, Esc (1 h)", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(spawn);
++    h.at(100);
++    h.hook(subPre(SUB));
++    h.at(5_000);
++    h.hook(subPost(SUB));
++    h.at(6_000);
++    h.hook(needsInput);
++    for (let at = 10_000; at <= 3_600_000; at += 5_000) {
++      h.at(at + 300);
++      h.poll("idle", undefined, at);
++      h.at(at + 1_000);
++      await h.pulse();
++    }
++    out("S4b", { main: st(h), sub: st(h, SUB), alerts: h.sent.filter((e) => e.kind === "blocked").length });
++  });
++
++  it("S4c Codex sibling (16 min)", () => {
++    const h = harness();
++    h.raw({ agentId: "cx-sub", kind: "post_tool", tool: "shell" }, "codex");
++    h.raw({ kind: "notification", notificationKind: "permission_prompt", tool: null }, "codex");
++    h.at(16 * 60_000);
++    h.registry.tick();
++    out("S4c", { sibling: st(h, "cx-sub"), main: st(h) });
++  });
++
++  it("S5 agent_needs_input during a permission dialog, then Esc", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre.payload);
++    h.hook(request.payload);
++    h.at(1_300);
++    h.poll("waiting", DIALOG, 1_000);
++    h.at(3_000);
++    await h.loop.pulse();
++    h.hook(needsInput);
++    h.at(4_300);
++    h.poll("idle", undefined, 4_000);
++    for (let at = 5_000; at <= 120_000; at += 1_000) {
++      h.at(at);
++      await h.pulse();
++    }
++    out("S5", { story: story(h), end: st(h) });
++  });
++
++  it("S5b agent_needs_input first, then the permission Notification, then Esc", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre.payload);
++    h.hook(request.payload);
++    h.at(500);
++    h.hook(needsInput);
++    h.at(6_400);
++    h.hook(notification.payload);
++    const mid = st(h);
++    for (let at = 7_000; at <= 9_000; at += 1_000) {
++      h.at(at);
++      await h.pulse();
++    }
++    for (let at = 10_000; at <= 20_000; at += 5_000) {
++      h.at(at + 300);
++      h.poll("idle", undefined, at);
++      h.at(at + 1_000);
++      await h.pulse();
++    }
++    out("S5b", { mid, story: story(h), end: st(h) });
++  });
++
++  it("S6a discovery down: Notification path alone", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre.payload);
++    h.hook(request.payload);
++    for (let at = 1_000; at <= 6_000; at += 1_000) {
++      h.at(at);
++      await h.pulse();
++    }
++    h.at(6_400);
++    h.hook(notification.payload);
++    h.at(7_000);
++    await h.pulse();
++    h.at(12_000);
++    await h.pulse();
++    out("S6a", { story: story(h), stateSince: h.agent()?.stateSince });
++  });
++
++  it("S6b/S6c who a claimless Notification blocks", () => {
++    {
++      const h = harness();
++      h.at(0);
++      h.hook(subPre(SUB));
++      h.hook(subClaim(SUB));
++      h.at(9_999);
++      h.hook(pre.payload);
++      h.at(16_000);
++      const r = h.hook(notification.payload);
++      out("S6b", { blocked: r?.becameBlocked?.agentId === SESSION ? "main" : (r?.becameBlocked?.agentId ?? null), stateSince: h.agent()?.stateSince });
++    }
++    {
++      const h = harness();
++      h.at(0);
++      h.hook(subPre(SUB));
++      h.hook(subClaim(SUB));
++      h.at(1_000);
++      h.hook(pre.payload);
++      h.at(7_600);
++      const r = h.hook(notification.payload);
++      out("S6c", { blocked: r?.becameBlocked?.agentId === SESSION ? "main" : (r?.becameBlocked?.agentId ?? null), stateSince: h.agent()?.stateSince });
++    }
++  });
++
++  it("S6d masked session (input needed throughout)", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, pre.payload],
++        [0, request.payload],
++        [2_000, subPre(SUB)],
++        [2_000, subClaim(SUB)],
++        [6_400, notification.payload],
++        [30_000, post],
++        [35_700, notification.payload],
++      ],
++      screen: () => ["waiting", "input needed"],
++      until: 60_000,
++      phase: 1_000,
++    });
++    out("S6d", { story: story(h), end: st(h), sub: st(h, SUB) });
++  });
++
++  it("S7 blocks begun for one real dialog", () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre.payload);
++    h.hook(request.payload);
++    h.at(300);
++    h.poll("busy", undefined, 0);
++    h.at(3_000);
++    h.hook(subPre(SUB2));
++    h.hook(subClaim(SUB2));
++    h.at(5_300);
++    h.poll("waiting", DIALOG, 5_000);
++    const before = h.begun();
++    h.at(6_400);
++    h.hook(notification.payload);
++    out("S7", { before, after: h.begun(), blockedNow: h.registry.blockedCount() });
++  });
++
++  it("S2c", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, subPre(SUB)],
++        [0, subClaim(SUB)],
++        [1_000, pre.payload],
++        [1_000, request.payload],
++        [1_300, request.payload],
++        [7_600, notification.payload],
++        [61_000, post],
++        [66_200, notification.payload],
++        [300_000, subPost(SUB)],
++      ],
++      screen: DLG(1_400, 400_000),
++      until: 400_000,
++      phase: 2_000,
++    });
++    out("S2c", { story: story(h), end: st(h), sub: st(h, SUB) });
++  });
++
++  it("S8", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, pre.payload],
++        [0, request.payload],
++        [500, subPre(SUB)],
++        [500, subClaim(SUB)],
++        [6_400, notification.payload],
++        [21_000, post],
++        [41_000, subPost(SUB)],
++      ],
++      screen: DLG(400, 40_000),
++      until: 60_000,
++      phase: 0,
++    });
++    out("S8", { story: story(h), end: st(h), sub: st(h, SUB) });
++  });
++});
++
++// ---------------------------------------------------------------------------
++describe("verify R1-R6, F1, F3/F4, M19/M33, R1-min, RX/RY, DOCS", () => {
++  it("R1", async () => {
++    const rows: Record<string, unknown> = {};
++    for (const bgNext of [3_000, 5_000, 8_000, 15_000, 40_000]) {
++      const { h } = await run({
++        hooks: [
++          [0, pre.payload],
++          [0, request.payload],
++          [1_000, subPre(BG, "toolu_bg")],
++          [1_000, subClaim(BG)],
++          [6_400, notification.payload],
++          [bgNext, subPre(BG, "toolu_bg2")],
++          [60_000, post],
++        ],
++        screen: DLG(400, 59_000),
++        until: 120_000,
++        phase: 2_000,
++      });
++      rows[`bgNext=${bgNext / 1000}`] = story(h);
++    }
++    out("R1", rows);
++  });
++
++  it("R2", async () => {
++    const rows: Record<string, unknown> = {};
++    for (const bgNext of [4_000, 9_000, 20_000]) {
++      const { h } = await run({
++        hooks: [
++          [0, pre.payload],
++          [0, request.payload],
++          [3_000, subPre(BG, "toolu_bg")],
++          [3_000, subClaim(BG)],
++          [6_400, notification.payload],
++          [bgNext, subPre(BG, "toolu_bg2")],
++          [60_000, post],
++        ],
++        screen: DLG(400, 59_000),
++        until: 120_000,
++        phase: 1_000,
++      });
++      rows[`bgNext=${bgNext / 1000}`] = story(h);
++    }
++    out("R2", rows);
++  });
++
++  it("R3", async () => {
++    const { h, samples } = await run({
++      hooks: [
++        [0, { ...pre.payload, tool_name: "Agent", tool_use_id: "toolu_task", tool_input: { prompt: "x" } }],
++        [100, subPre(SUB)],
++        [1_100, subClaim(SUB)],
++        [7_500, notification.payload],
++      ],
++      screen: DLG(1_500, 90_000),
++      until: 100_000,
++      samples: [40_000, 95_000],
++    });
++    out("R3", { story: story(h), main: st(h), sub: st(h, SUB), samples });
++  });
++
++  it("R4", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, pre.payload],
++        [0, request.payload],
++        [5_500, needsInput],
++      ],
++      screen: (at) => (at >= 400 && at < 6_000 ? ["waiting", DIALOG] : ["idle"]),
++      until: 200_000,
++      phase: 1_000,
++    });
++    out("R4", { story: story(h), end: st(h) });
++  });
++
++  it("R5", async () => {
++    const rows: Record<string, unknown> = {};
++    for (const dlgAt of [6_000, 9_000, 12_000, 30_000]) {
++      const { h } = await run({
++        hooks: [
++          [0, pre.payload],
++          [0, request.payload],
++        ],
++        screen: (at) => (at >= dlgAt && at < dlgAt + 30_000 ? ["waiting", DIALOG] : ["busy"]),
++        until: 120_000,
++        phase: 1_000,
++      });
++      rows[`dlgAt=${dlgAt / 1000}`] = story(h);
++    }
++    out("R5", rows);
++  });
++
++  it("R6 sweep (120 runs)", async () => {
++    let lost = 0;
++    let bgAlerts = 0;
++    let resolvedWhileUp = 0;
++    let total = 0;
++    const lat: number[] = [];
++    for (const bgAt of [500, 1_500, 3_000, 5_000])
++      for (const bgDelay of [2_000, 4_000, 6_000, 8_000, 12_000, 20_000])
++        for (const phase of [0, 1_000, 2_000, 3_000, 4_000]) {
++          const { h } = await run({
++            hooks: [
++              [0, pre.payload],
++              [0, request.payload],
++              [bgAt, subPre(BG, "toolu_bg")],
++              [bgAt, subClaim(BG)],
++              [6_400, notification.payload],
++              [bgAt + bgDelay, subPre(BG, "toolu_bg2")],
++              [60_000, post],
++            ],
++            screen: DLG(400, 59_000),
++            until: 70_000,
++            phase,
++          });
++          total++;
++          const a = firstAlert(h);
++          if (a === null) lost++;
++          else lat.push(a);
++          bgAlerts += h.sent.filter((e) => e.kind === "blocked" && who(e) !== "main").length;
++          resolvedWhileUp += h.sent.filter((e) => e.kind === "resolved" && e.ts < 59_000).length;
++        }
++    out("R6", { total, mainNeverAlerted: lost, bgAlerts, resolvedWhileUp, mainFirstAlertMs: quant(lat) });
++  });
++
++  it("F1 variants (10-minute approved tool)", async () => {
++    const longTool = 10 * 60_000;
++    const base: Array<[number, Payload]> = [
++      [0, pre.payload],
++      [0, request.payload],
++      [longTool, post],
++    ];
++    const cases: Record<string, { ev: Array<[number, Payload]>; screen: Screen }> = {
++      control: { ev: base, screen: DLG(400, 4_000) },
++      P2_bg_claim_then_next_event: {
++        ev: [...base, [3_000, subPre(SUB, "toolu_s")], [3_000, subClaim(SUB)], [3_500, subPre(SUB, "toolu_s2")]],
++        screen: DLG(400, 4_000),
++      },
++      P3_queued_sub_answered_5s: {
++        ev: [...base, [3_000, subPre(SUB, "toolu_s")], [3_000, subClaim(SUB)], [5_500, subPost(SUB, "toolu_s")]],
++        screen: DLG(400, 5_000),
++      },
++      P4_sub_dialog_still_up_at_6s: {
++        ev: [...base, [3_000, subPre(SUB, "toolu_s")], [3_000, subClaim(SUB)], [21_500, subPost(SUB, "toolu_s")]],
++        screen: DLG(400, 21_000),
++      },
++    };
++    const rows: Record<string, unknown> = {};
++    for (const [name, c] of Object.entries(cases)) {
++      const { h } = await run({ hooks: c.ev, screen: c.screen, until: longTool - 1_000, phase: 1_000 });
++      rows[name] = { end: st(h), story: story(h) };
++    }
++    out("F1", rows);
++  });
++
++  it("F3 busy path (non-blocking notifications after a seen dialog)", async () => {
++    const rows: Record<string, unknown> = {};
++    for (const nt of ["plugin_notification", "idle_prompt", "agent_completed"]) {
++      const h = harness();
++      h.at(0);
++      h.hook(pre.payload);
++      h.hook(request.payload);
++      h.at(6_300);
++      h.poll("waiting", DIALOG, 6_000);
++      h.at(6_500);
++      h.hook({ ...notification.payload, notification_type: nt, message: "m" });
++      for (let at = 11_000; at <= 120_000; at += 5_000) {
++        h.at(at + 300);
++        h.poll("busy", undefined, at);
++        h.at(at + 1_000);
++        await h.pulse();
++      }
++      rows[nt] = { end: st(h), story: story(h) };
++    }
++    out("F3", rows);
++  });
++
++  it("F4 FileChanged around the dialog", async () => {
++    const rows: Record<string, unknown> = {};
++    for (const fcAt of [500, 2_000, 5_000, 6_000, 7_000, 30_000]) {
++      const h = harness();
++      const steps: Array<[number, () => unknown]> = [
++        [0, () => (h.hook(pre.payload), h.hook(request.payload))],
++        [fcAt, () => h.hook(fileChanged)],
++        [4_300, () => h.poll("waiting", DIALOG, 4_000)],
++        [5_000, () => h.loop.pulse()],
++        [6_400, () => h.hook(notification.payload)],
++      ];
++      steps.sort((a, b) => a[0] - b[0]);
++      for (const [at, go] of steps) {
++        h.at(at);
++        await go();
++      }
++      for (let at = 9_000; at <= 130_000; at += 5_000) {
++        h.at(at + 300);
++        h.poll("waiting", DIALOG, at);
++        h.at(at + 1_000);
++        await h.pulse();
++      }
++      rows[`fc@${fcAt / 1000}`] = { end: st(h), stateSince: h.agent()?.stateSince, story: story(h) };
++    }
++    out("F4", rows);
++  });
++
++  it("M19 / M33", async () => {
++    {
++      const h = harness();
++      h.at(0);
++      h.hook(pre.payload);
++      h.hook(request.payload);
++      h.at(1_300);
++      h.poll("waiting", DIALOG, 1_000);
++      h.at(6_300);
++      h.poll("idle", undefined, 6_000);
++      h.at(8_300);
++      h.poll("waiting", DIALOG, 8_000);
++      h.at(8_400);
++      await h.loop.pulse();
++      out("M19", { end: st(h), story: story(h) });
++    }
++    {
++      const h = harness();
++      h.at(0);
++      h.hook(notification.payload);
++      h.at(2_000);
++      h.hook(request.payload);
++      h.at(2_300);
++      h.poll("waiting", DIALOG, 1_000);
++      h.at(6_300);
++      h.poll("busy", undefined, 6_000);
++      out("M33", { end: st(h) });
++    }
++  });
++
++  it("R1-min", async () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre.payload);
++    h.hook(request.payload);
++    h.at(300);
++    h.poll("busy", undefined, 0);
++    h.at(1_000);
++    await h.loop.pulse();
++    h.at(3_000);
++    h.hook(subPre(BG, "toolu_bg"));
++    h.hook(subClaim(BG));
++    h.at(5_300);
++    h.poll("waiting", DIALOG, 5_000);
++    h.at(6_000);
++    await h.loop.pulse();
++    h.at(6_400);
++    h.hook(notification.payload);
++    h.at(7_000);
++    h.hook(subPre(BG, "toolu_bg2"));
++    await h.loop.pulse();
++    for (let at = 10_000; at <= 55_000; at += 5_000) {
++      h.at(at + 300);
++      h.poll("waiting", DIALOG, at);
++      h.at(at + 1_000);
++      await h.pulse();
++    }
++    out("R1-min", { main: st(h), bg: st(h, BG), story: story(h) });
++  });
++
++  it("RX / RY / RX2 / RX3", async () => {
++    {
++      const h = harness();
++      h.at(0);
++      h.hook(pre.payload);
++      h.hook(notification.payload);
++      h.at(1_000);
++      await h.loop.pulse();
++      h.at(3_000);
++      h.hook(subPre(SUB, "toolu_s"));
++      h.hook(subClaim(SUB));
++      h.at(5_000);
++      await h.loop.pulse();
++      h.at(10_000);
++      h.hook(request.payload);
++      h.at(11_000);
++      await h.loop.pulse();
++      h.at(12_000);
++      h.hook(notification.payload);
++      h.at(13_000);
++      await h.loop.pulse();
++      out("RX", { main: st(h), sub: st(h, SUB), story: story(h) });
++    }
++    {
++      const h = harness();
++      h.at(0);
++      h.hook(pre.payload);
++      h.hook(request.payload);
++      h.at(1_000);
++      h.hook(subPre(SUB, "toolu_s"));
++      h.hook(subClaim(SUB));
++      h.at(1_300);
++      h.poll("waiting", DIALOG, 500);
++      h.at(3_000);
++      h.hook(request.payload);
++      h.at(5_300);
++      h.poll("waiting", DIALOG, 5_000);
++      h.at(6_000);
++      await h.loop.pulse();
++      h.at(6_400);
++      h.hook(notification.payload);
++      h.at(7_000);
++      await h.loop.pulse();
++      out("RY", { main: st(h), sub: st(h, SUB), story: story(h) });
++    }
++    {
++      const h = harness();
++      h.at(0);
++      h.hook(pre.payload);
++      h.hook(request.payload);
++      h.at(6_400);
++      h.hook(notification.payload);
++      h.at(7_000);
++      await h.loop.pulse();
++      h.hook(subPre(SUB, "toolu_s"));
++      h.hook(subClaim(SUB));
++      h.at(13_000);
++      h.hook(request.payload);
++      h.at(14_000);
++      h.hook(notification.payload);
++      h.at(15_000);
++      await h.loop.pulse();
++      out("RX2", { main: st(h), sub: st(h, SUB), story: story(h) });
++    }
++    {
++      const h = harness();
++      h.at(0);
++      h.hook(subPre(SUB, "toolu_s"));
++      h.hook(subClaim(SUB));
++      h.hook(pre.payload);
++      h.at(3_000);
++      h.hook(request.payload);
++      h.at(4_000);
++      h.hook(notification.payload);
++      const at4 = `${st(h)} | sub ${st(h, SUB)}`;
++      h.at(5_500);
++      h.hook(notification.payload);
++      out("RX3", { at4, at55: `${st(h)} | sub ${st(h, SUB)}`, stateSince: h.agent()?.stateSince });
++    }
++  });
++
++  it("VR3-86-3 DOCS: lone young claim", () => {
++    const h = harness();
++    h.at(0);
++    h.hook(pre.payload);
++    h.at(3_000);
++    h.hook(subPre(SUB));
++    h.hook(subClaim(SUB));
++    h.at(6_400);
++    h.hook(notification.payload);
++    out("DOCS", { main: st(h), sub: st(h, SUB), mainSince: h.agent()?.stateSince });
++  });
++
++  it("healthz counter: blocks begun (ingest + listing)", () => {
++    const h = harness();
++    h.hook(pre.payload);
++    h.at(100);
++    h.hook(notification.payload);
++    h.at(200);
++    h.hook({ ...pre.payload, tool_use_id: "toolu_2" });
++    h.at(300);
++    h.hook(notification.payload);
++    h.at(400);
++    h.hook(notification.payload);
++    const plain = h.begun();
++    h.at(1_000);
++    h.hook({ ...pre.payload, tool_use_id: "toolu_3" });
++    h.hook(request.payload);
++    h.at(2_300);
++    h.poll("waiting", DIALOG, 2_000);
++    h.at(7_300);
++    h.poll("idle", undefined, 7_000);
++    h.at(8_000);
++    h.hook({ ...pre.payload, tool_use_id: "toolu_4" });
++    h.at(8_100);
++    h.hook(notification.payload);
++    out("healthz", { twoPlainPlusDuplicate: plain, afterListingSeenEscAndAPlain: h.begun() });
++  });
++});
++
++// ---------------------------------------------------------------------------
++describe("skeptics: F1R, F3R, F4 P1-P5, F2 refute, MONO", () => {
++  const f1base = (bAt: number, withPre: boolean, subAt = 0, subPostAt = 120_000): Array<[number, Payload]> => [
++    [subAt, subPre(SUB)],
++    [subAt, subClaim(SUB)],
++    [3_000, pre.payload],
++    [3_000, request.payload],
++    ...(withPre ? ([[bAt, { ...pre.payload, tool_use_id: "toolu_B" }]] as Array<[number, Payload]>) : []),
++    [bAt, request.payload],
++    [9_400, notification.payload],
++    [61_000, post],
++    [66_200, notification.payload],
++    [subPostAt, subPost(SUB)],
++  ];
++  it("F1R V0-V6", async () => {
++    const rows: Record<string, unknown> = {};
++    const go = async (label: string, hooks: Array<[number, Payload]>) => {
++      const { h } = await run({
++        hooks: hooks.map(([t, p]) => [Math.max(0, t), p] as [number, Payload]),
++        screen: (at) => (at >= 3_400 && at < 90_000 ? ["waiting", DIALOG] : ["busy"]),
++        until: 130_000,
++        phase: 4_000,
++      });
++      rows[label] = { story: story(h), main: st(h), sub: st(h, SUB) };
++    };
++    await go("V0", f1base(8_500, false));
++    await go("V1", f1base(8_500, true));
++    await go("V2", f1base(4_300, false));
++    await go("V3", f1base(4_500, false));
++    await go("V4", f1base(8_500, false, -7_000));
++    await go("V5", f1base(8_500, false, 0, 5_000));
++    await go("V6", f1base(8_500, false).slice(2).filter(([t]) => t !== 120_000));
++    out("F1R", rows);
++  });
++
++  it("F3R V0, V1, V2, V2-control, V0-resend", async () => {
++    const rows: Record<string, unknown> = {};
++    const read = { ...pre.payload, tool_name: "Read", tool_use_id: "toolu_read" };
++    const readPost = { ...read, hook_event_name: "PostToolUse", tool_response: {} };
++    const cases: Record<string, { hooks: Array<[number, Payload]>; from: number }> = {
++      V0: {
++        hooks: [
++          [0, pre.payload],
++          [0, request.payload],
++          [300, request.payload],
++          [3_000, subPre(SUB2)],
++          [3_000, subClaim(SUB2)],
++          [45_000, subPre(SUB2, "toolu_bg2")],
++          [6_400, notification.payload],
++          [21_000, post],
++          [26_200, notification.payload],
++        ],
++        from: 400,
++      },
++      V1: {
++        hooks: [
++          [0, pre.payload],
++          [0, request.payload],
++          [500, subPre(SUB2)],
++          [500, subClaim(SUB2)],
++          [6_400, notification.payload],
++          [45_000, subPre(SUB2, "toolu_bg2")],
++        ],
++        from: 400,
++      },
++      V2: {
++        hooks: [
++          [0, read],
++          [0, pre.payload],
++          [400, request.payload],
++          [800, subPre(SUB2)],
++          [800, subClaim(SUB2)],
++          [900, readPost],
++          [6_600, notification.payload],
++          [45_000, subPre(SUB2, "toolu_bg2")],
++        ],
++        from: 800,
++      },
++      "V2-control": {
++        hooks: [
++          [0, read],
++          [0, pre.payload],
++          [400, request.payload],
++          [900, readPost],
++          [6_600, notification.payload],
++        ],
++        from: 800,
++      },
++      "V0-resend": {
++        hooks: [
++          [0, pre.payload],
++          [0, request.payload],
++          [300, request.payload],
++          [3_000, subPre(SUB2)],
++          [3_000, subClaim(SUB2)],
++          [45_000, subPre(SUB2, "toolu_bg2")],
++          [6_400, notification.payload],
++          [21_000, post],
++          [26_200, notification.payload],
++          [50_000, notification.payload],
++        ],
++        from: 400,
++      },
++    };
++    for (const [name, c] of Object.entries(cases)) {
++      const { h } = await run({ hooks: c.hooks, screen: DLG(c.from, 200_000), until: 180_000, phase: 1_000 });
++      rows[name] = { story: story(h), main: st(h) };
++    }
++    out("F3R", rows);
++  });
++
++  it("F4 probe P1-P5", async () => {
++    const rows: Record<string, unknown> = {};
++    {
++      const h = harness();
++      h.at(0);
++      h.raw({ kind: "pre_tool", tool: "Agent" });
++      h.at(100);
++      h.raw({ agentId: SUB, kind: "pre_tool", tool: "Bash" });
++      h.at(5_000);
++      h.raw({ agentId: SUB, kind: "post_tool", tool: "Bash" });
++      h.at(10_000);
++      h.raw({ agentId: SUB2, kind: "pre_tool", tool: "Bash" });
++      h.raw({ agentId: SUB2, kind: "notification", tool: null, notificationKind: "permission_prompt" });
++      const marks: string[] = [];
++      for (let a = 11_000; a <= 600_000; a += 5_000) {
++        h.at(a + 300);
++        h.poll("waiting", DIALOG, a);
++        h.at(a + 1_000);
++        h.registry.tick();
++        if ([31_000, 61_000, 596_000].includes(a))
++          marks.push(`t=${(a + 1_000) / 1000} main=${st(h)} SUB=${st(h, SUB)} SUB2=${st(h, SUB2)}`);
++      }
++      rows.P1 = marks;
++    }
++    {
++      const h = harness();
++      h.at(0);
++      h.raw({ kind: "pre_tool", tool: "Agent" });
++      h.at(100);
++      h.raw({ agentId: SUB, kind: "pre_tool", tool: "Bash" });
++      h.at(5_000);
++      h.raw({ agentId: SUB, kind: "post_tool", tool: "Bash" });
++      h.at(6_000);
++      h.raw({ kind: "notification", tool: null, notificationKind: "agent_needs_input" });
++      for (let a = 10_000; a <= 3_600_000; a += 5_000) {
++        h.at(a + 300);
++        h.poll("idle", undefined, a);
++        h.at(a + 1_000);
++        h.registry.tick();
++      }
++      rows.P2 = `t=1h main=${st(h)} SUB=${st(h, SUB)}`;
++    }
++    {
++      const h = harness();
++      h.raw({ agentId: SUB, kind: "post_tool", tool: "shell" }, "codex");
++      h.raw({ kind: "notification", tool: null, notificationKind: "permission_prompt" }, "codex");
++      h.at(16 * 60_000);
++      h.registry.tick();
++      rows.P3 = `t=16min main=${st(h)} SUB=${st(h, SUB)}`;
++    }
++    {
++      const h = harness();
++      h.at(0);
++      h.raw({ kind: "pre_tool", tool: "Agent" });
++      h.at(5_000);
++      h.raw({ agentId: SUB, kind: "pre_tool", tool: "Bash" });
++      h.at(10_000);
++      h.raw({ agentId: SUB2, kind: "pre_tool", tool: "Bash" });
++      h.raw({ agentId: SUB2, kind: "notification", tool: null, notificationKind: "permission_prompt" });
++      for (let a = 11_000; a <= 121_000; a += 5_000) {
++        h.at(a + 300);
++        h.poll("waiting", DIALOG, a);
++        h.at(a + 1_000);
++        h.registry.tick();
++      }
++      rows.P5 = `t=122 SUB(live build)=${st(h, SUB)} main=${st(h)}`;
++    }
++    out("F4P", rows);
++  });
++
++  it("F2 refute S2c-noparallel", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, subPre(SUB)],
++        [0, subClaim(SUB)],
++        [1_000, pre.payload],
++        [1_000, request.payload],
++        [7_600, notification.payload],
++        [61_000, post],
++        [65_000, { ...pre.payload, tool_use_id: "toolu_B" }],
++        [65_000, request.payload],
++        [71_200, notification.payload],
++        [300_000, subPost(SUB)],
++      ],
++      screen: (at) => ((at >= 1_400 && at < 60_000) || (at >= 65_400 && at < 400_000) ? ["waiting", DIALOG] : ["busy"]),
++      until: 400_000,
++      phase: 2_000,
++    });
++    out("F2-noparallel", { story: story(h), main: st(h), sub: st(h, SUB) });
++  });
++
++  it("MONO-* (refute)", async () => {
++    const rows: Record<string, unknown> = {};
++    const scenario = async (o: { reclaim: boolean; preBeforeReclaim?: boolean; subAt?: number; pollAt?: number }) => {
++      const h = harness();
++      const subAt = o.subAt ?? 1_000;
++      const pollAt = o.pollAt ?? 500;
++      h.at(0);
++      h.hook(pre.payload);
++      h.hook(request.payload);
++      const steps: Array<[number, () => void]> = [
++        [subAt, () => (h.hook(subPre(SUB, "toolu_s")), h.hook(subClaim(SUB)))],
++        [pollAt + 300, () => h.poll("waiting", DIALOG, pollAt)],
++      ];
++      if (o.reclaim)
++        steps.push([
++          3_000,
++          () => {
++            if (o.preBeforeReclaim) h.hook({ ...pre.payload, tool_use_id: "toolu_m2" });
++            h.hook(request.payload);
++          },
++        ]);
++      steps.sort((a, b) => a[0] - b[0]);
++      for (const [at, go] of steps) {
++        h.at(at);
++        go();
++      }
++      h.at(5_300);
++      h.poll("waiting", DIALOG, 5_000);
++      h.at(6_000);
++      await h.loop.pulse();
++      h.at(6_400);
++      h.hook(notification.payload);
++      h.at(7_000);
++      await h.loop.pulse();
++      return { main: st(h), sub: st(h, SUB), story: story(h) };
++    };
++    rows.RECLAIM = await scenario({ reclaim: true });
++    rows.BASE = await scenario({ reclaim: false });
++    rows.PRE = await scenario({ reclaim: true, preBeforeReclaim: true });
++    rows.SUB1500 = await scenario({ reclaim: true, subAt: 1_500 });
++    rows.POLLAFTERSUB = await scenario({ reclaim: true, pollAt: 1_200 });
++    out("MONO", rows);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Probes that omit a Notification Claude would send (a dialog up >= 6 s with
++// the user idle at it), replayed WITH it, so a Notification-driven design is
++// scored on what would really happen. Assumption, not measured: Claude sends
++// permission_prompt for these dialogs too (plan approval is unverified).
++describe("with the Notification Claude would send", () => {
++  it("S2b+notice", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, pre.payload],
++        [0, request.payload],
++        [3_000, subPre(SUB2)],
++        [3_000, subClaim(SUB2)],
++        [6_400, notification.payload],
++        [21_000, post],
++        [22_000, { ...pre.payload, tool_name: "ExitPlanMode", tool_use_id: "toolu_plan" }],
++        [28_400, notification.payload],
++        [45_000, subPre(SUB2, "toolu_bg2")],
++      ],
++      screen: (at) => ((at >= 400 && at < 20_000) || (at >= 22_400 && at < 90_000) ? ["waiting", DIALOG] : ["busy"]),
++      until: 90_000,
++      phase: 1_000,
++    });
++    out("S2b+notice", { story: story(h), end: st(h) });
++  });
++
++  it("R5+notice", async () => {
++    const rows: Record<string, unknown> = {};
++    for (const dlgAt of [6_000, 9_000, 12_000, 30_000]) {
++      const { h } = await run({
++        hooks: [
++          [0, pre.payload],
++          [0, request.payload],
++          [dlgAt + 6_000, notification.payload],
++        ],
++        screen: (at) => (at >= dlgAt && at < dlgAt + 30_000 ? ["waiting", DIALOG] : ["busy"]),
++        until: 120_000,
++        phase: 1_000,
++      });
++      rows[`dlgAt=${dlgAt / 1000}`] = { story: story(h), end: st(h) };
++    }
++    out("R5+notice", rows);
++  });
++
++  it("F1-P4+notice (sub's dialog 3.4-21 s, main's approved tool runs 10 min)", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, pre.payload],
++        [0, request.payload],
++        [3_000, subPre(SUB, "toolu_s")],
++        [3_000, subClaim(SUB)],
++        [9_400, notification.payload],
++        [21_500, subPost(SUB, "toolu_s")],
++        [600_000, post],
++      ],
++      screen: DLG(400, 21_000),
++      until: 610_000,
++      phase: 1_000,
++    });
++    out("F1-P4+notice", { story: story(h), end: st(h) });
++  });
++
++  it("S3 notice=false+notice-for-A? (A approved at 4 s: none) - SUB's Notification at 10.2 is S3 notice=true", () => {
++    out("S3-note", { note: "S3 notice=true already carries SUB's Notification" });
++  });
++
++  it("F4-1s: FileChanged (no agent) after the Notification, real cadence", async () => {
++    const rows: Record<string, unknown> = {};
++    for (const fcAt of [6_600, 7_500, 9_000, 20_000]) {
++      const { h } = await run({
++        hooks: [
++          [0, pre.payload],
++          [400, request.payload],
++          [6_800, notification.payload],
++          [fcAt, fileChanged],
++          [60_500, post],
++        ],
++        screen: DLG(800, 60_000),
++        until: 70_000,
++        phase: 1_000,
++      });
++      rows[`fc@${fcAt / 1000}`] = { story: story(h), end: st(h) };
++    }
++    out("F4-1s", rows);
++  });
++
++  it("(vi) absolute: real prompt alert time with a self-denied ask 0.5-6.3 s after it", async () => {
++    const abs: number[] = [];
++    for (const bgAt of [500, 1_500, 3_000, 5_000, 6_300])
++      for (const phase of [0, 2_000, 4_000]) {
++        const a = await run({
++          hooks: [
++            [0, pre.payload],
++            [400, request.payload],
++            [6_800, notification.payload],
++            [60_500, post],
++            [bgAt, subPre(BG, "toolu_bg")],
++            [bgAt + 100, subClaim(BG)],
++            [bgAt + 2_000, subPre(BG, "toolu_bg2")],
++          ],
++          screen: DLG(800, 60_000),
++          until: 70_000,
++          phase,
++        });
++        const fa = firstAlert(a.h);
++        if (fa !== null) abs.push(fa - 800);
++      }
++    out("vi-abs", { alertFromDialogMs: quant(abs) });
++  });
++
++  it("C+busy risk: AskUserQuestion listing lag (busy until 7.5 s, then input needed)", async () => {
++    const ask = { ...pre.payload, tool_name: "AskUserQuestion", tool_use_id: "toolu_ask" };
++    const askReq = { ...request.payload, tool_name: "AskUserQuestion" };
++    const { h } = await run({
++      hooks: [
++        [0, ask],
++        [400, askReq],
++        [6_800, notification.payload],
++        [40_500, { ...ask, hook_event_name: "PostToolUse", tool_response: {} }],
++      ],
++      screen: (at) => (at < 7_500 ? ["busy"] : at < 40_000 ? ["waiting", "input needed"] : ["busy"]),
++      until: 60_000,
++      phase: 2_000,
++    });
++    out("busy-risk-ask", { story: story(h), end: st(h) });
++  });
++});
++
++describe("G4 accounting", () => {
++  it("lone dialog: visible 0.8 s, approved 20 s, tool done 20.5 s", async () => {
++    const { h } = await run({
++      hooks: [
++        [0, pre.payload],
++        [400, request.payload],
++        [6_800, notification.payload],
++        [20_500, post],
++      ],
++      screen: (at) => (at >= 800 && at < 20_000 ? ["waiting", DIALOG] : ["busy"]),
++      until: 25_000,
++      phase: 1_000,
++    });
++    const a = h.agent();
++    out("G4", { activeMs: a?.activeMs, blockedMs: a?.blockedMs, truth: "blocked 19.2 s (0.8-20.0), active 0.8 s + 0.5 s after" });
++  });
++});

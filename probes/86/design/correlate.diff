@@ -1,0 +1,3915 @@
+# #86 candidate B (correlate the claim to its agent) — prototype diff.
+# Throwaway prototype, not for commit. Built in a worktree at 280b316.
+# Part 1: the candidate against main 07c3935 (src/, hooks/): what B would ship (it keeps 96d3367's listing plumbing:
+#         sessions.ts screen/pollInto, capabilities.listingClearsBlocks, cli pollInto, server blocksBegun, loop comment).
+# Part 2: the candidate against 96d3367 (src/ only), for comparison with the held attempt.
+# Part 3: the replay harness test/zz-c86.test.ts (tree-agnostic: runs unchanged on 07c3935, 96d3367 and this prototype).
+
+########## Part 1: git diff 07c3935 -- src hooks/hooks.json
+diff --git a/hooks/hooks.json b/hooks/hooks.json
+index f5a6127..b373c10 100644
+--- a/hooks/hooks.json
++++ b/hooks/hooks.json
+@@ -40,6 +40,23 @@
+         ]
+       }
+     ],
++    "PermissionRequest": [
++      {
++        "hooks": [
++          {
++            "type": "http",
++            "url": "http://127.0.0.1:47000/hook/claude",
++            "timeout": 5,
++            "headers": {
++              "Authorization": "Bearer $ASTIR_TOKEN"
++            },
++            "allowedEnvVars": [
++              "ASTIR_TOKEN"
++            ]
++          }
++        ]
++      }
++    ],
+     "PostToolUse": [
+       {
+         "hooks": [
+@@ -57,6 +74,23 @@
+         ]
+       }
+     ],
++    "PostToolBatch": [
++      {
++        "hooks": [
++          {
++            "type": "http",
++            "url": "http://127.0.0.1:47000/hook/claude",
++            "timeout": 5,
++            "headers": {
++              "Authorization": "Bearer $ASTIR_TOKEN"
++            },
++            "allowedEnvVars": [
++              "ASTIR_TOKEN"
++            ]
++          }
++        ]
++      }
++    ],
+     "PostToolUseFailure": [
+       {
+         "hooks": [
+diff --git a/src/adapters/claude/correlate.ts b/src/adapters/claude/correlate.ts
+new file mode 100644
+index 0000000..2ac16a2
+--- /dev/null
++++ b/src/adapters/claude/correlate.ts
+@@ -0,0 +1,121 @@
++/**
++ * #86 candidate B — which call a Claude `PermissionRequest` is about.
++ *
++ * `PermissionRequest` carries `session_id`, `tool_name` and `tool_input`, but
++ * no `tool_use_id` (measured, test/fixtures/claude/permission-request.json) —
++ * and for the main agent no `agent_id` either, since the main agent never has
++ * one. Its `tool_input` is the PreToolUse's, unchanged (same fixture). So the
++ * PreToolUse it follows is found by (session, agent if named, tool, a hash of
++ * the input); that PreToolUse carries the `tool_use_id` and the agent.
++ *
++ * SEC-01: the input is hashed here, in memory, and only the hash is kept. It is
++ * never written, never logged, never put on an event. What leaves this file is
++ * a `tool_use_id` and an agent id.
++ */
++
++import { createHash } from "node:crypto";
++import type { CallCorrelator } from "../types.js";
++
++interface OpenCall {
++  callId: string;
++  agentId: string;
++  tool: string;
++  digest: string;
++  seq: number;
++  claimed: boolean;
++}
++
++/** Calls kept per session; a session with more open calls than this is pathological. */
++const MAX_OPEN = 256;
++/** Sessions kept; the least recently touched goes first. */
++const MAX_SESSIONS = 512;
++
++/** Key-order-independent JSON, so the same input always hashes the same. */
++function stable(v: unknown): string {
++  if (v === null || typeof v !== "object") return JSON.stringify(v) ?? "null";
++  if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
++  const o = v as Record<string, unknown>;
++  return `{${Object.keys(o)
++    .sort()
++    .map((k) => `${JSON.stringify(k)}:${stable(o[k])}`)
++    .join(",")}}`;
++}
++
++function digestOf(input: unknown): string {
++  return createHash("sha256").update(stable(input)).digest("base64url").slice(0, 22);
++}
++
++export class ClaudeCallCorrelator implements CallCorrelator {
++  private sessions = new Map<string, Map<string, OpenCall>>();
++  private seq = 0;
++
++  private calls(sessionId: string): Map<string, OpenCall> {
++    let m = this.sessions.get(sessionId);
++    if (m === undefined) {
++      m = new Map();
++      this.sessions.set(sessionId, m);
++      while (this.sessions.size > MAX_SESSIONS) {
++        const oldest = this.sessions.keys().next().value;
++        if (oldest === undefined) break;
++        this.sessions.delete(oldest);
++      }
++    } else {
++      // Most recently touched last.
++      this.sessions.delete(sessionId);
++      this.sessions.set(sessionId, m);
++    }
++    return m;
++  }
++
++  open(sessionId: string, agentId: string, tool: string, input: unknown, callId: string): void {
++    const m = this.calls(sessionId);
++    m.set(callId, { callId, agentId, tool, digest: digestOf(input), seq: ++this.seq, claimed: false });
++    while (m.size > MAX_OPEN) {
++      const oldest = m.keys().next().value;
++      if (oldest === undefined) break;
++      m.delete(oldest);
++    }
++  }
++
++  /**
++   * The open, unclaimed call this ask is about.
++   *
++   * Same tool and same input hash; the agent too when the ask names one (a
++   * subagent's does, read from the 2.1.312 binary: `PermissionRequest` gets
++   * the tool-use context and so its `agent_id`). With no agent named, the main
++   * agent's call is preferred — that is whose an agent-less ask is, by the
++   * same reading — and any agent's otherwise, so this still works if the
++   * binary reading is wrong. Oldest first: asks are raised in the order their
++   * calls started. A hook that rewrote the input (PreToolUse `updatedInput`)
++   * breaks the hash, so the fallback is the same agent and tool, oldest first.
++   */
++  claim(sessionId: string, agentId: string | null, tool: string, input: unknown): { callId: string; agentId: string } | null {
++    const m = this.sessions.get(sessionId);
++    if (m === undefined) return null;
++    const d = digestOf(input);
++    const open = [...m.values()].filter((c) => !c.claimed && c.tool === tool).sort((a, b) => a.seq - b.seq);
++    const byAgent = (c: OpenCall) => agentId === null || c.agentId === agentId;
++    const exact = open.filter((c) => c.digest === d && byAgent(c));
++    let pick: OpenCall | undefined;
++    if (agentId === null) pick = exact.find((c) => c.agentId === sessionId) ?? exact[0];
++    else pick = exact[0];
++    if (pick === undefined && agentId !== null) pick = open.find((c) => c.agentId === agentId);
++    if (pick === undefined) return null;
++    pick.claimed = true;
++    return { callId: pick.callId, agentId: pick.agentId };
++  }
++
++  close(sessionId: string, callId: string): void {
++    this.sessions.get(sessionId)?.delete(callId);
++  }
++
++  closeAgent(sessionId: string, agentId: string): void {
++    const m = this.sessions.get(sessionId);
++    if (m === undefined) return;
++    for (const [id, c] of m) if (c.agentId === agentId) m.delete(id);
++  }
++
++  closeSession(sessionId: string): void {
++    this.sessions.delete(sessionId);
++  }
++}
+diff --git a/src/adapters/claude/normalize.ts b/src/adapters/claude/normalize.ts
+index 2625796..0b02414 100644
+--- a/src/adapters/claude/normalize.ts
++++ b/src/adapters/claude/normalize.ts
+@@ -31,11 +31,34 @@ import {
+  */
+ export const SPAWN_TOOLS = new Set(["Agent", "Task"]);
+ 
++/**
++ * #86 — `PermissionRequest` dates a block; it does not prove one.
++ *
++ * Before a dialog opens Claude fires `PermissionRequest` (~0.4 s after
++ * `PreToolUse`, measured); the `permission_prompt` `Notification` comes ~6 s
++ * later, and it was the only one astir listened to, so every Claude alert came
++ * ~6 s late on top of the PSH-16 dwell
++ * (test/fixtures/claude/permission-request.json).
++ *
++ * But `PermissionRequest` is not "the dialog opened". Claude also runs it for
++ * an ask that can never show one — a background agent's, a headless
++ * session's — and then denies the ask itself (read from the 2.1.312 binary).
++ * So it becomes `permission_request`, which marks the agent's dialog as
++ * claimed. The registry blocks the agent, dated from the claim, once something
++ * has SEEN the dialog: Claude's session listing reading `waiting` for a
++ * `"permission prompt"`, or the Notification, which Claude sends only while
++ * the dialog is still up.
++ *
++ * Neither hook says when a dialog ends if the human presses Esc — nothing
++ * fires at all. The listing does (`listingClearsBlocks`, registry.reconcile).
++ */
+ const KIND_BY_HOOK: Record<string, Kind> = {
+   SessionStart: "session_start",
+   PreToolUse: "pre_tool",
+   PostToolUse: "post_tool",
+   PostToolUseFailure: "tool_failed",
++  PermissionRequest: "notification",
++  PostToolBatch: "tool_batch",
+   Notification: "notification",
+   SubagentStart: "subagent_start",
+   SubagentStop: "subagent_stop",
+@@ -135,6 +158,12 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+   let paths: string[] = [];
+   let tool: string | null = null;
+   let ok: boolean | null = null;
++  // #86 candidate B — the call this event is about. An id only, never its input.
++  let callId: string | null = null;
++  let callIds: string[] = [];
++  let dialog: "permission" | "question" | null = null;
++  let eventAgentId = agentId;
++  const toolUseId = typeof p.tool_use_id === "string" && p.tool_use_id.length <= 256 ? p.tool_use_id : null;
+ 
+   if (kind === "pre_tool" || kind === "post_tool" || kind === "tool_failed") {
+     tool = typeof p.tool_name === "string" ? p.tool_name : null;
+@@ -153,8 +182,28 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+     // as its own event KIND rather than as ok:false, so `ok` is derivable
+     // rather than guessed. The error was documentation, not behaviour.
+     ok = kind === "tool_failed" ? false : kind === "post_tool" ? true : null;
++    callId = toolUseId;
++    if (callId !== null && tool !== null) {
++      if (kind === "pre_tool") deps.correlator?.open(sessionId, agentId, tool, p.tool_input, callId);
++      else deps.correlator?.close(sessionId, callId);
++    }
+   }
+ 
++  if (kind === "tool_batch") {
++    // Only the ids. tool_input and tool_response ride along in this payload and
++    // are never read (SEC-01).
++    const calls = Array.isArray(p.tool_calls) ? (p.tool_calls as unknown[]) : [];
++    for (const c of calls.slice(0, 256)) {
++      const id = (c as { tool_use_id?: unknown } | null)?.tool_use_id;
++      if (typeof id === "string" && id.length <= 256) {
++        callIds.push(id);
++        deps.correlator?.close(sessionId, id);
++      }
++    }
++  }
++  if (kind === "stop" || kind === "subagent_stop") deps.correlator?.closeAgent(sessionId, agentId);
++  if (kind === "session_end") deps.correlator?.closeSession(sessionId);
++
+   if (kind === "file_changed") {
+     const fp = typeof p.file_path === "string" ? p.file_path : null;
+     if (fp !== null && cwd) {
+@@ -177,7 +226,26 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+   }
+ 
+   let notificationKind: NotificationKind | null = null;
+-  if (kind === "notification") {
++  if (hookName === "PermissionRequest") {
++    // It carries no `notification_type`, and read like a Notification it would
++    // come out `other` and be lost. Nor is it `permission_prompt`: Claude fires
++    // it for asks that never reach a screen too, so it marks a dialog the
++    // registry has not yet seen (`permission_request`). Whatever the tool —
++    // `AskUserQuestion` fires it as well, and that is a question the human must
++    // answer just the same. The tool is not carried: the PreToolUse before it
++    // already named it.
++    notificationKind = "permission_request";
++    // #86 candidate B — whose call, exactly: the PreToolUse it follows names
++    // the call and the agent. AskUserQuestion's dialog reads differently in
++    // the listing ("input needed"), so it is marked as a question.
++    const toolName = typeof p.tool_name === "string" ? p.tool_name : "";
++    dialog = toolName === "AskUserQuestion" ? "question" : "permission";
++    const m = deps.correlator?.claim(sessionId, agentIdField, toolName, p.tool_input) ?? null;
++    if (m !== null) {
++      callId = m.callId;
++      eventAgentId = m.agentId;
++    }
++  } else if (kind === "notification") {
+     const nt = typeof p.notification_type === "string" ? p.notification_type : "";
+     notificationKind = NOTIFICATION_KINDS.has(nt) ? (nt as NotificationKind) : "other";
+   }
+@@ -209,8 +277,8 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+       sessionId,
+       ts: deps.now(),
+       kind,
+-      agentId,
+-      agentType,
++      agentId: eventAgentId,
++      agentType: eventAgentId === agentId ? agentType : null,
+       parentAgentId,
+       parentSource,
+       tool,
+@@ -219,6 +287,9 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+       op,
+       ok,
+       notificationKind,
++      callId,
++      callIds,
++      dialog,
+     },
+   };
+ }
+diff --git a/src/adapters/types.ts b/src/adapters/types.ts
+index 9d4bc36..50d8fbc 100644
+--- a/src/adapters/types.ts
++++ b/src/adapters/types.ts
+@@ -19,7 +19,22 @@ export interface SidecarMeta {
+   parentAgentId?: string;
+ }
+ 
++/**
++ * #86 candidate B — ties a PermissionRequest (which names no call) to the
++ * PreToolUse it follows. In memory only: it hashes tool_input and keeps the
++ * hash, never the input, and nothing it holds is persisted or logged (SEC-01).
++ */
++export interface CallCorrelator {
++  open(sessionId: string, agentId: string, tool: string, input: unknown, callId: string): void;
++  claim(sessionId: string, agentId: string | null, tool: string, input: unknown): { callId: string; agentId: string } | null;
++  close(sessionId: string, callId: string): void;
++  closeAgent(sessionId: string, agentId: string): void;
++  closeSession(sessionId: string): void;
++}
++
+ export interface NormalizeDeps {
++  /** #86 candidate B — optional, so a caller without one keeps today's behaviour. */
++  correlator?: CallCorrelator;
+   now: () => number;
+   newId: () => string;
+   realpath: (p: string) => string;
+diff --git a/src/cli/main.ts b/src/cli/main.ts
+index 6aaf9ab..ad5c79f 100644
+--- a/src/cli/main.ts
++++ b/src/cli/main.ts
+@@ -35,7 +35,7 @@ import { probeDaemon } from "../daemon/detect.js";
+ import { BUILD_STAMP, Daemon } from "../daemon/server.js";
+ import { createPidLister, createProcessTable } from "../discovery/pids.js";
+ import { createSshLister, RemoteDiscovery } from "../discovery/remote.js";
+-import { createClaudeLister } from "../discovery/sessions.js";
++import { createClaudeLister, pollInto } from "../discovery/sessions.js";
+ import { Registry } from "../model/registry.js";
+ import { parseSnapshot } from "../model/snapshot.js";
+ import { detectNotifier } from "../notify/detect.js";
+@@ -433,16 +433,11 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
+   // a record exists here only once a hook has arrived under that id, so this is
+   // "the id the running session identifies itself as".
+   const lister = createClaudeLister({ known: (id) => registry.get(id) !== undefined });
+-  const reconcile = (): void => {
+-    void lister()
+-      .then((found) =>
+-        registry.reconcile(found?.sessions ?? null, {
+-          complete: found?.complete ?? false,
+-          provider: "claude",
+-        }),
+-      )
+-      .catch(() => undefined);
+-  };
++  // #86 — `pollInto` dates the answer from when the question was ASKED. The
++  // listing reads session status that starts and ends a permission block, and
++  // an answer to a poll begun before a dialog was claimed says nothing about
++  // it, however late it lands.
++  const reconcile = (): void => void pollInto(lister, registry, "claude");
+   // Codex has no session listing, so its sessions are vouched for by the pid
+   // their hook relay reported — see discovery/pids.ts. Without this nothing
+   // reaps a Codex session that dies without SessionEnd.
+diff --git a/src/contract/capabilities.ts b/src/contract/capabilities.ts
+index d7c67a6..63bce54 100644
+--- a/src/contract/capabilities.ts
++++ b/src/contract/capabilities.ts
+@@ -32,14 +32,58 @@ export interface ProviderCapabilities {
+    * never have seen, so its silence proves nothing.
+    */
+   liveness: "listing" | "pid";
++  /**
++   * #86 — the provider's session listing says whether a permission dialog is
++   * on screen, which no hook does for every way one opens or ends.
++   *
++   * Measured on Claude Code 2.1.291/2.1.312 (`claude agents --json`, polled by
++   * DMN-05): `waiting` while a dialog is open, `idle` once Esc dismissed it or
++   * the turn ended, `busy` while working. `waitingFor` says what a `waiting`
++   * session waits for — `"permission prompt"` for a tool's dialog, by the
++   * binary. Two hooks leave gaps it fills:
++   *
++   * - `PermissionRequest` is a claim, not a sighting — Claude also fires it for
++   *   asks that never show a dialog (read from the 2.1.312 binary) — so a
++   *   claimed dialog blocks once the listing, or the Notification, has seen it.
++   * - Esc at a dialog fires no hook at all (no `PermissionDenied`, `Stop`,
++   *   `StopFailure` or `PostToolUseFailure`), and an approved tool fires
++   *   nothing until it finishes. Without the listing, a dismissed prompt stays
++   *   blocked and reminding until the session's next event, and a long
++   *   approved tool reads as unanswered.
++   *
++   * `waiting` for anything else is not evidence: an MCP elicitation queued
++   * behind a dialog reads `waiting` / `"input needed"` for as long as it
++   * waits, whatever else is happening. The provider's lister translates these
++   * words into astir's (`DiscoveredSession.screen`; Claude's in
++   * `discovery/sessions.ts`), and the registry turns those into transitions
++   * (`reconcile`), never reading a provider's own (CAP-02).
++   */
++  listingClearsBlocks: boolean;
++  /**
++   * #86 candidate B — permission asks are claimed per tool call
++   * (`permission_request` carrying the call's id) and shown ONE AT A TIME in
++   * the order they were raised, so a session's open asks form a queue whose
++   * head is the dialog on screen. Read from the 2.1.312 binary: the dialog
++   * store shows `open.findLast(...)`, and a tool's ask is inserted with
++   * `place: "queue"` by `askOrder`, the order asks were raised. A notice that
++   * names no agent, and the listing's sighting, are about the head.
++   */
++  dialogQueue: boolean;
+ }
+ 
+ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+   claude: {
+     // The `defaultMode: auto` classifier answers in hundreds of milliseconds.
++    // Measured since #86, an approval it gives without a dialog fires no
++    // `PermissionRequest` at all. A dialog that is seen blocks from its
++    // `PermissionRequest`, so the dwell now runs from the moment the dialog
++    // was claimed rather than from the `Notification` ~6 s after it, and still
++    // absorbs any automatic answer that does follow a block.
+     blockDwellMs: 5_000,
+     fileWatch: true,
+     liveness: "listing",
++    listingClearsBlocks: true,
++    dialogQueue: true,
+   },
+   codex: {
+     // Its automatic reviewer answered the captured auto-reviewed request after
+@@ -48,5 +92,11 @@ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+     fileWatch: false,
+     // No session listing exists (verified against rust-v0.154.0).
+     liveness: "pid",
++    // Nothing to read: its pid lister reports no status. Codex says Esc itself
++    // (`Interrupt`), so it does not need one.
++    listingClearsBlocks: false,
++    // Codex's PermissionRequest is its only blocking signal and it is
++    // already per agent; Esc sends Interrupt. Nothing here changes for it.
++    dialogQueue: false,
+   },
+ };
+diff --git a/src/contract/event.ts b/src/contract/event.ts
+index fb1c977..e837557 100644
+--- a/src/contract/event.ts
++++ b/src/contract/event.ts
+@@ -13,18 +13,37 @@ export type Kind =
+   | "subagent_stop"
+   | "file_changed"
+   | "stop"
+-  | "session_end";
++  | "session_end"
++  /**
++   * #86 candidate B — Claude's PostToolBatch: the batch of tool calls is over,
++   * denied ones included (`callIds`). The one exit a self-denied ask has.
++   */
++  | "tool_batch";
+ 
+ /** How CAP-05 resolved this agent's parent. `inferred` means "we guessed". */
+ export type ParentSource = "sidecar" | "tooluse" | "inferred";
+ 
+-/** Claude's Notification matcher values. The first three mean "come look". */
++/**
++ * Claude's Notification matcher values. The first three mean "come look".
++ *
++ * `permission_prompt` is also what Codex's `PermissionRequest` hook becomes:
++ * it is the only blocking signal Codex sends.
++ *
++ * `permission_request` is Claude's `PermissionRequest` hook (#86), and it does
++ * NOT mean "come look". Claude fires it before every dialog, ~6 s ahead of the
++ * Notification — but also for asks that can never show one (a background
++ * agent's, a headless session's), which it then denies itself. So it is a
++ * claim that a dialog may be open, not a sighting of one: the registry blocks
++ * on it, dated from it, only once the Notification or Claude's session listing
++ * has seen the dialog.
++ */
+ export type NotificationKind =
+   | "permission_prompt"
+   | "agent_needs_input"
+   | "worker_permission_prompt"
+   | "idle_prompt"
+   | "agent_completed"
++  | "permission_request"
+   | "other";
+ 
+ export interface ContractVersion {
+@@ -37,6 +56,9 @@ export interface ContractVersion {
+ // a 2.0 producer still validates and a 2.0 consumer still works.
+ export const CONTRACT_VERSION: ContractVersion = { major: 2, minor: 1 };
+ 
++/** #86 candidate B — what a claimed dialog looks like in the provider's listing. */
++export type DialogKind = "permission" | "question";
++
+ export interface AstirEvent {
+   v: ContractVersion;
+   eventId: string;
+@@ -63,6 +85,16 @@ export interface AstirEvent {
+   op: Op | null;
+   ok: boolean | null;
+   notificationKind: NotificationKind | null;
++  /**
++   * #86 candidate B — the tool call this event is about (`tool_use_id`): set
++   * on pre_tool, post_tool and tool_failed, and on a `permission_request` the
++   * adapter could correlate to its PreToolUse. An id, never the call's input.
++   */
++  callId?: string | null;
++  /** #86 candidate B — every call a `tool_batch` closes. */
++  callIds?: string[];
++  /** #86 candidate B — on a `permission_request`: the dialog it will show. */
++  dialog?: DialogKind | null;
+ }
+ 
+ /** DMN-03 bounds. Exceeding any of these is a rejection, never a silent clamp. */
+@@ -89,6 +121,7 @@ const KINDS = new Set<string>([
+   "file_changed",
+   "stop",
+   "session_end",
++  "tool_batch",
+ ]);
+ const PROVIDERS = new Set<string>(["claude", "codex"]);
+ const OPS = new Set<string>(["read", "write", "edit", "other"]);
+@@ -109,6 +142,7 @@ const NOTIFICATION_KINDS = new Set<string>([
+   "worker_permission_prompt",
+   "idle_prompt",
+   "agent_completed",
++  "permission_request",
+   "other",
+ ]);
+ 
+@@ -186,6 +220,10 @@ export function validateEvent(raw: unknown): ValidateResult {
+     paths.push(p);
+   }
+ 
++  const callId = isSaneString(r.callId) ? r.callId : null;
++  const callIds = Array.isArray(r.callIds) ? (r.callIds as unknown[]).filter(isSaneString).slice(0, LIMITS.maxPaths) : [];
++  const dialog = r.dialog === "permission" || r.dialog === "question" ? r.dialog : null;
++
+   return {
+     ok: true,
+     event: {
+@@ -205,6 +243,9 @@ export function validateEvent(raw: unknown): ValidateResult {
+       op: op as Op | null,
+       ok: typeof r.ok === "boolean" ? r.ok : null,
+       notificationKind: (r.notificationKind as NotificationKind | undefined) ?? null,
++      callId,
++      callIds,
++      dialog,
+     },
+   };
+ }
+diff --git a/src/daemon/server.ts b/src/daemon/server.ts
+index d56be20..7b596bc 100644
+--- a/src/daemon/server.ts
++++ b/src/daemon/server.ts
+@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse }
+ import { hostname } from "node:os";
+ import { join } from "node:path";
+ import { fileURLToPath } from "node:url";
++import { ClaudeCallCorrelator } from "../adapters/claude/correlate.js";
+ import { defaultNewId, normalizeClaudeHook } from "../adapters/claude/normalize.js";
+ import { watchPathsFor } from "../adapters/claude/watch.js";
+ import { normalizeCodexHook } from "../adapters/codex/normalize.js";
+@@ -232,6 +233,12 @@ export class Daemon {
+   private server: Server;
+   private readonly opts: DaemonOpts;
+   private readonly readSidecar: (s: string, a: string) => SidecarMeta | null;
++  /**
++   * #86 candidate B — ties each PermissionRequest to its PreToolUse. One per
++   * daemon, in memory only (SEC-01): a hash of each open call's input, never
++   * the input. Every normalizer gets it; only Claude's uses it.
++   */
++  private readonly correlator = new ClaudeCallCorrelator();
+   private readonly focus: NonNullable<DaemonOpts["focus"]>;
+   private readonly nowSeconds: () => number;
+   private readonly viewRoot: string;
+@@ -242,7 +249,6 @@ export class Daemon {
+     ingested: 0,
+     rejected: 0,
+     duplicates: 0,
+-    blocked: 0,
+     /**
+      * Daemon-wide totals for /healthz. The PER-SESSION versions on each
+      * `SessionRecord` are what surfaces render; these answer "is anything
+@@ -390,7 +396,9 @@ export class Daemon {
+         // A surface reading an empty list can say "no one will be told", which
+         // is the one thing silence cannot.
+         delivery: { live: this.opts.deliveryLive?.() ?? [] },
+-        counters: this.counters,
++        // `blocked` is the registry's: Claude's session listing begins blocks
++        // too (#86), and those never pass through ingest.
++        counters: { ...this.counters, blocked: this.opts.registry.blocksBegun() },
+       });
+     }
+ 
+@@ -641,6 +649,7 @@ export class Daemon {
+         }
+       },
+       readSidecar: this.readSidecar,
++      correlator: this.correlator,
+     });
+ 
+     this.counters.pathsOutsideRepo += droppedPaths;
+@@ -698,7 +707,6 @@ export class Daemon {
+     if (result.applied && pid !== null) this.opts.registry.observePid(valid.event.sessionId, pid);
+ 
+     if (result.becameBlocked) {
+-      this.counters.blocked++;
+       try {
+         this.opts.onBlocked?.(result.becameBlocked);
+       } catch {
+diff --git a/src/discovery/sessions.ts b/src/discovery/sessions.ts
+index b7cb8c4..4960c92 100644
+--- a/src/discovery/sessions.ts
++++ b/src/discovery/sessions.ts
+@@ -8,6 +8,8 @@
+  */
+ 
+ import { execFile } from "node:child_process";
++import type { Provider } from "../contract/event.js";
++import type { Registry } from "../model/registry.js";
+ import { createTtyReader, isAttended, type TtyReader } from "./attended.js";
+ import { candidateConfigDirs } from "./profiles.js";
+ 
+@@ -17,6 +19,14 @@ export interface DiscoveredSession {
+   pid: number | null;
+   /** `status` for attached sessions, `state` for background ones. */
+   status: string | null;
++  /**
++   * #86 — what the provider's listing says is on the session's screen, in
++   * astir's words (SessionScreen). The lister translates; the registry reads
++   * only this, never a provider's own vocabulary (CAP-02). Absent when the
++   * listing says nothing it can be translated from — every lister but
++   * Claude's.
++   */
++  screen?: SessionScreen;
+   name: string | null;
+   /**
+    * Epoch ms the session started, when the provider reports it.
+@@ -35,6 +45,77 @@ export interface DiscoveredSession {
+   attended?: boolean;
+ }
+ 
++/**
++ * #86 — what is on a session's screen, as far as a permission dialog goes. It
++ * is what the registry reads to begin and end a block no hook reports on
++ * (`listingClearsBlocks`):
++ *
++ * - `permission-dialog`: a permission dialog is open. Which agent's, the
++ *   listing does not say.
++ * - `other-dialog`: something is on screen that is not known to be one. No
++ *   evidence either way.
++ * - `at-prompt`: nothing is on screen and the turn is over.
++ * - `working`: nothing is on screen and the session is working.
++ */
++export type SessionScreen = "permission-dialog" | "question-dialog" | "other-dialog" | "at-prompt" | "working";
++
++/**
++ * #86 — the one `waitingFor` that means "a permission dialog is on screen" in
++ * `claude agents --json`, which carries `waitingFor` beside `status:
++ * "waiting"` and nowhere else (the field measured on 2.1.312).
++ *
++ * Read from the binary (2.1.296–2.1.312): `"permission prompt"` is the DEFAULT,
++ * what every dialog reads that declares nothing else — a tool's permission
++ * dialog, but also plan approval, entering plan mode, a message from another
++ * session awaiting approval, browser and Chrome setup, computer-use approval
++ * and auto-mode setup proposals. The value was not seen live, because that
++ * takes starting a session. Were it ever different, a dialog would be seen by
++ * its Notification instead, ~6 s in — later, never not at all.
++ *
++ * `waiting` alone is not: `AskUserQuestion`, an MCP elicitation, and an
++ * elicitation queued BEHIND whatever is on top all read `"input needed"` —
++ * the last whether or not anything is on top, and for as long as it stays
++ * queued (four of thirteen sessions on the machine this was measured on read
++ * that, one while working). There are also `"dialog open"`, `"worker
++ * request"`, `"sandbox request"` and `"goal proposal"`.
++ */
++const CLAUDE_PERMISSION_DIALOG = "permission prompt";
++/** #86 candidate B — what AskUserQuestion's dialog reads (binary: `tool_name===Ss` → "input needed"). */
++const CLAUDE_QUESTION_DIALOG = "input needed";
++
++/**
++ * #86 — Claude statuses that mean "at its prompt, nothing on screen".
++ *
++ * `shell` is Claude's word for idle with a background shell still running (its
++ * session file, 2.1.312). `claude agents --json` folds it into `busy` today —
++ * everything but `idle` and `waiting` comes out `busy` (read from the binary,
++ * 2.1.296–2.1.312) — so it is here for the day that stops, not for anything
++ * astir sees now.
++ */
++const CLAUDE_AT_PROMPT = new Set(["idle", "shell"]);
++
++/**
++ * #86 — Claude statuses that mean "working". `--json` says `busy`; the others
++ * are the registry's own PROVIDER_BUSY words, kept so that nothing read as
++ * working before reads as anything else now.
++ */
++const CLAUDE_WORKING = new Set(["busy", "running", "working"]);
++
++/** #86 — Claude's listing, in astir's words. Undefined when it says nothing usable. */
++export function claudeScreen(status: string | null, waitingFor: string | null): SessionScreen | undefined {
++  if (status === null) return undefined;
++  if (status === "waiting") {
++    if (waitingFor === CLAUDE_PERMISSION_DIALOG) return "permission-dialog";
++    // #86 candidate B — AskUserQuestion's dialog (and an MCP elicitation,
++    // which the registry cannot tell apart): evidence only for a question ask.
++    if (waitingFor === CLAUDE_QUESTION_DIALOG) return "question-dialog";
++    return "other-dialog";
++  }
++  if (CLAUDE_AT_PROMPT.has(status)) return "at-prompt";
++  if (CLAUDE_WORKING.has(status)) return "working";
++  return undefined;
++}
++
+ /**
+  * `null` means "could not determine" — a missing binary, a timeout, unparseable
+  * output. That is deliberately distinct from `[]` ("no sessions are running"),
+@@ -57,12 +138,40 @@ export interface DiscoveryResult {
+ 
+ export type SessionLister = () => Promise<DiscoveryResult | null>;
+ 
++/**
++ * DMN-05 — run one poll and fold its answer into the registry. Never throws.
++ *
++ * The clock is read BEFORE the lister is called, and that time travels with
++ * the answer as `observedAt` (#86). A listing describes the session as it was
++ * when it was asked, and `claude agents --json` is a child process that can
++ * take a second or more; read the clock when the answer lands instead and an
++ * `idle` from before a dialog was claimed would be dated after it, and end it.
++ */
++export function pollInto(
++  lister: SessionLister,
++  registry: Pick<Registry, "reconcile">,
++  provider: Provider,
++  now: () => number = Date.now,
++): Promise<void> {
++  const observedAt = now();
++  return lister()
++    .then((found) => {
++      registry.reconcile(found?.sessions ?? null, {
++        complete: found?.complete ?? false,
++        provider,
++        observedAt,
++      });
++    })
++    .catch(() => undefined);
++}
++
+ interface RawAgent {
+   sessionId?: unknown;
+   cwd?: unknown;
+   pid?: unknown;
+   status?: unknown;
+   state?: unknown;
++  waitingFor?: unknown;
+   name?: unknown;
+   startedAt?: unknown;
+ }
+@@ -79,14 +188,17 @@ export function parseAgentsJson(stdout: string): DiscoveredSession[] | null {
+   const out: DiscoveredSession[] = [];
+   for (const item of parsed as RawAgent[]) {
+     if (typeof item?.sessionId !== "string") continue; // a session with no id is useless to us
++    const status =
++      typeof item.status === "string" ? item.status : typeof item.state === "string" ? item.state : null;
++    const screen = claudeScreen(status, typeof item.waitingFor === "string" ? item.waitingFor : null);
+     out.push({
+       sessionId: item.sessionId,
+       cwd: typeof item.cwd === "string" ? item.cwd : "",
+       pid: typeof item.pid === "number" ? item.pid : null,
+-      status:
+-        typeof item.status === "string" ? item.status : typeof item.state === "string" ? item.state : null,
++      status,
+       name: typeof item.name === "string" ? item.name : null,
+       startedAt: typeof item.startedAt === "number" ? item.startedAt : null,
++      ...(screen === undefined ? {} : { screen }),
+     });
+   }
+   return out;
+diff --git a/src/model/registry.ts b/src/model/registry.ts
+index df7980d..25ae385 100644
+--- a/src/model/registry.ts
++++ b/src/model/registry.ts
+@@ -2,7 +2,7 @@
+ 
+ import { CAPABILITIES } from "../contract/capabilities.js";
+ import type { AstirEvent, ParentSource, Provider } from "../contract/event.js";
+-import type { DiscoveredSession } from "../discovery/sessions.js";
++import type { DiscoveredSession, SessionScreen } from "../discovery/sessions.js";
+ import { debug } from "../obs/debug.js";
+ import { RepoMap } from "./map.js";
+ import { identityMatches, SNAPSHOT_VERSION, type Snapshot, type SnapshotSession } from "./snapshot.js";
+@@ -42,6 +42,75 @@ const TURN_END = new Set<AgentState>(["waiting", "idle"]);
+  */
+ const PROVIDER_BUSY = new Set(["busy", "running", "working"]);
+ 
++// ---------------------------------------------------------------------------
++// #86 candidate B — a session's permission asks as Claude's own dialog queue.
++// ---------------------------------------------------------------------------
++
++/** A listing reading begun this soon after a claim may predate its dialog (visible ~0.4 s in). */
++const SETTLE_MS = 1_000;
++/** AskUserQuestion's listing lags (measured: `busy` ~1 s in, `waiting` by ~8 s). */
++const QUESTION_SETTLE_MS = 10_000;
++/** A permission_prompt Notification is sent once a dialog has been up 6 s (binary: `Sun=6000`). */
++const NOTICE_PERIOD_MS = 6_000;
++/** No Notification can be about an ask younger than this: a second under the measured 6.17 s. */
++const NOTICE_MIN_AGE_MS = 5_000;
++/**
++ * The window a lone ask's own Notification lands in, around each 6 s check:
++ * measured claim→Notification 6.17–6.58 s (fixture, #86's table), ±0.3 s.
++ */
++const NOTICE_EARLY_MS = 100;
++const NOTICE_LATE_MS = 900;
++/** A head claimed this recently cannot have been answered before the poll saw it. */
++const FRESH_HEAD_MS = 1_500;
++/**
++ * How long an ambiguous sighting waits for the Notification before the FIFO
++ * head takes it: past the second 6 s check, so a user who touched the
++ * terminal once (Notification at ~12.4 s) still gets the right name.
++ */
++const DEFER_MAX_MS = 13_000;
++/** Asks kept per session. */
++const MAX_ASKS = 64;
++
++/** The events that are an agent's own progress: they end a notice block (not a dialog). */
++const OWN_PROGRESS = new Set<AstirEvent["kind"]>([
++  "session_start",
++  "pre_tool",
++  "post_tool",
++  "tool_failed",
++  "stop",
++  "session_end",
++  "subagent_stop",
++]);
++const BLOCKING_NOTIFICATIONS = new Set(["permission_prompt", "agent_needs_input", "worker_permission_prompt"]);
++
++/**
++ * #86 candidate B — one `PermissionRequest`, tied to its call.
++ *
++ * Claude shows dialogs one at a time, oldest ask on top (2.1.312: the dialog
++ * store renders `open.findLast(...)`, and a tool's ask is inserted by
++ * `askOrder` with `place: "queue"`). So a session's asks, in claim order, are
++ * the queue, and its head is what the listing and the Notification see. Never
++ * persisted, never on a surface; it holds ids and times, no input.
++ */
++interface Ask {
++  callId: string | null;
++  agentId: string;
++  kind: "permission" | "question";
++  claimAt: number;
++  /** Nothing else was queued when it was claimed: its dialog opened at its claim. */
++  soloAtClaim: boolean;
++  /** When it became the model's head; null while something is ahead of it. */
++  headSince: number | null;
++  /** It reached the head through the exact exit of a head that was on screen. */
++  inLine: boolean;
++  /** A sighting or a Notification has put it on screen: its agent is blocked. */
++  seen: boolean;
++  /** What the block it makes is dated from. */
++  since: number;
++  /** A Notification has been attributed to it; Claude sends one per dialog. */
++  noticed: boolean;
++}
++
+ export interface AgentRecord {
+   id: string;
+   provider: Provider;
+@@ -79,6 +148,20 @@ export interface AgentRecord {
+   lastActivityMs: number;
+   /** Why this agent is blocked, e.g. `permission_prompt`. Null when not blocked. */
+   blockedReason: string | null;
++  /**
++   * #86 candidate B — a blocking Notification that is not one of its asks
++   * (agent_needs_input, a worker's prompt, or a permission_prompt no ask
++   * explains): when it arrived, and what it was. Ended by the agent's own
++   * progress; a permission_prompt one also by the listing. Never persisted.
++   */
++  noticeSince?: number | null;
++  noticeReason?: string | null;
++  /** When a poll begun during that notice block last saw a dialog. */
++  noticeSeenAt?: number | null;
++  /** #86 candidate B — calls begun and not yet ended (ids only). Never persisted. */
++  openCalls?: Set<string>;
++  /** #86 candidate B — the latest moment its dialog was positively seen on screen. */
++  evidenceAt?: number | null;
+   /**
+    * What this agent was sent to do, from the sidecar. Set once at spawn and
+    * never cleared — it is the agent's standing brief, not its current state.
+@@ -240,6 +323,10 @@ export interface SessionRecord {
+   startedAt: number | null;
+   /** DMN-11 — false when no human is sitting at it (a plugin or script drives it). */
+   attended?: boolean;
++  /** #86 candidate B — open asks, in queue order. Never persisted. */
++  asks?: Ask[];
++  /** #86 candidate B — when a sighting first could not tell whose head is on screen. */
++  ambiguousSince?: number | null;
+   /**
+    * This state came from the crash-recovery snapshot, not from an event.
+    *
+@@ -279,6 +366,13 @@ export interface RegistryOpts {
+   undiscoveredTtlMs?: number;
+   /** DMN-06 — the dedupe set is bounded; this is the replay window it covers. */
+   maxSeenEvents?: number;
++  /**
++   * #86 candidate B option — a dialog block reports how long its dialog has
++   * been SEEN up (latest sighting or Notification minus its start), so the
++   * first alert waits for evidence the dialog outlived the dwell, not just
++   * for the clock. Off: it reports how long since the block started.
++   */
++  evidenceDwell?: boolean;
+ }
+ 
+ export interface IngestResult {
+@@ -305,6 +399,7 @@ export class Registry {
+   private readonly endedGraceMs: number;
+   private readonly undiscoveredTtlMs: number;
+   private readonly maxSeen: number;
++  private readonly evidenceDwell: boolean;
+   /**
+    * Whether discovery has ever produced a usable answer. The undiscovered sweep
+    * is gated on it: with no working discovery, "never discovered" is evidence
+@@ -333,6 +428,8 @@ export class Registry {
+   private silentByProvider = new Map<Provider, DiscoveredSession[]>();
+   /** Saved sessions awaiting a provider's confirmation. See `stageRestore`. */
+   private pendingRestore = new Map<string, SnapshotSession>();
++  /** OBS-01 — blocks begun, by any path (`transition`). */
++  private blocks = 0;
+ 
+   constructor(opts: RegistryOpts) {
+     this.nowMs = opts.nowMs;
+@@ -341,6 +438,7 @@ export class Registry {
+     this.endedGraceMs = opts.endedGraceMs ?? 60_000;
+     this.undiscoveredTtlMs = opts.undiscoveredTtlMs ?? 10 * 60_000;
+     this.maxSeen = opts.maxSeenEvents ?? 10_000;
++    this.evidenceDwell = opts.evidenceDwell ?? false;
+   }
+ 
+   list(): SessionRecord[] {
+@@ -388,7 +486,11 @@ export class Registry {
+             provider: s.provider,
+             cwd: s.cwd,
+             reason: a.blockedReason ?? "blocked",
+-            blockedForMs: Math.max(0, this.nowMs() - a.stateSince),
++            blockedForMs: Math.max(
++              0,
++              (this.evidenceDwell && this.holdsHead(s, a) !== null ? (a.evidenceAt ?? a.stateSince) : this.nowMs()) -
++                a.stateSince,
++            ),
+             restored: s.restored === true,
+             announcedAt: a.announcedAt,
+           });
+@@ -398,6 +500,11 @@ export class Registry {
+     return out;
+   }
+ 
++  /** OBS-01 — how many times an agent began to wait on a human, whatever began it. */
++  blocksBegun(): number {
++    return this.blocks;
++  }
++
+   /** Count of agents blocked on a human and not yet acknowledged (PSH-08). */
+   blockedCount(): number {
+     let n = 0;
+@@ -529,6 +636,9 @@ export class Registry {
+     if (event.kind === "session_end") session.endedAt = this.nowMs();
+     else if (event.kind === "session_start") session.endedAt = null; // resumed
+ 
++    // #86 candidate B — a provider whose asks form a dialog queue.
++    if (CAPABILITIES[session.provider].dialogQueue) return this.applyQueued(session, agent, event);
++
+     const next = this.nextState(event, agent.state);
+     const becameBlocked =
+       next !== agent.state && HUMAN_BLOCKING.has(next)
+@@ -555,6 +665,303 @@ export class Registry {
+     return becameBlocked ? { applied: true, becameBlocked } : { applied: true };
+   }
+ 
++
++  // -------------------------------------------------------------------------
++  // #86 candidate B — the dialog queue.
++  // -------------------------------------------------------------------------
++
++  private asksOf(s: SessionRecord): Ask[] {
++    if (s.asks === undefined) s.asks = [];
++    return s.asks;
++  }
++
++  /** The agent holds the head, and the head is on screen. */
++  private holdsHead(s: SessionRecord, a: AgentRecord): Ask | null {
++    const head = this.asksOf(s)[0];
++    return head !== undefined && head.seen && head.agentId === a.id ? head : null;
++  }
++
++  /** Whether the agent should be blocked, and from when. */
++  private blockOf(s: SessionRecord, a: AgentRecord): { since: number; reason: string } | null {
++    const head = this.holdsHead(s, a);
++    const notice = a.noticeSince ?? null;
++    if (head === null && notice === null) return null;
++    const since = Math.min(head?.since ?? Number.POSITIVE_INFINITY, notice ?? Number.POSITIVE_INFINITY);
++    return { since, reason: head !== null ? "permission_prompt" : (a.noticeReason ?? "blocked") };
++  }
++
++  /**
++   * Bring every agent of the session in line with the queue, except `skip`
++   * (the agent whose own event is being applied, which `applyQueued` moves).
++   * An agent that stops being blocked here did not act itself: its dialog
++   * left through the listing or was taken back, so it goes to `unblocked`.
++   */
++  private syncSession(s: SessionRecord, unblocked: AgentState, skip?: AgentRecord): IngestResult["becameBlocked"] {
++    let became: IngestResult["becameBlocked"];
++    for (const a of s.agents.values()) {
++      if (a === skip || TERMINAL.has(a.state)) continue;
++      const b = this.blockOf(s, a);
++      if (b !== null && a.state !== "blocked") {
++        a.blockedReason = b.reason;
++        a.tool = null;
++        a.toolPath = null;
++        this.transition(a, "blocked", b.since);
++        became ??= { sessionId: s.sessionId, agentId: a.id, kind: b.reason };
++      } else if (b !== null) {
++        a.blockedReason = b.reason;
++      } else if (b === null && a.state === "blocked") {
++        a.blockedReason = null;
++        this.transition(a, unblocked);
++      }
++    }
++    return became;
++  }
++
++  /**
++   * Take asks out of the queue. An `exact` exit is the call's own end (its
++   * PostToolUse, PostToolBatch, its agent's Stop): if it was the head on
++   * screen, the next ask is now on screen — Claude shows the next queued
++   * dialog once one is answered — so it is in line, and for the same agent
++   * the block simply continues.
++   */
++  private removeAsks(s: SessionRecord, drop: (a: Ask) => boolean, exact: boolean): void {
++    const asks = this.asksOf(s);
++    const head0 = asks[0];
++    s.asks = asks.filter((a) => !drop(a));
++    const head1 = s.asks[0];
++    if (head1 === head0) return;
++    s.ambiguousSince = null;
++    if (head1 === undefined) return;
++    const now = this.nowMs();
++    // Behind a head that was on screen, its dialog came up when that one was
++    // answered — no earlier than now, as far as anyone saw. Behind one never
++    // seen, nothing says when: it may have been up since its claim.
++    head1.headSince ??= head0 !== undefined && head0.seen ? now : head1.claimAt;
++    if (exact && head0 !== undefined && head0.seen && drop(head0)) {
++      head1.inLine = true;
++      if (head1.agentId === head0.agentId && !head1.seen) {
++        head1.seen = true;
++        head1.since = head0.since;
++      }
++    }
++  }
++
++  /** Whether a permission_prompt Notification at `at` can be about `a`'s dialog. */
++  private noticeFits(a: Ask, at: number): boolean {
++    if (a.noticed || at - a.claimAt < NOTICE_MIN_AGE_MS) return false;
++    // Queued behind something: its dialog opened whenever that left, so any time fits.
++    if (!a.soloAtClaim) return true;
++    // Alone: its dialog opened at its claim, and Claude checks every 6 s from then.
++    const d = at - a.claimAt;
++    for (let k = 1; k * NOTICE_PERIOD_MS - NOTICE_EARLY_MS <= d; k++) {
++      if (d <= k * NOTICE_PERIOD_MS + NOTICE_LATE_MS) return true;
++    }
++    return false;
++  }
++
++  /**
++   * A permission_prompt Notification names no agent: it is about the dialog on
++   * screen, which has been up 6 s (or 12, 18…). Under FIFO that is the oldest
++   * ask still pending, so it goes to the first ask in queue order it fits, and
++   * every ask ahead of that one is not pending — answered, its tool running
++   * with no hook to say so — and leaves the queue. If no ask fits, the dialog
++   * sent no claim (plan approval and the like) or jumped the queue, and the
++   * Notification blocks the main agent as it did before #86.
++   */
++  private attributeNotice(s: SessionRecord, at: number): Ask | null {
++    const asks = this.asksOf(s);
++    const winner = asks.find((a) => this.noticeFits(a, at));
++    if (winner === undefined) return null;
++    const ahead = new Set(asks.slice(0, asks.indexOf(winner)));
++    if (ahead.size > 0) this.removeAsks(s, (a) => ahead.has(a), false);
++    winner.noticed = true;
++    winner.headSince ??= at;
++    const owner = s.agents.get(winner.agentId);
++    if (owner !== undefined) owner.evidenceAt = at;
++    if (!winner.seen) {
++      winner.seen = true;
++      winner.since = Math.max(winner.claimAt, Math.min(winner.headSince, at - (NOTICE_PERIOD_MS + 200)));
++    }
++    s.ambiguousSince = null;
++    return winner;
++  }
++
++  private applyQueued(session: SessionRecord, agent: AgentRecord, event: AstirEvent): IngestResult {
++    const now = this.nowMs();
++    const kind = event.kind;
++    const callId = event.callId ?? null;
++    agent.openCalls ??= new Set();
++
++    // Calls in flight, by id: what keeps a parent from decaying under its subagent's dialog.
++    if (kind === "pre_tool" && callId !== null) agent.openCalls.add(callId);
++    if ((kind === "post_tool" || kind === "tool_failed") && callId !== null) agent.openCalls.delete(callId);
++    if (kind === "tool_batch") for (const id of event.callIds ?? []) agent.openCalls.delete(id);
++    if (kind === "stop" || kind === "subagent_stop" || kind === "session_end" || kind === "session_start") {
++      agent.openCalls.clear();
++    }
++
++    // A claim: queued, nothing else changes. The agent is still running the
++    // tool it asked for, as far as anyone has seen.
++    if (event.notificationKind === "permission_request") {
++      const asks = this.asksOf(session);
++      if (callId !== null && asks.some((a) => a.callId === callId)) return { applied: true };
++      asks.push({
++        callId,
++        agentId: agent.id,
++        kind: event.dialog === "question" ? "question" : "permission",
++        claimAt: now,
++        soloAtClaim: asks.length === 0,
++        headSince: asks.length === 0 ? now : null,
++        inLine: false,
++        seen: false,
++        since: now,
++        noticed: false,
++      });
++      while (asks.length > MAX_ASKS) asks.shift();
++      return { applied: true };
++    }
++
++    // Exact exits: the call's own end, or its agent's.
++    if ((kind === "post_tool" || kind === "tool_failed") && callId !== null) {
++      this.removeAsks(session, (a) => a.callId === callId, true);
++    } else if (kind === "tool_batch") {
++      const ids = new Set(event.callIds ?? []);
++      this.removeAsks(session, (a) => a.callId !== null && ids.has(a.callId), true);
++    } else if (kind === "stop" || kind === "subagent_stop") {
++      this.removeAsks(session, (a) => a.agentId === agent.id, true);
++    } else if (kind === "session_start" || kind === "session_end") {
++      this.removeAsks(session, () => true, false);
++    }
++
++    // A permission_prompt Notification that named no agent (it lands on the
++    // main agent by default) is about the head of the queue.
++    let noticeTaken = false;
++    if (
++      kind === "notification" &&
++      event.notificationKind === "permission_prompt" &&
++      event.agentId === session.sessionId
++    ) {
++      noticeTaken = this.attributeNotice(session, now) !== null;
++    }
++
++    // A blocking Notification no ask explains is a notice on the agent it
++    // landed on, as before #86 — and is never dropped (F5).
++    if (kind === "notification" && BLOCKING_NOTIFICATIONS.has(event.notificationKind ?? "") && !noticeTaken) {
++      if (agent.noticeSince === null || agent.noticeSince === undefined) {
++        agent.noticeSince = now;
++        agent.noticeReason = event.notificationKind;
++        agent.noticeSeenAt = null;
++      }
++    }
++    // The agent's own progress ends a notice; it never ends a dialog — only the
++    // dialog's own call, the agent's turn, or the listing does.
++    if (OWN_PROGRESS.has(kind)) {
++      agent.noticeSince = null;
++      agent.noticeReason = null;
++      agent.noticeSeenAt = null;
++    }
++
++    const block = this.blockOf(session, agent);
++    let becameBlocked: IngestResult["becameBlocked"];
++    if (block !== null) {
++      if (agent.state !== "blocked") {
++        this.transition(agent, "blocked", block.since);
++        becameBlocked = { sessionId: session.sessionId, agentId: agent.id, kind: block.reason };
++      }
++      agent.blockedReason = block.reason;
++      agent.tool = null;
++      agent.toolPath = null;
++    } else {
++      // Not blocked: what the event says, as before #86. A notification that
++      // blocks nothing, a FileChanged, a batch's end, changes nothing.
++      const quiet = kind === "notification" || kind === "file_changed" || kind === "tool_batch";
++      const resumed: AgentState = (agent.openCalls?.size ?? 0) > 0 ? "tool-running" : "thinking";
++      const next = agent.state === "blocked" && quiet ? resumed : quiet ? agent.state : this.nextState(event, agent.state);
++      agent.blockedReason = null;
++      if (kind === "pre_tool") {
++        agent.tool = event.tool;
++        agent.toolPath = event.paths[0] ?? null;
++      } else if (!quiet && agent.tool !== null) {
++        agent.tool = null;
++        agent.toolPath = null;
++      }
++      this.transition(agent, next);
++    }
++    const others = this.syncSession(session, "tool-running", agent);
++    becameBlocked ??= others;
++    return becameBlocked ? { applied: true, becameBlocked } : { applied: true };
++  }
++
++  /**
++   * #86 candidate B — what the session listing says, read against when the
++   * poll STARTED (`observedAt`).
++   */
++  private settleFromListing(s: SessionRecord, screen: SessionScreen, at: number): void {
++    const asks = this.asksOf(s);
++    if (screen === "permission-dialog" || screen === "question-dialog") {
++      for (const a of s.agents.values()) {
++        if (a.noticeSince !== null && a.noticeSince !== undefined && a.noticeSince <= at) a.noticeSeenAt = at;
++      }
++      const head = asks[0];
++      if (head !== undefined && head.seen && head.claimAt <= at && (head.kind === "question") === (screen === "question-dialog")) {
++        const owner = s.agents.get(head.agentId);
++        if (owner !== undefined) owner.evidenceAt = Math.max(owner.evidenceAt ?? at, at);
++      }
++      if (head === undefined || head.seen || head.claimAt > at) return;
++      // The listing names what kind of dialog is up; a mismatch is no evidence.
++      if ((head.kind === "question") !== (screen === "question-dialog")) return;
++      const eligible = asks.filter((a) => a.claimAt <= at);
++      const others = eligible.some((a) => a.agentId !== head.agentId);
++      const fresh = at - (head.headSince ?? head.claimAt) <= FRESH_HEAD_MS;
++      // Ambiguous: the head might have been answered unseen (its tool running,
++      // with no hook to say so) and another agent's ask be the one on screen.
++      // The Notification (6 s after the dialog opened) can tell; wait for it.
++      if (others && !head.inLine && !fresh) {
++        s.ambiguousSince ??= at;
++        if (at - s.ambiguousSince < DEFER_MAX_MS) return;
++      }
++      head.seen = true;
++      head.since = Math.max(head.claimAt, head.headSince ?? head.claimAt);
++      s.ambiguousSince = null;
++      const owner = s.agents.get(head.agentId);
++      if (owner !== undefined) owner.evidenceAt = at;
++      this.syncSession(s, "tool-running");
++      return;
++    }
++
++    if (screen === "at-prompt") {
++      // Nothing on screen and the turn is over: Esc (which aborts the turn and
++      // every queued dialog with it) or a turn that ended unheard.
++      this.removeAsks(s, (a) => a.claimAt <= at - SETTLE_MS, false);
++      for (const a of s.agents.values()) {
++        if (a.noticeReason === "permission_prompt" && (a.noticeSince ?? at) <= at - SETTLE_MS) {
++          a.noticeSince = null;
++          a.noticeReason = null;
++          a.noticeSeenAt = null;
++        }
++      }
++      this.syncSession(s, "waiting");
++      return;
++    }
++
++    if (screen === "working") {
++      // Nothing on screen: every ask claimed before this poll began has been
++      // answered (or refused by Claude itself), whatever we were told. Except
++      // that AskUserQuestion's listing lags its dialog.
++      const head = asks[0];
++      const lagging = head !== undefined && head.kind === "question" && !head.seen && at - head.claimAt < QUESTION_SETTLE_MS;
++      if (!lagging) this.removeAsks(s, (a) => a.claimAt <= at - SETTLE_MS, false);
++      for (const a of s.agents.values()) {
++        if (a.noticeReason === "permission_prompt" && a.noticeSeenAt !== null && a.noticeSeenAt !== undefined && a.noticeSeenAt < at) {
++          a.noticeSince = null;
++          a.noticeReason = null;
++          a.noticeSeenAt = null;
++        }
++      }
++      this.syncSession(s, "tool-running");
++    }
++  }
++
+   /** Advance wall-clock-derived transitions. Must be called periodically. */
+   tick(): void {
+     const now = this.nowMs();
+@@ -603,10 +1010,15 @@ export class Registry {
+       // Discovery already answers this authoritatively, every five seconds, and
+       // its answer was being ignored here.
+       const providerBusy = s.status !== null && PROVIDER_BUSY.has(s.status);
++      // #86 candidate B — a session showing a dialog is not idle for an agent
++      // with a call in flight: its call waits on that dialog, or is the Agent
++      // tool whose subagent does. Only those agents (F4).
++      const showingDialog = CAPABILITIES[s.provider].dialogQueue && s.status === "waiting";
+       for (const a of s.agents.values()) {
+         if (IDLE_EXEMPT.has(a.state)) continue;
+         // Positive evidence that it is working. Do not contradict it.
+         if (providerBusy) continue;
++        if (showingDialog && (a.openCalls?.size ?? 0) > 0) continue;
+         // With no word from the provider there is nothing to corroborate, so
+         // wait far longer before overriding what the hooks last told us — a
+         // long build must not be declared idle just because discovery is
+@@ -647,12 +1059,17 @@ export class Registry {
+     }
+   }
+ 
+-  /** MOD-05 — bank the time spent in the state we are leaving. */
+-  private transition(agent: AgentRecord, next: AgentState): void {
++  /**
++   * MOD-05 — bank the time spent in the state we are leaving. `since` dates a
++   * block seen after it began (#86), never before the state being left began.
++   */
++  private transition(agent: AgentRecord, next: AgentState, since?: number): void {
+     const now = this.nowMs();
+     if (agent.state === next) return; // not a transition; banking would double-count
+ 
+-    const elapsed = Math.max(0, now - agent.stateSince);
++    const at = Math.min(now, Math.max(since ?? now, agent.stateSince));
++    const elapsed = Math.max(0, at - agent.stateSince);
++    if (!HUMAN_BLOCKING.has(agent.state) && HUMAN_BLOCKING.has(next)) this.blocks++;
+     if (HUMAN_BLOCKING.has(agent.state)) {
+       agent.blockedMs += elapsed;
+     } else if (WORKING_STATES.has(agent.state)) {
+@@ -665,7 +1082,7 @@ export class Registry {
+     if (TURN_END.has(next)) agent.turnMs = 0;
+ 
+     agent.state = next;
+-    agent.stateSince = now;
++    agent.stateSince = at;
+     // A new state is a new situation: whatever the human dismissed is over.
+     agent.acknowledgedAt = null;
+     // And whatever they were told about. Cleared here rather than left for the
+@@ -728,11 +1145,12 @@ export class Registry {
+    */
+   reconcile(
+     discovered: DiscoveredSession[] | null,
+-    opts: { complete?: boolean; provider?: Provider } = {},
++    opts: { complete?: boolean; provider?: Provider; observedAt?: number } = {},
+   ): { enriched: number; pruned: number } {
+     if (discovered === null) return { enriched: 0, pruned: 0 };
+     const complete = opts.complete ?? true;
+     const provider: Provider = opts.provider ?? "claude";
++    const observedAt = opts.observedAt ?? this.nowMs();
+     this.discoveryEverWorked.add(provider);
+ 
+     const live = new Set<string>();
+@@ -768,6 +1186,9 @@ export class Registry {
+       s.startedAt = d.startedAt;
+       if (d.attended !== undefined) s.attended = d.attended;
+       if (d.cwd) s.cwd = d.cwd;
++      if (s.provider === provider && CAPABILITIES[provider].dialogQueue && d.screen !== undefined) {
++        this.settleFromListing(s, d.screen, observedAt);
++      }
+       enriched++;
+     }
+ 
+diff --git a/src/notify/loop.ts b/src/notify/loop.ts
+index 1d56590..b14a9bf 100644
+--- a/src/notify/loop.ts
++++ b/src/notify/loop.ts
+@@ -100,6 +100,17 @@ export class NotifyLoop {
+       // is the policy's business, and a genuine block is minutes long anyway —
+       // this delay is invisible against a one-minute reminder interval, and the
+       // user is by definition not looking yet.
++      //
++      // The dwell runs from when the block started. For Claude that is now its
++      // `PermissionRequest`, as the dialog was claimed (#86) — though the
++      // agent is only blocked once the dialog has been SEEN, by the session
++      // listing or by the `permission_prompt` Notification, which is dated
++      // back to the claim. The Notification alone came ~6 s after the prompt,
++      // so every Claude alert came ~11 s after it rather than 5. A claim
++      // nothing sees (a background agent's ask, which Claude denies itself)
++      // never blocks, so never reaches here. A block that a Claude listing
++      // ends — Esc, or an approved tool running — leaves `blocked` like any
++      // other, and is retired below.
+       debug("notify", "considering", {
+         session: b.sessionId,
+         agent: b.agentId,
+
+########## Part 2: git diff 96d3367 -- src
+diff --git a/src/adapters/claude/correlate.ts b/src/adapters/claude/correlate.ts
+new file mode 100644
+index 0000000..2ac16a2
+--- /dev/null
++++ b/src/adapters/claude/correlate.ts
+@@ -0,0 +1,121 @@
++/**
++ * #86 candidate B — which call a Claude `PermissionRequest` is about.
++ *
++ * `PermissionRequest` carries `session_id`, `tool_name` and `tool_input`, but
++ * no `tool_use_id` (measured, test/fixtures/claude/permission-request.json) —
++ * and for the main agent no `agent_id` either, since the main agent never has
++ * one. Its `tool_input` is the PreToolUse's, unchanged (same fixture). So the
++ * PreToolUse it follows is found by (session, agent if named, tool, a hash of
++ * the input); that PreToolUse carries the `tool_use_id` and the agent.
++ *
++ * SEC-01: the input is hashed here, in memory, and only the hash is kept. It is
++ * never written, never logged, never put on an event. What leaves this file is
++ * a `tool_use_id` and an agent id.
++ */
++
++import { createHash } from "node:crypto";
++import type { CallCorrelator } from "../types.js";
++
++interface OpenCall {
++  callId: string;
++  agentId: string;
++  tool: string;
++  digest: string;
++  seq: number;
++  claimed: boolean;
++}
++
++/** Calls kept per session; a session with more open calls than this is pathological. */
++const MAX_OPEN = 256;
++/** Sessions kept; the least recently touched goes first. */
++const MAX_SESSIONS = 512;
++
++/** Key-order-independent JSON, so the same input always hashes the same. */
++function stable(v: unknown): string {
++  if (v === null || typeof v !== "object") return JSON.stringify(v) ?? "null";
++  if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
++  const o = v as Record<string, unknown>;
++  return `{${Object.keys(o)
++    .sort()
++    .map((k) => `${JSON.stringify(k)}:${stable(o[k])}`)
++    .join(",")}}`;
++}
++
++function digestOf(input: unknown): string {
++  return createHash("sha256").update(stable(input)).digest("base64url").slice(0, 22);
++}
++
++export class ClaudeCallCorrelator implements CallCorrelator {
++  private sessions = new Map<string, Map<string, OpenCall>>();
++  private seq = 0;
++
++  private calls(sessionId: string): Map<string, OpenCall> {
++    let m = this.sessions.get(sessionId);
++    if (m === undefined) {
++      m = new Map();
++      this.sessions.set(sessionId, m);
++      while (this.sessions.size > MAX_SESSIONS) {
++        const oldest = this.sessions.keys().next().value;
++        if (oldest === undefined) break;
++        this.sessions.delete(oldest);
++      }
++    } else {
++      // Most recently touched last.
++      this.sessions.delete(sessionId);
++      this.sessions.set(sessionId, m);
++    }
++    return m;
++  }
++
++  open(sessionId: string, agentId: string, tool: string, input: unknown, callId: string): void {
++    const m = this.calls(sessionId);
++    m.set(callId, { callId, agentId, tool, digest: digestOf(input), seq: ++this.seq, claimed: false });
++    while (m.size > MAX_OPEN) {
++      const oldest = m.keys().next().value;
++      if (oldest === undefined) break;
++      m.delete(oldest);
++    }
++  }
++
++  /**
++   * The open, unclaimed call this ask is about.
++   *
++   * Same tool and same input hash; the agent too when the ask names one (a
++   * subagent's does, read from the 2.1.312 binary: `PermissionRequest` gets
++   * the tool-use context and so its `agent_id`). With no agent named, the main
++   * agent's call is preferred — that is whose an agent-less ask is, by the
++   * same reading — and any agent's otherwise, so this still works if the
++   * binary reading is wrong. Oldest first: asks are raised in the order their
++   * calls started. A hook that rewrote the input (PreToolUse `updatedInput`)
++   * breaks the hash, so the fallback is the same agent and tool, oldest first.
++   */
++  claim(sessionId: string, agentId: string | null, tool: string, input: unknown): { callId: string; agentId: string } | null {
++    const m = this.sessions.get(sessionId);
++    if (m === undefined) return null;
++    const d = digestOf(input);
++    const open = [...m.values()].filter((c) => !c.claimed && c.tool === tool).sort((a, b) => a.seq - b.seq);
++    const byAgent = (c: OpenCall) => agentId === null || c.agentId === agentId;
++    const exact = open.filter((c) => c.digest === d && byAgent(c));
++    let pick: OpenCall | undefined;
++    if (agentId === null) pick = exact.find((c) => c.agentId === sessionId) ?? exact[0];
++    else pick = exact[0];
++    if (pick === undefined && agentId !== null) pick = open.find((c) => c.agentId === agentId);
++    if (pick === undefined) return null;
++    pick.claimed = true;
++    return { callId: pick.callId, agentId: pick.agentId };
++  }
++
++  close(sessionId: string, callId: string): void {
++    this.sessions.get(sessionId)?.delete(callId);
++  }
++
++  closeAgent(sessionId: string, agentId: string): void {
++    const m = this.sessions.get(sessionId);
++    if (m === undefined) return;
++    for (const [id, c] of m) if (c.agentId === agentId) m.delete(id);
++  }
++
++  closeSession(sessionId: string): void {
++    this.sessions.delete(sessionId);
++  }
++}
+diff --git a/src/adapters/claude/normalize.ts b/src/adapters/claude/normalize.ts
+index 5b0f3d5..0b02414 100644
+--- a/src/adapters/claude/normalize.ts
++++ b/src/adapters/claude/normalize.ts
+@@ -58,6 +58,7 @@ const KIND_BY_HOOK: Record<string, Kind> = {
+   PostToolUse: "post_tool",
+   PostToolUseFailure: "tool_failed",
+   PermissionRequest: "notification",
++  PostToolBatch: "tool_batch",
+   Notification: "notification",
+   SubagentStart: "subagent_start",
+   SubagentStop: "subagent_stop",
+@@ -157,6 +158,12 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+   let paths: string[] = [];
+   let tool: string | null = null;
+   let ok: boolean | null = null;
++  // #86 candidate B — the call this event is about. An id only, never its input.
++  let callId: string | null = null;
++  let callIds: string[] = [];
++  let dialog: "permission" | "question" | null = null;
++  let eventAgentId = agentId;
++  const toolUseId = typeof p.tool_use_id === "string" && p.tool_use_id.length <= 256 ? p.tool_use_id : null;
+ 
+   if (kind === "pre_tool" || kind === "post_tool" || kind === "tool_failed") {
+     tool = typeof p.tool_name === "string" ? p.tool_name : null;
+@@ -175,7 +182,27 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+     // as its own event KIND rather than as ok:false, so `ok` is derivable
+     // rather than guessed. The error was documentation, not behaviour.
+     ok = kind === "tool_failed" ? false : kind === "post_tool" ? true : null;
++    callId = toolUseId;
++    if (callId !== null && tool !== null) {
++      if (kind === "pre_tool") deps.correlator?.open(sessionId, agentId, tool, p.tool_input, callId);
++      else deps.correlator?.close(sessionId, callId);
++    }
++  }
++
++  if (kind === "tool_batch") {
++    // Only the ids. tool_input and tool_response ride along in this payload and
++    // are never read (SEC-01).
++    const calls = Array.isArray(p.tool_calls) ? (p.tool_calls as unknown[]) : [];
++    for (const c of calls.slice(0, 256)) {
++      const id = (c as { tool_use_id?: unknown } | null)?.tool_use_id;
++      if (typeof id === "string" && id.length <= 256) {
++        callIds.push(id);
++        deps.correlator?.close(sessionId, id);
++      }
++    }
+   }
++  if (kind === "stop" || kind === "subagent_stop") deps.correlator?.closeAgent(sessionId, agentId);
++  if (kind === "session_end") deps.correlator?.closeSession(sessionId);
+ 
+   if (kind === "file_changed") {
+     const fp = typeof p.file_path === "string" ? p.file_path : null;
+@@ -208,6 +235,16 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+     // answer just the same. The tool is not carried: the PreToolUse before it
+     // already named it.
+     notificationKind = "permission_request";
++    // #86 candidate B — whose call, exactly: the PreToolUse it follows names
++    // the call and the agent. AskUserQuestion's dialog reads differently in
++    // the listing ("input needed"), so it is marked as a question.
++    const toolName = typeof p.tool_name === "string" ? p.tool_name : "";
++    dialog = toolName === "AskUserQuestion" ? "question" : "permission";
++    const m = deps.correlator?.claim(sessionId, agentIdField, toolName, p.tool_input) ?? null;
++    if (m !== null) {
++      callId = m.callId;
++      eventAgentId = m.agentId;
++    }
+   } else if (kind === "notification") {
+     const nt = typeof p.notification_type === "string" ? p.notification_type : "";
+     notificationKind = NOTIFICATION_KINDS.has(nt) ? (nt as NotificationKind) : "other";
+@@ -240,8 +277,8 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+       sessionId,
+       ts: deps.now(),
+       kind,
+-      agentId,
+-      agentType,
++      agentId: eventAgentId,
++      agentType: eventAgentId === agentId ? agentType : null,
+       parentAgentId,
+       parentSource,
+       tool,
+@@ -250,6 +287,9 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+       op,
+       ok,
+       notificationKind,
++      callId,
++      callIds,
++      dialog,
+     },
+   };
+ }
+diff --git a/src/adapters/types.ts b/src/adapters/types.ts
+index 9d4bc36..50d8fbc 100644
+--- a/src/adapters/types.ts
++++ b/src/adapters/types.ts
+@@ -19,7 +19,22 @@ export interface SidecarMeta {
+   parentAgentId?: string;
+ }
+ 
++/**
++ * #86 candidate B — ties a PermissionRequest (which names no call) to the
++ * PreToolUse it follows. In memory only: it hashes tool_input and keeps the
++ * hash, never the input, and nothing it holds is persisted or logged (SEC-01).
++ */
++export interface CallCorrelator {
++  open(sessionId: string, agentId: string, tool: string, input: unknown, callId: string): void;
++  claim(sessionId: string, agentId: string | null, tool: string, input: unknown): { callId: string; agentId: string } | null;
++  close(sessionId: string, callId: string): void;
++  closeAgent(sessionId: string, agentId: string): void;
++  closeSession(sessionId: string): void;
++}
++
+ export interface NormalizeDeps {
++  /** #86 candidate B — optional, so a caller without one keeps today's behaviour. */
++  correlator?: CallCorrelator;
+   now: () => number;
+   newId: () => string;
+   realpath: (p: string) => string;
+diff --git a/src/contract/capabilities.ts b/src/contract/capabilities.ts
+index 1801e34..63bce54 100644
+--- a/src/contract/capabilities.ts
++++ b/src/contract/capabilities.ts
+@@ -59,6 +59,16 @@ export interface ProviderCapabilities {
+    * (`reconcile`), never reading a provider's own (CAP-02).
+    */
+   listingClearsBlocks: boolean;
++  /**
++   * #86 candidate B — permission asks are claimed per tool call
++   * (`permission_request` carrying the call's id) and shown ONE AT A TIME in
++   * the order they were raised, so a session's open asks form a queue whose
++   * head is the dialog on screen. Read from the 2.1.312 binary: the dialog
++   * store shows `open.findLast(...)`, and a tool's ask is inserted with
++   * `place: "queue"` by `askOrder`, the order asks were raised. A notice that
++   * names no agent, and the listing's sighting, are about the head.
++   */
++  dialogQueue: boolean;
+ }
+ 
+ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+@@ -73,6 +83,7 @@ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+     fileWatch: true,
+     liveness: "listing",
+     listingClearsBlocks: true,
++    dialogQueue: true,
+   },
+   codex: {
+     // Its automatic reviewer answered the captured auto-reviewed request after
+@@ -84,5 +95,8 @@ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+     // Nothing to read: its pid lister reports no status. Codex says Esc itself
+     // (`Interrupt`), so it does not need one.
+     listingClearsBlocks: false,
++    // Codex's PermissionRequest is its only blocking signal and it is
++    // already per agent; Esc sends Interrupt. Nothing here changes for it.
++    dialogQueue: false,
+   },
+ };
+diff --git a/src/contract/event.ts b/src/contract/event.ts
+index 4c8630c..e837557 100644
+--- a/src/contract/event.ts
++++ b/src/contract/event.ts
+@@ -13,7 +13,12 @@ export type Kind =
+   | "subagent_stop"
+   | "file_changed"
+   | "stop"
+-  | "session_end";
++  | "session_end"
++  /**
++   * #86 candidate B — Claude's PostToolBatch: the batch of tool calls is over,
++   * denied ones included (`callIds`). The one exit a self-denied ask has.
++   */
++  | "tool_batch";
+ 
+ /** How CAP-05 resolved this agent's parent. `inferred` means "we guessed". */
+ export type ParentSource = "sidecar" | "tooluse" | "inferred";
+@@ -51,6 +56,9 @@ export interface ContractVersion {
+ // a 2.0 producer still validates and a 2.0 consumer still works.
+ export const CONTRACT_VERSION: ContractVersion = { major: 2, minor: 1 };
+ 
++/** #86 candidate B — what a claimed dialog looks like in the provider's listing. */
++export type DialogKind = "permission" | "question";
++
+ export interface AstirEvent {
+   v: ContractVersion;
+   eventId: string;
+@@ -77,6 +85,16 @@ export interface AstirEvent {
+   op: Op | null;
+   ok: boolean | null;
+   notificationKind: NotificationKind | null;
++  /**
++   * #86 candidate B — the tool call this event is about (`tool_use_id`): set
++   * on pre_tool, post_tool and tool_failed, and on a `permission_request` the
++   * adapter could correlate to its PreToolUse. An id, never the call's input.
++   */
++  callId?: string | null;
++  /** #86 candidate B — every call a `tool_batch` closes. */
++  callIds?: string[];
++  /** #86 candidate B — on a `permission_request`: the dialog it will show. */
++  dialog?: DialogKind | null;
+ }
+ 
+ /** DMN-03 bounds. Exceeding any of these is a rejection, never a silent clamp. */
+@@ -103,6 +121,7 @@ const KINDS = new Set<string>([
+   "file_changed",
+   "stop",
+   "session_end",
++  "tool_batch",
+ ]);
+ const PROVIDERS = new Set<string>(["claude", "codex"]);
+ const OPS = new Set<string>(["read", "write", "edit", "other"]);
+@@ -201,6 +220,10 @@ export function validateEvent(raw: unknown): ValidateResult {
+     paths.push(p);
+   }
+ 
++  const callId = isSaneString(r.callId) ? r.callId : null;
++  const callIds = Array.isArray(r.callIds) ? (r.callIds as unknown[]).filter(isSaneString).slice(0, LIMITS.maxPaths) : [];
++  const dialog = r.dialog === "permission" || r.dialog === "question" ? r.dialog : null;
++
+   return {
+     ok: true,
+     event: {
+@@ -220,6 +243,9 @@ export function validateEvent(raw: unknown): ValidateResult {
+       op: op as Op | null,
+       ok: typeof r.ok === "boolean" ? r.ok : null,
+       notificationKind: (r.notificationKind as NotificationKind | undefined) ?? null,
++      callId,
++      callIds,
++      dialog,
+     },
+   };
+ }
+diff --git a/src/daemon/server.ts b/src/daemon/server.ts
+index 204c7df..7b596bc 100644
+--- a/src/daemon/server.ts
++++ b/src/daemon/server.ts
+@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse }
+ import { hostname } from "node:os";
+ import { join } from "node:path";
+ import { fileURLToPath } from "node:url";
++import { ClaudeCallCorrelator } from "../adapters/claude/correlate.js";
+ import { defaultNewId, normalizeClaudeHook } from "../adapters/claude/normalize.js";
+ import { watchPathsFor } from "../adapters/claude/watch.js";
+ import { normalizeCodexHook } from "../adapters/codex/normalize.js";
+@@ -232,6 +233,12 @@ export class Daemon {
+   private server: Server;
+   private readonly opts: DaemonOpts;
+   private readonly readSidecar: (s: string, a: string) => SidecarMeta | null;
++  /**
++   * #86 candidate B — ties each PermissionRequest to its PreToolUse. One per
++   * daemon, in memory only (SEC-01): a hash of each open call's input, never
++   * the input. Every normalizer gets it; only Claude's uses it.
++   */
++  private readonly correlator = new ClaudeCallCorrelator();
+   private readonly focus: NonNullable<DaemonOpts["focus"]>;
+   private readonly nowSeconds: () => number;
+   private readonly viewRoot: string;
+@@ -642,6 +649,7 @@ export class Daemon {
+         }
+       },
+       readSidecar: this.readSidecar,
++      correlator: this.correlator,
+     });
+ 
+     this.counters.pathsOutsideRepo += droppedPaths;
+diff --git a/src/discovery/sessions.ts b/src/discovery/sessions.ts
+index 49a500d..4960c92 100644
+--- a/src/discovery/sessions.ts
++++ b/src/discovery/sessions.ts
+@@ -57,7 +57,7 @@ export interface DiscoveredSession {
+  * - `at-prompt`: nothing is on screen and the turn is over.
+  * - `working`: nothing is on screen and the session is working.
+  */
+-export type SessionScreen = "permission-dialog" | "other-dialog" | "at-prompt" | "working";
++export type SessionScreen = "permission-dialog" | "question-dialog" | "other-dialog" | "at-prompt" | "working";
+ 
+ /**
+  * #86 — the one `waitingFor` that means "a permission dialog is on screen" in
+@@ -80,6 +80,8 @@ export type SessionScreen = "permission-dialog" | "other-dialog" | "at-prompt" |
+  * request"`, `"sandbox request"` and `"goal proposal"`.
+  */
+ const CLAUDE_PERMISSION_DIALOG = "permission prompt";
++/** #86 candidate B — what AskUserQuestion's dialog reads (binary: `tool_name===Ss` → "input needed"). */
++const CLAUDE_QUESTION_DIALOG = "input needed";
+ 
+ /**
+  * #86 — Claude statuses that mean "at its prompt, nothing on screen".
+@@ -102,8 +104,13 @@ const CLAUDE_WORKING = new Set(["busy", "running", "working"]);
+ /** #86 — Claude's listing, in astir's words. Undefined when it says nothing usable. */
+ export function claudeScreen(status: string | null, waitingFor: string | null): SessionScreen | undefined {
+   if (status === null) return undefined;
+-  if (status === "waiting")
+-    return waitingFor === CLAUDE_PERMISSION_DIALOG ? "permission-dialog" : "other-dialog";
++  if (status === "waiting") {
++    if (waitingFor === CLAUDE_PERMISSION_DIALOG) return "permission-dialog";
++    // #86 candidate B — AskUserQuestion's dialog (and an MCP elicitation,
++    // which the registry cannot tell apart): evidence only for a question ask.
++    if (waitingFor === CLAUDE_QUESTION_DIALOG) return "question-dialog";
++    return "other-dialog";
++  }
+   if (CLAUDE_AT_PROMPT.has(status)) return "at-prompt";
+   if (CLAUDE_WORKING.has(status)) return "working";
+   return undefined;
+diff --git a/src/model/registry.ts b/src/model/registry.ts
+index f7bc697..25ae385 100644
+--- a/src/model/registry.ts
++++ b/src/model/registry.ts
+@@ -42,76 +42,36 @@ const TURN_END = new Set<AgentState>(["waiting", "idle"]);
+  */
+ const PROVIDER_BUSY = new Set(["busy", "running", "working"]);
+ 
++// ---------------------------------------------------------------------------
++// #86 candidate B — a session's permission asks as Claude's own dialog queue.
++// ---------------------------------------------------------------------------
++
++/** A listing reading begun this soon after a claim may predate its dialog (visible ~0.4 s in). */
++const SETTLE_MS = 1_000;
++/** AskUserQuestion's listing lags (measured: `busy` ~1 s in, `waiting` by ~8 s). */
++const QUESTION_SETTLE_MS = 10_000;
++/** A permission_prompt Notification is sent once a dialog has been up 6 s (binary: `Sun=6000`). */
++const NOTICE_PERIOD_MS = 6_000;
++/** No Notification can be about an ask younger than this: a second under the measured 6.17 s. */
++const NOTICE_MIN_AGE_MS = 5_000;
+ /**
+- * #86 — how long after a dialog was claimed a listing must have STARTED before
+- * its `idle` is believed.
+- *
+- * The listing is a child process that takes its time, so its answer can
+- * describe the session from before the hook that claimed the dialog arrived.
+- * A poll begun a second after the claim cannot: the dialog is up by then
+- * (measured: visible ~0.4 s after `PermissionRequest`, and `waiting` from the
+- * first poll).
++ * The window a lone ask's own Notification lands in, around each 6 s check:
++ * measured claim→Notification 6.17–6.58 s (fixture, #86's table), ±0.3 s.
+  */
+-const LISTING_SETTLE_MS = 1_000;
+-
+-/**
+- * #86 — how long a claimed dialog (`PermissionRequest`) waits to be seen
+- * before the claim is dropped, and how far back a block seen from it can be
+- * dated.
+- *
+- * A dialog that is on screen is seen well inside it, by measurement:
+- * Claude's listing reads `waiting` / `"permission prompt"` from the first poll
+- * begun once it is up (~0.4 s after the claim), and polls begin every 5 s, so
+- * even when the first one after the claim began too early to see it, the next
+- * begins ~6 s in at the latest; the `permission_prompt` Notification comes
+- * ~6.2–6.6 s after the claim (the fixture; #86's table). Ten seconds covers
+- * both, with room for a poll to start late or a hook to arrive late.
+- *
+- * Not much longer, because a claim that outlives its dialog — approved before
+- * any poll saw it, or a background ask Claude denied itself — is exactly what
+- * a sighting of some OTHER dialog can be mistaken for. Inside the window that
+- * is bounded (a sighting blocks only the newest claim, see
+- * `settleFromListing`); past it, never. The Notification can come later than
+- * this — Claude sends it once the user has been idle at the dialog for 6 s,
+- * checked every 6 s — but only for a user who was touching the terminal while
+- * the dialog was up, and then the listing will have seen it first; such a
+- * late Notification blocks from when it arrives.
+- *
+- * A claim a sighting passed over — it was not the newest, or a block already
+- * standing explained the sighting — may still be a dialog on screen, queued
+- * or simply older than a claim with none behind it. Its window runs from the
+- * last such sighting (`dialogHeldAt`) rather than from the claim, so it cannot
+- * lapse while the screen keeps showing a dialog that could be its own.
+- */
+-export const CLAIM_WINDOW_MS = 10_000;
+-
++const NOTICE_EARLY_MS = 100;
++const NOTICE_LATE_MS = 900;
++/** A head claimed this recently cannot have been answered before the poll saw it. */
++const FRESH_HEAD_MS = 1_500;
+ /**
+- * #86 verification — how long a dialog must have been claimed before a
+- * `permission_prompt` Notification can be about it.
+- *
+- * Claude sends the Notification once the dialog has been up 6 s (an interval
+- * of 6 s from when the dialog opens, read from 2.1.312), and the dialog opens
+- * as it is claimed: measured 6.17 s and 6.37 s after `PermissionRequest`. So a
+- * claim younger than that is another dialog — a queued one, or one Claude
+- * denied itself — and a Notification taken for it took the dialog that was
+- * really on screen with it. A second under the measured gap, for a hook that
+- * lands late.
++ * How long an ambiguous sighting waits for the Notification before the FIFO
++ * head takes it: past the second 6 s check, so a user who touched the
++ * terminal once (Notification at ~12.4 s) still gets the right name.
+  */
+-const NOTICE_MIN_AGE_MS = 5_000;
++const DEFER_MAX_MS = 13_000;
++/** Asks kept per session. */
++const MAX_ASKS = 64;
+ 
+-/**
+- * #86 — the events that are an agent's own progress, and so the only ones
+- * that end its block or its claimed dialog.
+- *
+- * It ran a tool, finished or failed one, ended its turn, its session or
+- * itself, or its session (re)started — a dialog survives none of these.
+- * Everything else says nothing about whether a human answered: a
+- * `file_changed` names no agent (Claude builds it with no agent context) and
+- * fires for any write to a watched path, the user's editor's included; a
+- * notification is the session telling you something, and a blocking one is a
+- * reason to stay blocked; `subagent_start` is a new agent's first event. The
+- * listing ends a Claude block too (`settleFromListing`).
+- */
++/** The events that are an agent's own progress: they end a notice block (not a dialog). */
+ const OWN_PROGRESS = new Set<AstirEvent["kind"]>([
+   "session_start",
+   "pre_tool",
+@@ -121,36 +81,34 @@ const OWN_PROGRESS = new Set<AstirEvent["kind"]>([
+   "session_end",
+   "subagent_stop",
+ ]);
+-
+-/** The notification kinds that mean "come look": they block. */
+-const BLOCKING_NOTIFICATIONS = new Set([
+-  "permission_prompt",
+-  "agent_needs_input",
+-  "worker_permission_prompt",
+-]);
++const BLOCKING_NOTIFICATIONS = new Set(["permission_prompt", "agent_needs_input", "worker_permission_prompt"]);
+ 
+ /**
+- * #86 — the block reasons a provider's listing has been measured to end.
++ * #86 candidate B — one `PermissionRequest`, tied to its call.
+  *
+- * Only Claude's own permission dialog — a tool's and `AskUserQuestion`'s
+- * both arrive as `permission_prompt`. `agent_needs_input` is a session telling
+- * you about ANOTHER agent (Claude's text is "<agent> needs your input"), so
+- * this session's `idle` says nothing about whether that need is met, and
+- * nobody has measured what the listing shows for a worker's prompt. Those keep
+- * ending the way they always have, on the agent's next event. Nor do they take
+- * over a block the listing can end (`apply`): the agent is waiting on its own
+- * dialog either way, and a reason the listing cannot end would leave it
+- * blocked, and reminding, after Esc.
+- */
+-const LISTING_ENDS = new Set(["permission_prompt"]);
+-
+-/**
+- * #86 — whether an open claim's window has run out at `at`: CLAIM_WINDOW_MS
+- * from the claim, or from the last sighting that held it.
++ * Claude shows dialogs one at a time, oldest ask on top (2.1.312: the dialog
++ * store renders `open.findLast(...)`, and a tool's ask is inserted by
++ * `askOrder` with `place: "queue"`). So a session's asks, in claim order, are
++ * the queue, and its head is what the listing and the Notification see. Never
++ * persisted, never on a surface; it holds ids and times, no input.
+  */
+-function claimLapsed(a: AgentRecord, at: number): boolean {
+-  if (a.dialogSince === null) return false;
+-  return at - Math.max(a.dialogSince, a.dialogHeldAt ?? a.dialogSince) >= CLAIM_WINDOW_MS;
++interface Ask {
++  callId: string | null;
++  agentId: string;
++  kind: "permission" | "question";
++  claimAt: number;
++  /** Nothing else was queued when it was claimed: its dialog opened at its claim. */
++  soloAtClaim: boolean;
++  /** When it became the model's head; null while something is ahead of it. */
++  headSince: number | null;
++  /** It reached the head through the exact exit of a head that was on screen. */
++  inLine: boolean;
++  /** A sighting or a Notification has put it on screen: its agent is blocked. */
++  seen: boolean;
++  /** What the block it makes is dated from. */
++  since: number;
++  /** A Notification has been attributed to it; Claude sends one per dialog. */
++  noticed: boolean;
+ }
+ 
+ export interface AgentRecord {
+@@ -191,59 +149,19 @@ export interface AgentRecord {
+   /** Why this agent is blocked, e.g. `permission_prompt`. Null when not blocked. */
+   blockedReason: string | null;
+   /**
+-   * #86 — wall ms at which Claude last claimed a permission dialog for this
+-   * agent (`PermissionRequest`), or null.
+-   *
+-   * While the agent is not blocked it is an open claim: nothing has seen that
+-   * dialog on screen yet. A claim is not a block. Claude fires
+-   * `PermissionRequest` for asks that can never show a dialog — a background
+-   * agent's, a headless session's — and denies them itself, so blocking on it
+-   * alone alerted about prompts nobody could see. The agent blocks once the
+-   * dialog is SEEN — the listing says a permission dialog is on screen, or the
+-   * Notification arrives — and the block is dated from here, so PSH-16's
+-   * dwell counts from the moment the dialog opened rather than from the
+-   * sighting. An open claim lasts CLAIM_WINDOW_MS from the claim, or from the
+-   * last sighting that held it (`dialogHeldAt`): past that, nothing can see it.
+-   *
+-   * While the agent is blocked it is the claim the block came from (the newest,
+-   * if the agent asked again). It is what a later Notification — which names no
+-   * agent — and a later sighting are matched against, so one dialog never
+-   * blocks two agents.
+-   *
+-   * Only the agent's own progress ends it (OWN_PROGRESS), or the listing
+-   * finding the session idle, or the block it became ending. Never persisted,
+-   * and on no surface.
+-   */
+-  dialogSince: number | null;
+-  /**
+-   * #86 verification — when the latest poll STARTED that saw a permission
+-   * dialog this open claim could have been, but that went to another: a newer
+-   * claim, or a block already standing. Null until one has; reset by a new
+-   * claim. Only meaningful while the claim is open.
+-   *
+-   * The listing says a dialog is up, not whose, so a sighting takes one claim
+-   * and passes the rest over. One it passed over may be the very dialog on
+-   * screen — older than a claim Claude denied itself, or queued behind a
+-   * block's — and must not lapse while the screen still shows a dialog; once
+-   * the block that took the sighting ends, the next sighting is its. Never
+-   * persisted, and on no surface.
+-   */
+-  dialogHeldAt: number | null;
+-  /**
+-   * #86 — when the latest discovery poll that found a permission dialog on
+-   * screen STARTED during this agent's
+-   * block; null when none has, or when the agent has claimed another dialog
+-   * since.
+-   *
+-   * It is what makes a later `busy` mean "answered": a dialog was open, and
+-   * now the session is working. A `busy` with none before it proves nothing,
+-   * because the listing can lag the hook (`AskUserQuestion` read `busy` a
+-   * second into its dialog). Per agent, not per session: a dialog another agent
+-   * claims afterwards is not this one, so it cannot make this one's sighting
+-   * stale. Cleared by every state change. Never persisted, and not on any
+-   * surface: it is evidence, not state.
++   * #86 candidate B — a blocking Notification that is not one of its asks
++   * (agent_needs_input, a worker's prompt, or a permission_prompt no ask
++   * explains): when it arrived, and what it was. Ended by the agent's own
++   * progress; a permission_prompt one also by the listing. Never persisted.
+    */
+-  dialogSeenAt: number | null;
++  noticeSince?: number | null;
++  noticeReason?: string | null;
++  /** When a poll begun during that notice block last saw a dialog. */
++  noticeSeenAt?: number | null;
++  /** #86 candidate B — calls begun and not yet ended (ids only). Never persisted. */
++  openCalls?: Set<string>;
++  /** #86 candidate B — the latest moment its dialog was positively seen on screen. */
++  evidenceAt?: number | null;
+   /**
+    * What this agent was sent to do, from the sidecar. Set once at spawn and
+    * never cleared — it is the agent's standing brief, not its current state.
+@@ -405,6 +323,10 @@ export interface SessionRecord {
+   startedAt: number | null;
+   /** DMN-11 — false when no human is sitting at it (a plugin or script drives it). */
+   attended?: boolean;
++  /** #86 candidate B — open asks, in queue order. Never persisted. */
++  asks?: Ask[];
++  /** #86 candidate B — when a sighting first could not tell whose head is on screen. */
++  ambiguousSince?: number | null;
+   /**
+    * This state came from the crash-recovery snapshot, not from an event.
+    *
+@@ -444,6 +366,13 @@ export interface RegistryOpts {
+   undiscoveredTtlMs?: number;
+   /** DMN-06 — the dedupe set is bounded; this is the replay window it covers. */
+   maxSeenEvents?: number;
++  /**
++   * #86 candidate B option — a dialog block reports how long its dialog has
++   * been SEEN up (latest sighting or Notification minus its start), so the
++   * first alert waits for evidence the dialog outlived the dwell, not just
++   * for the clock. Off: it reports how long since the block started.
++   */
++  evidenceDwell?: boolean;
+ }
+ 
+ export interface IngestResult {
+@@ -470,6 +399,7 @@ export class Registry {
+   private readonly endedGraceMs: number;
+   private readonly undiscoveredTtlMs: number;
+   private readonly maxSeen: number;
++  private readonly evidenceDwell: boolean;
+   /**
+    * Whether discovery has ever produced a usable answer. The undiscovered sweep
+    * is gated on it: with no working discovery, "never discovered" is evidence
+@@ -498,7 +428,7 @@ export class Registry {
+   private silentByProvider = new Map<Provider, DiscoveredSession[]>();
+   /** Saved sessions awaiting a provider's confirmation. See `stageRestore`. */
+   private pendingRestore = new Map<string, SnapshotSession>();
+-  /** OBS-01 — blocks begun, by any path. See `blocksBegun`. */
++  /** OBS-01 — blocks begun, by any path (`transition`). */
+   private blocks = 0;
+ 
+   constructor(opts: RegistryOpts) {
+@@ -508,6 +438,7 @@ export class Registry {
+     this.endedGraceMs = opts.endedGraceMs ?? 60_000;
+     this.undiscoveredTtlMs = opts.undiscoveredTtlMs ?? 10 * 60_000;
+     this.maxSeen = opts.maxSeenEvents ?? 10_000;
++    this.evidenceDwell = opts.evidenceDwell ?? false;
+   }
+ 
+   list(): SessionRecord[] {
+@@ -555,7 +486,11 @@ export class Registry {
+             provider: s.provider,
+             cwd: s.cwd,
+             reason: a.blockedReason ?? "blocked",
+-            blockedForMs: Math.max(0, this.nowMs() - a.stateSince),
++            blockedForMs: Math.max(
++              0,
++              (this.evidenceDwell && this.holdsHead(s, a) !== null ? (a.evidenceAt ?? a.stateSince) : this.nowMs()) -
++                a.stateSince,
++            ),
+             restored: s.restored === true,
+             announcedAt: a.announcedAt,
+           });
+@@ -565,12 +500,7 @@ export class Registry {
+     return out;
+   }
+ 
+-  /**
+-   * OBS-01 — how many times an agent has begun to wait on a human, whatever
+-   * began it: an event (`apply`), or Claude's session listing seeing a claimed
+-   * dialog (`reconcile`, #86). Counted where every state change is made
+-   * (`transition`), so no path can miss it; a restored block is not a new one.
+-   */
++  /** OBS-01 — how many times an agent began to wait on a human, whatever began it. */
+   blocksBegun(): number {
+     return this.blocks;
+   }
+@@ -682,199 +612,354 @@ export class Registry {
+     // corrected — which is why the flag says "restored" rather than nothing.
+     session.restored = false;
+     this.heard(event.sessionId);
+-    // #86 — before anything is recorded against an agent: a Notification that
+-    // named none may be another agent's.
+-    const ev = this.attributeDialogNotice(session, event);
+-    const agent = this.ensureAgent(session, ev);
+-    if (agent.description === null && ev.description !== null) {
+-      agent.description = ev.description;
++    const agent = this.ensureAgent(session, event);
++    if (agent.description === null && event.description !== null) {
++      agent.description = event.description;
+     }
+ 
+     // MOD-06 — timestamp-monotonic. A stale event never rewrites state.
+-    if (ev.ts < agent.lastEventTs) return { applied: false, reason: "stale" };
+-    agent.lastEventTs = ev.ts;
++    if (event.ts < agent.lastEventTs) return { applied: false, reason: "stale" };
++    agent.lastEventTs = event.ts;
+     agent.lastActivityMs = this.nowMs();
+ 
+     // MOD-01/MOD-02 — the map grows from paths the adapter already normalised
+     // and scoped to the repo (CAP-04). Deliberately after both guards above:
+     // the eventId dedup at the top of this method is what stops a redelivered
+     // event double-counting heat, and a stale event must not add any.
+-    if (ev.paths.length > 0) session.map.touch(ev.paths);
++    if (event.paths.length > 0) session.map.touch(event.paths);
+     session.lastEventTs = agent.lastActivityMs;
+ 
+-    if (TERMINAL.has(agent.state) && ev.kind !== "session_start") {
++    if (TERMINAL.has(agent.state) && event.kind !== "session_start") {
+       return { applied: false, reason: "terminal" };
+     }
+ 
+-    if (ev.kind === "session_end") session.endedAt = this.nowMs();
+-    else if (ev.kind === "session_start") session.endedAt = null; // resumed
+-
+-    // #86 — a claim, not a block (`AgentRecord.dialogSince`). Nothing else
+-    // about the agent changes: it is still running the tool it asked for, as
+-    // far as anyone has seen. An agent already blocked keeps its block and its
+-    // date, but this dialog is a new one nobody has seen, so a sighting from
+-    // before it cannot make a later `busy` its answer. Another agent's
+-    // sighting is untouched: the dialog it saw is not this one.
+-    if (ev.notificationKind === "permission_request") {
+-      agent.dialogSince = this.nowMs();
+-      agent.dialogHeldAt = null;
+-      agent.dialogSeenAt = null;
+-      return { applied: true };
+-    }
++    if (event.kind === "session_end") session.endedAt = this.nowMs();
++    else if (event.kind === "session_start") session.endedAt = null; // resumed
+ 
+-    // #86 — an open claim lasts CLAIM_WINDOW_MS; past it, it is gone.
+-    const blocked = HUMAN_BLOCKING.has(agent.state);
+-    if (!blocked && claimLapsed(agent, this.nowMs())) agent.dialogSince = null;
+-    // #86 — an event that is not the agent's own progress says nothing about a
+-    // dialog it is blocked on or has claimed, so it changes nothing about the
+-    // agent: not its state, its reason, its date or its claim. A FileChanged
+-    // names no agent and lands on the main agent for anyone's write; a
+-    // notification that blocks nothing is the session saying something else.
+-    // A blocking one goes on, to block or to stay blocked.
+-    const blocking = ev.kind === "notification" && BLOCKING_NOTIFICATIONS.has(ev.notificationKind ?? "");
+-    if ((blocked || agent.dialogSince !== null) && !OWN_PROGRESS.has(ev.kind) && !blocking) {
+-      return { applied: true };
+-    }
+-    // #86 verification — nor does a blocking one the listing cannot end, on
+-    // an agent blocked on a dialog it can (LISTING_ENDS). `agent_needs_input`
+-    // is about another agent, a worker's prompt is a worker's; this agent is
+-    // waiting on its own dialog either way. Taking over the reason swapped a
+-    // block Esc ends for one only the agent's next event does, and reminded
+-    // about the wrong thing until then.
+-    if (
+-      blocked &&
+-      blocking &&
+-      LISTING_ENDS.has(agent.blockedReason ?? "") &&
+-      !LISTING_ENDS.has(ev.notificationKind ?? "")
+-    ) {
+-      return { applied: true };
+-    }
+-    if (ev.notificationKind === "permission_prompt") this.retractYoungerBlocks(session, agent);
++    // #86 candidate B — a provider whose asks form a dialog queue.
++    if (CAPABILITIES[session.provider].dialogQueue) return this.applyQueued(session, agent, event);
+ 
+-    const next = this.nextState(ev, agent.state);
++    const next = this.nextState(event, agent.state);
+     const becameBlocked =
+       next !== agent.state && HUMAN_BLOCKING.has(next)
+-        ? { sessionId: session.sessionId, agentId: agent.id, kind: ev.notificationKind ?? "blocked" }
++        ? { sessionId: session.sessionId, agentId: agent.id, kind: event.notificationKind ?? "blocked" }
+         : undefined;
+-    // #86 — the Notification sees a dialog that was claimed: the block began at
+-    // the claim, and keeps it (`dialogSince`). The agent's own progress ends
+-    // the claim — it answered, moved on, or was never going to show a dialog —
+-    // and a block that is about something else is not the claim's.
+-    const sighted = becameBlocked && ev.notificationKind === "permission_prompt" ? agent.dialogSince : null;
+-    if (OWN_PROGRESS.has(ev.kind) || (becameBlocked && sighted === null)) agent.dialogSince = null;
+-
+-    if (HUMAN_BLOCKING.has(next)) agent.blockedReason = ev.notificationKind ?? "blocked";
++
++    if (HUMAN_BLOCKING.has(next)) agent.blockedReason = event.notificationKind ?? "blocked";
+     else agent.blockedReason = null;
+ 
+     // What it is doing, for as long as it is doing it. `pre_tool` opens the
+     // action and anything else closes it — including `notification`, because an
+     // agent blocked on a permission prompt mid-Edit is waiting on a human, not
+     // editing, and saying "Edit" there would describe the wrong thing.
+-    if (ev.kind === "pre_tool") {
+-      agent.tool = ev.tool;
+-      agent.toolPath = ev.paths[0] ?? null;
++    if (event.kind === "pre_tool") {
++      agent.tool = event.tool;
++      agent.toolPath = event.paths[0] ?? null;
+     } else if (agent.tool !== null) {
+       agent.tool = null;
+       agent.toolPath = null;
+     }
+ 
+-    this.transition(agent, next, sighted ?? undefined);
++    this.transition(agent, next);
+ 
+     return becameBlocked ? { applied: true, becameBlocked } : { applied: true };
+   }
+ 
++
++  // -------------------------------------------------------------------------
++  // #86 candidate B — the dialog queue.
++  // -------------------------------------------------------------------------
++
++  private asksOf(s: SessionRecord): Ask[] {
++    if (s.asks === undefined) s.asks = [];
++    return s.asks;
++  }
++
++  /** The agent holds the head, and the head is on screen. */
++  private holdsHead(s: SessionRecord, a: AgentRecord): Ask | null {
++    const head = this.asksOf(s)[0];
++    return head !== undefined && head.seen && head.agentId === a.id ? head : null;
++  }
++
++  /** Whether the agent should be blocked, and from when. */
++  private blockOf(s: SessionRecord, a: AgentRecord): { since: number; reason: string } | null {
++    const head = this.holdsHead(s, a);
++    const notice = a.noticeSince ?? null;
++    if (head === null && notice === null) return null;
++    const since = Math.min(head?.since ?? Number.POSITIVE_INFINITY, notice ?? Number.POSITIVE_INFINITY);
++    return { since, reason: head !== null ? "permission_prompt" : (a.noticeReason ?? "blocked") };
++  }
++
+   /**
+-   * #86 — whose dialog a `permission_prompt` notification that names no agent
+-   * is about.
+-   *
+-   * Claude builds its Notification hook input with no agent context (2.1.312:
+-   * `lf(e,Ug())`, where PermissionRequest gets `lf(…,s)`), so it never carries
+-   * an `agent_id` and normalizes to the main agent — while a subagent's dialog
+-   * is claimed by that subagent. Taken at its word, a subagent's dialog blocked
+-   * the main agent too: two alerts for one dialog, and a parent stuck blocked
+-   * long after the approval.
+-   *
+-   * So it goes to the agent with the newest claim in the session that is old
+-   * enough to be its dialog (`noticeOwner`): one still open (inside its
+-   * window) or one a sighting already turned into a block, which it then
+-   * merely confirms. Old enough, because Claude sends it once the dialog has
+-   * been up 6 s (NOTICE_MIN_AGE_MS): a claim made since is some other dialog,
+-   * and taking it for this one lost the one on screen. Newest of those,
+-   * because a claim that outlived its dialog — approved before anything saw
+-   * it — is older than the one on screen, and the same rule picks the dialog a
+-   * listing saw (`settleFromListing`). With no such claim it is the main
+-   * agent's, as it always was: a session that sends no claims (one started
+-   * before `PermissionRequest` was registered, or a provider that has none),
+-   * or a dialog that sends none (plan approval), is untouched.
+-   *
+-   * Only an event that landed on the main agent by default is moved, and the
+-   * identity it carries is dropped: it was the main agent's, and a subagent's
+-   * parentage is not the main agent's to overwrite.
++   * Bring every agent of the session in line with the queue, except `skip`
++   * (the agent whose own event is being applied, which `applyQueued` moves).
++   * An agent that stops being blocked here did not act itself: its dialog
++   * left through the listing or was taken back, so it goes to `unblocked`.
+    */
+-  private attributeDialogNotice(session: SessionRecord, event: AstirEvent): AstirEvent {
+-    if (event.notificationKind !== "permission_prompt" || event.agentId !== event.sessionId) return event;
+-    const owner = this.noticeOwner(session, this.nowMs());
+-    if (owner === null || owner.id === event.agentId) return event;
+-    return {
+-      ...event,
+-      agentId: owner.id,
+-      agentType: null,
+-      parentAgentId: null,
+-      parentSource: null,
+-      description: null,
+-    };
++  private syncSession(s: SessionRecord, unblocked: AgentState, skip?: AgentRecord): IngestResult["becameBlocked"] {
++    let became: IngestResult["becameBlocked"];
++    for (const a of s.agents.values()) {
++      if (a === skip || TERMINAL.has(a.state)) continue;
++      const b = this.blockOf(s, a);
++      if (b !== null && a.state !== "blocked") {
++        a.blockedReason = b.reason;
++        a.tool = null;
++        a.toolPath = null;
++        this.transition(a, "blocked", b.since);
++        became ??= { sessionId: s.sessionId, agentId: a.id, kind: b.reason };
++      } else if (b !== null) {
++        a.blockedReason = b.reason;
++      } else if (b === null && a.state === "blocked") {
++        a.blockedReason = null;
++        this.transition(a, unblocked);
++      }
++    }
++    return became;
+   }
+ 
+   /**
+-   * #86 verification — a `permission_prompt` Notification says which dialog
+-   * has been on screen these last 6 s (NOTICE_MIN_AGE_MS): `owner`'s, claimed
+-   * before then, or one that sent no claim. A block a sighting gave a claim
+-   * made since was that same dialog taken for another — a background ask
+-   * Claude denied itself, or a dialog queued behind — and is taken back, as if
+-   * it had never begun: the agent is running the tool it asked for, since it
+-   * asked, and its claim stays open and held, because its dialog may yet come
+-   * up. None of it is banked as blocked; an alert already sent is resolved.
+-   *
+-   * Only a sighting can have made such a block: a Notification blocks a claim
+-   * only once it is old enough, and a younger claim is never one.
++   * Take asks out of the queue. An `exact` exit is the call's own end (its
++   * PostToolUse, PostToolBatch, its agent's Stop): if it was the head on
++   * screen, the next ask is now on screen — Claude shows the next queued
++   * dialog once one is answered — so it is in line, and for the same agent
++   * the block simply continues.
+    */
+-  private retractYoungerBlocks(session: SessionRecord, owner: AgentRecord): void {
++  private removeAsks(s: SessionRecord, drop: (a: Ask) => boolean, exact: boolean): void {
++    const asks = this.asksOf(s);
++    const head0 = asks[0];
++    s.asks = asks.filter((a) => !drop(a));
++    const head1 = s.asks[0];
++    if (head1 === head0) return;
++    s.ambiguousSince = null;
++    if (head1 === undefined) return;
++    const now = this.nowMs();
++    // Behind a head that was on screen, its dialog came up when that one was
++    // answered — no earlier than now, as far as anyone saw. Behind one never
++    // seen, nothing says when: it may have been up since its claim.
++    head1.headSince ??= head0 !== undefined && head0.seen ? now : head1.claimAt;
++    if (exact && head0 !== undefined && head0.seen && drop(head0)) {
++      head1.inLine = true;
++      if (head1.agentId === head0.agentId && !head1.seen) {
++        head1.seen = true;
++        head1.since = head0.since;
++      }
++    }
++  }
++
++  /** Whether a permission_prompt Notification at `at` can be about `a`'s dialog. */
++  private noticeFits(a: Ask, at: number): boolean {
++    if (a.noticed || at - a.claimAt < NOTICE_MIN_AGE_MS) return false;
++    // Queued behind something: its dialog opened whenever that left, so any time fits.
++    if (!a.soloAtClaim) return true;
++    // Alone: its dialog opened at its claim, and Claude checks every 6 s from then.
++    const d = at - a.claimAt;
++    for (let k = 1; k * NOTICE_PERIOD_MS - NOTICE_EARLY_MS <= d; k++) {
++      if (d <= k * NOTICE_PERIOD_MS + NOTICE_LATE_MS) return true;
++    }
++    return false;
++  }
++
++  /**
++   * A permission_prompt Notification names no agent: it is about the dialog on
++   * screen, which has been up 6 s (or 12, 18…). Under FIFO that is the oldest
++   * ask still pending, so it goes to the first ask in queue order it fits, and
++   * every ask ahead of that one is not pending — answered, its tool running
++   * with no hook to say so — and leaves the queue. If no ask fits, the dialog
++   * sent no claim (plan approval and the like) or jumped the queue, and the
++   * Notification blocks the main agent as it did before #86.
++   */
++  private attributeNotice(s: SessionRecord, at: number): Ask | null {
++    const asks = this.asksOf(s);
++    const winner = asks.find((a) => this.noticeFits(a, at));
++    if (winner === undefined) return null;
++    const ahead = new Set(asks.slice(0, asks.indexOf(winner)));
++    if (ahead.size > 0) this.removeAsks(s, (a) => ahead.has(a), false);
++    winner.noticed = true;
++    winner.headSince ??= at;
++    const owner = s.agents.get(winner.agentId);
++    if (owner !== undefined) owner.evidenceAt = at;
++    if (!winner.seen) {
++      winner.seen = true;
++      winner.since = Math.max(winner.claimAt, Math.min(winner.headSince, at - (NOTICE_PERIOD_MS + 200)));
++    }
++    s.ambiguousSince = null;
++    return winner;
++  }
++
++  private applyQueued(session: SessionRecord, agent: AgentRecord, event: AstirEvent): IngestResult {
+     const now = this.nowMs();
+-    for (const a of session.agents.values()) {
+-      if (a === owner || !HUMAN_BLOCKING.has(a.state) || a.blockedReason !== "permission_prompt") continue;
+-      if (a.dialogSince === null || now - a.dialogSince >= NOTICE_MIN_AGE_MS) continue;
+-      debug("registry", "a Notification took back a block a sighting made", {
+-        session: session.sessionId,
+-        agent: a.id,
+-        claimedForMs: now - a.dialogSince,
++    const kind = event.kind;
++    const callId = event.callId ?? null;
++    agent.openCalls ??= new Set();
++
++    // Calls in flight, by id: what keeps a parent from decaying under its subagent's dialog.
++    if (kind === "pre_tool" && callId !== null) agent.openCalls.add(callId);
++    if ((kind === "post_tool" || kind === "tool_failed") && callId !== null) agent.openCalls.delete(callId);
++    if (kind === "tool_batch") for (const id of event.callIds ?? []) agent.openCalls.delete(id);
++    if (kind === "stop" || kind === "subagent_stop" || kind === "session_end" || kind === "session_start") {
++      agent.openCalls.clear();
++    }
++
++    // A claim: queued, nothing else changes. The agent is still running the
++    // tool it asked for, as far as anyone has seen.
++    if (event.notificationKind === "permission_request") {
++      const asks = this.asksOf(session);
++      if (callId !== null && asks.some((a) => a.callId === callId)) return { applied: true };
++      asks.push({
++        callId,
++        agentId: agent.id,
++        kind: event.dialog === "question" ? "question" : "permission",
++        claimAt: now,
++        soloAtClaim: asks.length === 0,
++        headSince: asks.length === 0 ? now : null,
++        inLine: false,
++        seen: false,
++        since: now,
++        noticed: false,
+       });
+-      a.state = "tool-running";
+-      a.blockedReason = null;
+-      a.dialogSeenAt = null;
+-      a.dialogHeldAt = now;
+-      a.acknowledgedAt = null;
+-      a.announcedAt = null;
++      while (asks.length > MAX_ASKS) asks.shift();
++      return { applied: true };
++    }
++
++    // Exact exits: the call's own end, or its agent's.
++    if ((kind === "post_tool" || kind === "tool_failed") && callId !== null) {
++      this.removeAsks(session, (a) => a.callId === callId, true);
++    } else if (kind === "tool_batch") {
++      const ids = new Set(event.callIds ?? []);
++      this.removeAsks(session, (a) => a.callId !== null && ids.has(a.callId), true);
++    } else if (kind === "stop" || kind === "subagent_stop") {
++      this.removeAsks(session, (a) => a.agentId === agent.id, true);
++    } else if (kind === "session_start" || kind === "session_end") {
++      this.removeAsks(session, () => true, false);
++    }
++
++    // A permission_prompt Notification that named no agent (it lands on the
++    // main agent by default) is about the head of the queue.
++    let noticeTaken = false;
++    if (
++      kind === "notification" &&
++      event.notificationKind === "permission_prompt" &&
++      event.agentId === session.sessionId
++    ) {
++      noticeTaken = this.attributeNotice(session, now) !== null;
+     }
++
++    // A blocking Notification no ask explains is a notice on the agent it
++    // landed on, as before #86 — and is never dropped (F5).
++    if (kind === "notification" && BLOCKING_NOTIFICATIONS.has(event.notificationKind ?? "") && !noticeTaken) {
++      if (agent.noticeSince === null || agent.noticeSince === undefined) {
++        agent.noticeSince = now;
++        agent.noticeReason = event.notificationKind;
++        agent.noticeSeenAt = null;
++      }
++    }
++    // The agent's own progress ends a notice; it never ends a dialog — only the
++    // dialog's own call, the agent's turn, or the listing does.
++    if (OWN_PROGRESS.has(kind)) {
++      agent.noticeSince = null;
++      agent.noticeReason = null;
++      agent.noticeSeenAt = null;
++    }
++
++    const block = this.blockOf(session, agent);
++    let becameBlocked: IngestResult["becameBlocked"];
++    if (block !== null) {
++      if (agent.state !== "blocked") {
++        this.transition(agent, "blocked", block.since);
++        becameBlocked = { sessionId: session.sessionId, agentId: agent.id, kind: block.reason };
++      }
++      agent.blockedReason = block.reason;
++      agent.tool = null;
++      agent.toolPath = null;
++    } else {
++      // Not blocked: what the event says, as before #86. A notification that
++      // blocks nothing, a FileChanged, a batch's end, changes nothing.
++      const quiet = kind === "notification" || kind === "file_changed" || kind === "tool_batch";
++      const resumed: AgentState = (agent.openCalls?.size ?? 0) > 0 ? "tool-running" : "thinking";
++      const next = agent.state === "blocked" && quiet ? resumed : quiet ? agent.state : this.nextState(event, agent.state);
++      agent.blockedReason = null;
++      if (kind === "pre_tool") {
++        agent.tool = event.tool;
++        agent.toolPath = event.paths[0] ?? null;
++      } else if (!quiet && agent.tool !== null) {
++        agent.tool = null;
++        agent.toolPath = null;
++      }
++      this.transition(agent, next);
++    }
++    const others = this.syncSession(session, "tool-running", agent);
++    becameBlocked ??= others;
++    return becameBlocked ? { applied: true, becameBlocked } : { applied: true };
+   }
+ 
+   /**
+-   * #86 — whose dialog a `permission_prompt` Notification at `at` is about:
+-   * the newest claim in the session made at least NOTICE_MIN_AGE_MS before it,
+-   * either still open (inside its window) or the claim a block came from. A
+-   * blocked agent wins a tie, since it adds no new block. Null when there is
+-   * none.
++   * #86 candidate B — what the session listing says, read against when the
++   * poll STARTED (`observedAt`).
+    */
+-  private noticeOwner(session: SessionRecord, at: number): AgentRecord | null {
+-    let newest: AgentRecord | null = null;
+-    for (const a of session.agents.values()) {
+-      const since = a.dialogSince;
+-      if (since === null || at - since < NOTICE_MIN_AGE_MS) continue;
+-      const isBlocked = HUMAN_BLOCKING.has(a.state);
+-      if (!isBlocked && claimLapsed(a, at)) continue;
+-      const best = newest?.dialogSince ?? null;
+-      if (best === null || since > best || (since === best && isBlocked)) newest = a;
++  private settleFromListing(s: SessionRecord, screen: SessionScreen, at: number): void {
++    const asks = this.asksOf(s);
++    if (screen === "permission-dialog" || screen === "question-dialog") {
++      for (const a of s.agents.values()) {
++        if (a.noticeSince !== null && a.noticeSince !== undefined && a.noticeSince <= at) a.noticeSeenAt = at;
++      }
++      const head = asks[0];
++      if (head !== undefined && head.seen && head.claimAt <= at && (head.kind === "question") === (screen === "question-dialog")) {
++        const owner = s.agents.get(head.agentId);
++        if (owner !== undefined) owner.evidenceAt = Math.max(owner.evidenceAt ?? at, at);
++      }
++      if (head === undefined || head.seen || head.claimAt > at) return;
++      // The listing names what kind of dialog is up; a mismatch is no evidence.
++      if ((head.kind === "question") !== (screen === "question-dialog")) return;
++      const eligible = asks.filter((a) => a.claimAt <= at);
++      const others = eligible.some((a) => a.agentId !== head.agentId);
++      const fresh = at - (head.headSince ?? head.claimAt) <= FRESH_HEAD_MS;
++      // Ambiguous: the head might have been answered unseen (its tool running,
++      // with no hook to say so) and another agent's ask be the one on screen.
++      // The Notification (6 s after the dialog opened) can tell; wait for it.
++      if (others && !head.inLine && !fresh) {
++        s.ambiguousSince ??= at;
++        if (at - s.ambiguousSince < DEFER_MAX_MS) return;
++      }
++      head.seen = true;
++      head.since = Math.max(head.claimAt, head.headSince ?? head.claimAt);
++      s.ambiguousSince = null;
++      const owner = s.agents.get(head.agentId);
++      if (owner !== undefined) owner.evidenceAt = at;
++      this.syncSession(s, "tool-running");
++      return;
++    }
++
++    if (screen === "at-prompt") {
++      // Nothing on screen and the turn is over: Esc (which aborts the turn and
++      // every queued dialog with it) or a turn that ended unheard.
++      this.removeAsks(s, (a) => a.claimAt <= at - SETTLE_MS, false);
++      for (const a of s.agents.values()) {
++        if (a.noticeReason === "permission_prompt" && (a.noticeSince ?? at) <= at - SETTLE_MS) {
++          a.noticeSince = null;
++          a.noticeReason = null;
++          a.noticeSeenAt = null;
++        }
++      }
++      this.syncSession(s, "waiting");
++      return;
++    }
++
++    if (screen === "working") {
++      // Nothing on screen: every ask claimed before this poll began has been
++      // answered (or refused by Claude itself), whatever we were told. Except
++      // that AskUserQuestion's listing lags its dialog.
++      const head = asks[0];
++      const lagging = head !== undefined && head.kind === "question" && !head.seen && at - head.claimAt < QUESTION_SETTLE_MS;
++      if (!lagging) this.removeAsks(s, (a) => a.claimAt <= at - SETTLE_MS, false);
++      for (const a of s.agents.values()) {
++        if (a.noticeReason === "permission_prompt" && a.noticeSeenAt !== null && a.noticeSeenAt !== undefined && a.noticeSeenAt < at) {
++          a.noticeSince = null;
++          a.noticeReason = null;
++          a.noticeSeenAt = null;
++        }
++      }
++      this.syncSession(s, "tool-running");
+     }
+-    return newest;
+   }
+ 
+   /** Advance wall-clock-derived transitions. Must be called periodically. */
+@@ -925,17 +1010,15 @@ export class Registry {
+       // Discovery already answers this authoritatively, every five seconds, and
+       // its answer was being ignored here.
+       const providerBusy = s.status !== null && PROVIDER_BUSY.has(s.status);
+-      // #86 verification — and a session with an agent waiting on a human has
+-      // not stopped either: its turn resumes when the human answers. Before
+-      // #86 a subagent's prompt blocked its parent too, which the timer leaves
+-      // alone; with the block where it belongs, the parent — still running the
+-      // Agent tool — went idle 30 s into its subagent's prompt, because the
+-      // listing reads `waiting` then, not busy.
+-      const waitingOnHuman = [...s.agents.values()].some((a) => HUMAN_BLOCKING.has(a.state));
++      // #86 candidate B — a session showing a dialog is not idle for an agent
++      // with a call in flight: its call waits on that dialog, or is the Agent
++      // tool whose subagent does. Only those agents (F4).
++      const showingDialog = CAPABILITIES[s.provider].dialogQueue && s.status === "waiting";
+       for (const a of s.agents.values()) {
+         if (IDLE_EXEMPT.has(a.state)) continue;
+         // Positive evidence that it is working. Do not contradict it.
+-        if (providerBusy || waitingOnHuman) continue;
++        if (providerBusy) continue;
++        if (showingDialog && (a.openCalls?.size ?? 0) > 0) continue;
+         // With no word from the provider there is nothing to corroborate, so
+         // wait far longer before overriding what the hooks last told us — a
+         // long build must not be declared idle just because discovery is
+@@ -965,26 +1048,20 @@ export class Registry {
+       case "session_end":
+         return "done";
+       case "notification":
+-        // Only the "come look" kinds are human-blocking. Claude's
+-        // `PermissionRequest` (`permission_request`) is not one: `apply` takes
+-        // it as a claim before it gets here (#86). Its Notification, ~6 s
+-        // later, sees the dialog and blocks, dated from the claim — unless the
+-        // listing saw it first, and then the agent is already blocked. Neither
+-        // says when the dialog ends on Esc; the listing does
+-        // (`settleFromListing`).
+-        return BLOCKING_NOTIFICATIONS.has(event.notificationKind ?? "") ? "blocked" : current;
++        // Only the "come look" kinds are human-blocking.
++        return event.notificationKind === "permission_prompt" ||
++          event.notificationKind === "agent_needs_input" ||
++          event.notificationKind === "worker_permission_prompt"
++          ? "blocked"
++          : current;
+       default:
+         return current;
+     }
+   }
+ 
+   /**
+-   * MOD-05 — bank the time spent in the state we are leaving.
+-   *
+-   * `since` dates the new state earlier than now, for a block seen after it
+-   * began (#86): from then on the agent was waiting on a human, so the time is
+-   * banked as blocked rather than as the working state it was recorded in.
+-   * Never before the state being left began — that time is already banked.
++   * MOD-05 — bank the time spent in the state we are leaving. `since` dates a
++   * block seen after it began (#86), never before the state being left began.
+    */
+   private transition(agent: AgentRecord, next: AgentState, since?: number): void {
+     const now = this.nowMs();
+@@ -1004,11 +1081,6 @@ export class Registry {
+     // does not: the agent is mid-turn and resumes the moment you answer.
+     if (TURN_END.has(next)) agent.turnMs = 0;
+ 
+-    // #86 — a block that ends takes its claim with it, and a sighting belongs
+-    // to the state it was made in.
+-    if (HUMAN_BLOCKING.has(agent.state)) agent.dialogSince = null;
+-    agent.dialogSeenAt = null;
+-
+     agent.state = next;
+     agent.stateSince = at;
+     // A new state is a new situation: whatever the human dismissed is over.
+@@ -1070,13 +1142,6 @@ export class Registry {
+    * provider is running nothing" — is precisely the one a provider cannot be
+    * derived from. Getting it from the data would work until the moment it
+    * matters and then delete every session of the other provider.
+-   *
+-   * `observedAt` is when the poll that produced `discovered` STARTED, in wall
+-   * ms on this registry's clock. #86 reads what a session's listing says is on
+-   * its screen (`DiscoveredSession.screen`) as evidence about a block, and
+-   * evidence is only as recent as the moment it was asked
+-   * for: a poll that began before a block cannot speak about it, however late
+-   * its answer lands. Defaults to now, for a caller with nothing to say.
+    */
+   reconcile(
+     discovered: DiscoveredSession[] | null,
+@@ -1121,11 +1186,8 @@ export class Registry {
+       s.startedAt = d.startedAt;
+       if (d.attended !== undefined) s.attended = d.attended;
+       if (d.cwd) s.cwd = d.cwd;
+-      // Only for a session this poll actually listed, so an incomplete poll
+-      // clears nothing it did not see. And only by the provider that owns it:
+-      // a capability is a property of the provider's listing.
+-      if (s.provider === provider && CAPABILITIES[provider].listingClearsBlocks) {
+-        this.settleFromListing(s, d, observedAt);
++      if (s.provider === provider && CAPABILITIES[provider].dialogQueue && d.screen !== undefined) {
++        this.settleFromListing(s, d.screen, observedAt);
+       }
+       enriched++;
+     }
+@@ -1171,153 +1233,6 @@ export class Registry {
+     return { enriched, pruned };
+   }
+ 
+-  /**
+-   * #86 — what a provider's session listing says about a permission dialog
+-   * that no hook will report on.
+-   *
+-   * Claude fires `PermissionRequest` before a dialog, and also for asks that
+-   * never show one; it fires nothing when a dialog is dismissed with Esc, and
+-   * nothing between approving one and the tool finishing. Its listing
+-   * (CAPABILITIES.claude, `claude agents --json`) fills both gaps. The lister
+-   * translates what it says into `DiscoveredSession.screen` (CAP-02: no
+-   * provider's words here), read against when each poll STARTED:
+-   *
+-   * - `permission-dialog`: a dialog is on screen. That is ONE dialog, and the
+-   *   listing does not say whose.
+-   *   - Every agent already blocked on a dialog begun by then records the
+-   *     sighting (`dialogSeenAt`) — it may be theirs on screen — because it
+-   *     is what turns a later `working` into an answer. And if there is one,
+-   *     the sighting is its dialog, and blocks nothing new: a claim made
+-   *     while a seen prompt is up is queued behind it, or Claude denied it
+-   *     itself, and blocking it alerted about a prompt nobody could see.
+-   *   - Otherwise it blocks one open claim begun by then: the newest, dated
+-   *     from its claim. Newest, because the failure the other choices have is
+-   *     a false alert: a claim that outlived its dialog (approved before any
+-   *     poll saw it, or a background ask Claude denied itself) is older than
+-   *     the dialog now on screen, and blocking it named an agent running an
+-   *     approved tool, with its dwell long gone and its running time banked
+-   *     as blocked.
+-   *   - Every open claim it did not block is held (`dialogHeldAt`): it may be
+-   *     the dialog on screen — older than a claim with no dialog behind it, or
+-   *     queued — so its window runs on from this sighting. Once the block that
+-   *     took the sighting ends, the next sighting is the held claim's, or its
+-   *     Notification is. Late, never lost.
+-   * - `other-dialog`: no evidence either way. Another dialog may be on top, or
+-   *   an MCP elicitation queued behind one, which Claude reports for as long
+-   *   as it waits whatever else is open — so in such a session the listing
+-   *   never says `at-prompt` or `working` either, and a block there ends the
+-   *   way it did before #86, on the agent's next event.
+-   * - `at-prompt`, from a poll begun at least LISTING_SETTLE_MS after the
+-   *   claim or block: nothing is on screen and the turn is over — Esc, or a
+-   *   turn that ended without our hearing it. A claim is dropped. A block
+-   *   ends, and the human has the floor, so the agent is `waiting`.
+-   * - `working`, from a poll begun after one that saw a dialog during THIS
+-   *   agent's block (its own `dialogSeenAt`): nothing is on screen any more,
+-   *   so its dialog was answered and the tool is running. Another agent's
+-   *   later claim does not change that — its dialog would read as one too. A
+-   *   `working` with no such sighting before it is no evidence of anything —
+-   *   the listing can trail the hook, and read `busy` for a second or more of
+-   *   an open `AskUserQuestion`.
+-   *
+-   * Not applied in the pass that adopts a restored session (DMN-06): `adopt`
+-   * runs before enrichment and the loop moves on, so a restored block is
+-   * settled by the next poll, 5 s later.
+-   *
+-   * Through `transition`, so the blocked time is banked (MOD-05) and
+-   * `announcedAt` cleared; the notify loop then sends `resolved` for an
+-   * announced block on its next pulse, as for any other unblock. The tool's
+-   * name is not restored on the way to `tool-running` — the block cleared it,
+-   * and `PermissionRequest` does not carry a call id to tie it back to.
+-   */
+-  private settleFromListing(s: SessionRecord, d: DiscoveredSession, observedAt: number): void {
+-    const screen = d.screen;
+-    if (screen === undefined) return;
+-    const agents = [...s.agents.values()];
+-    const isOpen = (a: AgentRecord): boolean => a.dialogSince !== null && !HUMAN_BLOCKING.has(a.state);
+-    // A claim this poll began past the window of is gone, whatever it says.
+-    for (const a of agents) {
+-      if (isOpen(a) && claimLapsed(a, observedAt)) a.dialogSince = null;
+-    }
+-    const open = agents.filter(isOpen);
+-    const blocked = agents.filter(
+-      (a) => HUMAN_BLOCKING.has(a.state) && LISTING_ENDS.has(a.blockedReason ?? ""),
+-    );
+-    if (open.length === 0 && blocked.length === 0) return;
+-    // A blocked agent's current dialog began at its block, or at a claim it
+-    // made since; a poll begun before that cannot speak for it.
+-    const dialogStart = (a: AgentRecord): number => Math.max(a.stateSince, a.dialogSince ?? a.stateSince);
+-
+-    if (screen === "permission-dialog") {
+-      const standing = blocked.filter((a) => observedAt >= dialogStart(a));
+-      for (const a of standing) a.dialogSeenAt = Math.max(a.dialogSeenAt ?? observedAt, observedAt);
+-      // Open claims this poll began after: only those can be on screen in it.
+-      const claims = open.filter((a) => (a.dialogSince ?? observedAt) <= observedAt);
+-      let newest: AgentRecord | null = null;
+-      if (standing.length === 0) {
+-        for (const a of claims) {
+-          if (newest === null || (a.dialogSince ?? 0) > (newest.dialogSince ?? 0)) newest = a;
+-        }
+-      }
+-      for (const a of claims) {
+-        if (a !== newest) a.dialogHeldAt = Math.max(a.dialogHeldAt ?? observedAt, observedAt);
+-      }
+-      if (newest === null) return;
+-      const since = newest.dialogSince ?? observedAt;
+-      debug("reconcile", "listing saw a claimed dialog", {
+-        session: s.sessionId,
+-        agent: newest.id,
+-        claimedForMs: Math.max(0, observedAt - since),
+-        held: claims.length - 1,
+-      });
+-      // What `apply` does for the Notification that sees it: the agent is
+-      // waiting on a human now, not running the tool it asked for.
+-      newest.blockedReason = "permission_prompt";
+-      newest.tool = null;
+-      newest.toolPath = null;
+-      this.transition(newest, "blocked", since);
+-      newest.dialogSeenAt = observedAt;
+-      return;
+-    }
+-
+-    if (screen === "at-prompt") {
+-      for (const a of open) {
+-        if (observedAt - (a.dialogSince ?? observedAt) >= LISTING_SETTLE_MS) a.dialogSince = null;
+-      }
+-      for (const a of blocked) {
+-        if (observedAt - dialogStart(a) >= LISTING_SETTLE_MS)
+-          this.unblock(s, a, "waiting", screen, observedAt);
+-      }
+-      return;
+-    }
+-
+-    if (screen === "working") {
+-      // The agent's own sighting, and a `working` asked for after it.
+-      for (const a of blocked) {
+-        if (a.dialogSeenAt !== null && observedAt > a.dialogSeenAt) {
+-          this.unblock(s, a, "tool-running", screen, observedAt);
+-        }
+-      }
+-    }
+-  }
+-
+-  /** #86 — a block the listing has seen end. */
+-  private unblock(
+-    s: SessionRecord,
+-    a: AgentRecord,
+-    next: AgentState,
+-    screen: SessionScreen,
+-    observedAt: number,
+-  ): void {
+-    debug("reconcile", "listing ended a block", {
+-      session: s.sessionId,
+-      agent: a.id,
+-      screen,
+-      blockedForMs: Math.max(0, observedAt - a.stateSince),
+-    });
+-    a.blockedReason = null;
+-    this.transition(a, next);
+-  }
+-
+   /**
+    * Sessions the provider reports as running that have never sent us an event.
+    *
+@@ -1467,11 +1382,6 @@ export class Registry {
+         // `blockedForMs` accrued before the restart, and the loop re-measures
+         // its dwell from the restore before announcing it again.
+         announcedAt: null,
+-        // #86 — a claim is about a dialog this daemon heard of, and it heard
+-        // of none; nor has it polled anything since.
+-        dialogSince: null,
+-        dialogHeldAt: null,
+-        dialogSeenAt: null,
+       });
+     }
+     return s;
+@@ -1496,9 +1406,6 @@ export class Registry {
+         acknowledgedAt: null,
+         announcedAt: null,
+         blockedReason: null,
+-        dialogSince: null,
+-        dialogHeldAt: null,
+-        dialogSeenAt: null,
+         description: null,
+         tool: null,
+         toolPath: null,
+
+########## Part 3: test/zz-c86.test.ts
+diff --git a/test/zz-c86.test.ts b/test/zz-c86.test.ts
+new file mode 100644
+index 0000000..f70251f
+--- /dev/null
++++ b/test/zz-c86.test.ts
+@@ -0,0 +1,1006 @@
++/**
++ * #86 redesign panel, candidate B ("correlate the claim to its agent") — the
++ * probe corpus, replayed through the REAL Registry and NotifyLoop on a fake
++ * clock. Tree-agnostic: the same file runs on 07c3935 (main), 96d3367 (held)
++ * and the candidate prototype, each with its own normalizer, lister parser
++ * (`parseAgentsJson`) and registry.
++ *
++ * Two corpora:
++ * - ORIG: the probe timelines exactly as probes/86 wrote them (same payloads,
++ *   same reused tool_use_id, PermissionRequests with no PreToolUse of their
++ *   own). Used to validate this harness against the README's quoted stories.
++ * - REAL: the same timelines realized as Claude would send them: every ask has
++ *   its own PreToolUse and tool_use_id, inputs differ unless a scenario says
++ *   otherwise, and a self-denied ask's batch ends with PostToolBatch (BATCH=1).
++ *
++ * Env: C86_TREE (label), C86_OUT (jsonl path), C86_CORPUS (orig|real|both),
++ * C86_AGENTIDS (1: a subagent's PermissionRequest carries agent_id, as read
++ * from the 2.1.312 binary; 0: it never does, as the brief states),
++ * C86_BATCH (1: PostToolBatch is sent; 0: not registered).
++ */
++import { appendFileSync } from "node:fs";
++import { describe, it } from "vitest";
++import { normalizeClaudeHook } from "../src/adapters/claude/normalize.js";
++import { normalizeCodexHook } from "../src/adapters/codex/normalize.js";
++import * as sessions from "../src/discovery/sessions.js";
++import { Registry } from "../src/model/registry.js";
++import { type DeliveryTarget, Dispatcher } from "../src/notify/dispatch.js";
++import type { NotifyEnvelope } from "../src/notify/envelope.js";
++import { NotifyLoop } from "../src/notify/loop.js";
++import { NotifyPolicy } from "../src/notify/policy.js";
++
++const TREE = process.env.C86_TREE ?? "unknown";
++const OUT = process.env.C86_OUT ?? "/tmp/c86.jsonl";
++const CORPUS = process.env.C86_CORPUS ?? "both";
++const AGENTIDS = (process.env.C86_AGENTIDS ?? "1") === "1";
++const BATCH = (process.env.C86_BATCH ?? "1") === "1";
++const MODE = `${CORPUS}/ids=${AGENTIDS ? 1 : 0}/batch=${BATCH ? 1 : 0}${process.env.C86_EVIDENCE === "1" ? "/ev" : ""}`;
++
++type Payload = Record<string, unknown>;
++type Ev = [number, Payload];
++type Screen = ((at: number) => [string, string?]) | null;
++
++// ---------------------------------------------------------------------------
++// The captured payloads (test/fixtures/claude/permission-request.json), inline
++// so that main, which predates the fixture, can run this file too.
++// ---------------------------------------------------------------------------
++const SESSION = "bea6e61a-f90d-461a-babe-3e03fd7ea184";
++const CWD = "/home/user/repo";
++const BASE = {
++  session_id: SESSION,
++  transcript_path: `/home/user/.claude/projects/-home-user-repo/${SESSION}.jsonl`,
++  cwd: CWD,
++  scratchpad_dir: `/tmp/claude-1000/-home-user-repo/${SESSION}/scratchpad`,
++  prompt_id: "5367e994-cfe6-4a4d-8c4e-1185b00d4c1a",
++};
++const PRE: Payload = {
++  ...BASE,
++  permission_mode: "default",
++  effort: { level: "medium" },
++  hook_event_name: "PreToolUse",
++  tool_name: "Bash",
++  tool_input: { command: "<redacted>", description: "<redacted>" },
++  tool_use_id: "toolu_01aOOWXTR0mmashEQU65MMgR",
++};
++const REQ: Payload = {
++  ...BASE,
++  permission_mode: "default",
++  effort: { level: "medium" },
++  hook_event_name: "PermissionRequest",
++  tool_name: "Bash",
++  tool_input: { command: "<redacted>", description: "<redacted>" },
++  permission_suggestions: [{ type: "<redacted>", directories: ["<redacted>"], destination: "<redacted>" }],
++};
++const NOTE: Payload = {
++  ...BASE,
++  hook_event_name: "Notification",
++  message: "Claude needs your permission",
++  notification_type: "permission_prompt",
++};
++const SUB = "a5cf41e52d9b8f355";
++const SUB2 = "b6df52f63e0c9a466";
++const BG = SUB2;
++const M = SESSION;
++const DIALOG = "permission prompt";
++
++// ORIG payload builders, exactly as the probes wrote them.
++const o = {
++  pre: PRE,
++  req: REQ,
++  note: NOTE,
++  post: { ...PRE, hook_event_name: "PostToolUse", tool_response: {} } as Payload,
++  subPre: (id: string, toolUseId = `toolu_${id}`): Payload => ({ ...PRE, agent_id: id, tool_use_id: toolUseId }),
++  subClaim: (id: string): Payload => ({ ...REQ, agent_id: id }),
++  subPost: (id: string, toolUseId = `toolu_${id}`): Payload => ({
++    ...PRE,
++    hook_event_name: "PostToolUse",
++    tool_response: {},
++    agent_id: id,
++    tool_use_id: toolUseId,
++  }),
++  spawn: { ...PRE, tool_name: "Agent", tool_use_id: "toolu_spawn", tool_input: { prompt: "<redacted>" } } as Payload,
++  need: { ...NOTE, notification_type: "agent_needs_input", message: "<redacted>" } as Payload,
++};
++
++// REAL payload builders: one call = one tool_use_id and its own input.
++interface CallOpts {
++  tool?: string;
++  input?: string; // the input key; two calls with the same key send identical tool_input
++}
++const who0 = (agent: string): Payload =>
++  agent === M ? {} : { agent_id: agent, agent_type: "general-purpose" };
++const inputOf = (key: string, tool: string): Record<string, unknown> =>
++  tool === "AskUserQuestion"
++    ? { questions: [{ question: `q-${key}`, header: "h", options: [{ label: "a" }, { label: "b" }] }] }
++    : tool === "Agent"
++      ? { description: `d-${key}`, prompt: "<redacted>", subagent_type: "general-purpose" }
++      : { command: `cmd-${key}`, description: "<redacted>" };
++const r = {
++  P: (agent: string, key: string, c: CallOpts = {}): Payload => ({
++    ...BASE,
++    ...who0(agent),
++    permission_mode: "default",
++    hook_event_name: "PreToolUse",
++    tool_name: c.tool ?? "Bash",
++    tool_input: inputOf(c.input ?? key, c.tool ?? "Bash"),
++    tool_use_id: `toolu_${key}`,
++  }),
++  R: (agent: string, key: string, c: CallOpts = {}): Payload => ({
++    ...BASE,
++    ...(AGENTIDS ? who0(agent) : {}),
++    permission_mode: "default",
++    hook_event_name: "PermissionRequest",
++    tool_name: c.tool ?? "Bash",
++    tool_input: inputOf(c.input ?? key, c.tool ?? "Bash"),
++    permission_suggestions: [],
++  }),
++  O: (agent: string, key: string, c: CallOpts = {}): Payload => ({
++    ...BASE,
++    ...who0(agent),
++    permission_mode: "default",
++    hook_event_name: "PostToolUse",
++    tool_name: c.tool ?? "Bash",
++    tool_input: inputOf(c.input ?? key, c.tool ?? "Bash"),
++    tool_response: {},
++    tool_use_id: `toolu_${key}`,
++  }),
++  /** PostToolBatch: the batch is over, denied calls included. Sent only when BATCH. */
++  B: (agent: string, keys: string[], c: CallOpts = {}): Payload => ({
++    ...BASE,
++    ...who0(agent),
++    permission_mode: "default",
++    hook_event_name: "PostToolBatch",
++    tool_calls: keys.map((k) => ({
++      tool_name: c.tool ?? "Bash",
++      tool_input: inputOf(k, c.tool ?? "Bash"),
++      tool_use_id: `toolu_${k}`,
++      tool_response: "Permission prompts are not available in this context",
++    })),
++  }),
++  N: (type = "permission_prompt"): Payload => ({ ...NOTE, notification_type: type }),
++  stop: (agent: string): Payload => ({
++    ...BASE,
++    ...who0(agent),
++    hook_event_name: agent === M ? "Stop" : "SubagentStop",
++  }),
++  fc: (): Payload => ({ ...BASE, hook_event_name: "FileChanged", file_path: `${CWD}/src/x.ts`, event: "change" }),
++};
++/** A self-denied ask: PreToolUse, PermissionRequest, and (BATCH) its batch ending at once. */
++const selfDenied = (at: number, agent: string, key: string): Ev[] => [
++  [at, r.P(agent, key)],
++  [at, r.R(agent, key)],
++  ...(BATCH ? ([[at + 100, r.B(agent, [key])]] as Ev[]) : []),
++];
++
++// ---------------------------------------------------------------------------
++// The harness: real Registry + NotifyLoop on one clock.
++// ---------------------------------------------------------------------------
++const deps = { readSidecar: () => null, realpath: (p: string) => p, now: () => 1_793_000_000 };
++// The candidate's correlator, when the tree has one (main and 96d3367 do not).
++let makeCorrelator: (() => unknown) | null = null;
++try {
++  const path = "../src/adapters/claude/correlate.js";
++  const m = (await import(/* @vite-ignore */ path)) as { ClaudeCallCorrelator: new () => unknown };
++  makeCorrelator = () => new m.ClaudeCallCorrelator();
++} catch {
++  makeCorrelator = null;
++}
++
++function harness(opts: { idleAfterMs?: number } = {}) {
++  let t = 0;
++  let n = 0;
++  const now = () => t;
++  const sent: NotifyEnvelope[] = [];
++  const target: DeliveryTarget = {
++    name: "test",
++    live: () => true,
++    deliver: async (envelope) => {
++      sent.push(envelope);
++      return { ok: true };
++    },
++  };
++  const registry = new Registry({
++    nowMs: now,
++    ...opts,
++    ...(process.env.C86_EVIDENCE === "1" ? { evidenceDwell: true } : {}),
++  } as ConstructorParameters<typeof Registry>[0]);
++  const loop = new NotifyLoop({ registry, policy: new NotifyPolicy(), dispatcher: new Dispatcher([target]), now });
++  // The candidate's correlator, when the tree has one; ignored by the others.
++  const anyNorm = normalizeClaudeHook as unknown as (p: unknown, d: unknown) => ReturnType<typeof normalizeClaudeHook>;
++  const corr = makeCorrelator?.();
++  const hook = (payload: Payload) => {
++    const res = anyNorm(payload, { ...deps, now: () => 1_793_000_000 + t / 1000, newId: () => `e${++n}`, correlator: corr });
++    if (res.event === null) return { applied: false, reason: "unmapped" } as const;
++    return registry.apply(res.event, res.cwd);
++  };
++  const codex = (payload: Payload) => {
++    const res = normalizeCodexHook(payload, { ...deps, now: () => 1_793_000_000 + t / 1000, newId: () => `c${++n}` });
++    if (res.event === null) return { applied: false } as const;
++    return registry.apply(res.event, res.cwd);
++  };
++  const row = (status: string | null, waitingFor?: string) =>
++    (sessions.parseAgentsJson(
++      JSON.stringify([
++        { sessionId: SESSION, cwd: CWD, pid: 4242, status, name: "repo", ...(waitingFor ? { waitingFor } : {}) },
++      ]),
++    ) ?? [])[0]!;
++  const poll = (status: string | null, startedAt: number = t, waitingFor?: string) =>
++    registry.reconcile([row(status, waitingFor)], {
++      provider: "claude",
++      complete: true,
++      observedAt: startedAt,
++    } as Parameters<Registry["reconcile"]>[1]);
++  const agent = (id = SESSION) => registry.get(SESSION)?.agents.get(id);
++  const blocksBegun = () => (registry as unknown as { blocksBegun?: () => number }).blocksBegun?.() ?? null;
++  return {
++    registry,
++    loop,
++    sent,
++    hook,
++    codex,
++    poll,
++    seen: (startedAt: number = t) => poll("waiting", startedAt, DIALOG),
++    agent,
++    blocksBegun,
++    at: (ms: number) => {
++      t = ms;
++    },
++    now,
++    pulse: async () => {
++      registry.tick();
++      await loop.pulse();
++    },
++  };
++}
++type H = ReturnType<typeof harness>;
++
++const short = (id: string) => (id === SESSION ? "main" : id === SUB ? "SUB" : id === SUB2 ? "SUB2" : id.slice(0, 4));
++const story = (h: H) => h.sent.map((e) => `${e.kind}:${short(e.session.agentId)}@${e.ts / 1000}`);
++
++/** The probes' `run`: hooks, polls landing 300 ms after they begin, tick+pulse every 1 s. */
++async function run(o2: { hooks: Ev[]; screen: Screen; until: number; phase?: number; idleAfterMs?: number }) {
++  const h = harness(o2.idleAfterMs === undefined ? {} : { idleAfterMs: o2.idleAfterMs });
++  const steps: Array<{ at: number; order: number; go: () => unknown }> = [];
++  for (const [at, p] of o2.hooks) steps.push({ at, order: 0, go: () => h.hook(p) });
++  if (o2.screen !== null) {
++    for (let begun = o2.phase ?? 0; begun <= o2.until; begun += 5_000) {
++      const [status, waitingFor] = o2.screen(begun);
++      steps.push({ at: begun + 300, order: 1, go: () => h.poll(status, begun, waitingFor) });
++    }
++  }
++  for (let at = 0; at <= o2.until; at += 1_000) steps.push({ at, order: 2, go: () => h.pulse() });
++  steps.sort((a, b) => a.at - b.at || a.order - b.order);
++  for (const s of steps) {
++    h.at(s.at);
++    await s.go();
++  }
++  return h;
++}
++
++const dlg =
++  (from: number, to: number, after: [string, string?] = ["busy"]) =>
++  (at: number): [string, string?] =>
++    at >= from && at < to ? ["waiting", DIALOG] : after;
++
++function emit(id: string, h: H | null, extra: Record<string, unknown> = {}) {
++  const line = {
++    tree: TREE,
++    mode: MODE,
++    id,
++    story: h === null ? null : story(h),
++    ...(h === null
++      ? {}
++      : {
++          end: Object.fromEntries(
++            [...(h.registry.get(SESSION)?.agents.values() ?? [])].map((a) => [short(a.id), a.state]),
++          ),
++          blocksBegun: h.blocksBegun(),
++        }),
++    ...extra,
++  };
++  appendFileSync(OUT, `${JSON.stringify(line)}\n`);
++}
++
++// ---------------------------------------------------------------------------
++// ORIG corpus — verbatim probe timelines, for validating the harness.
++// ---------------------------------------------------------------------------
++const ORIG: Record<string, { hooks: Ev[]; screen: Screen; until: number; phase?: number }> = {
++  "S1": {
++    hooks: [
++      [0, o.subPre(SUB)], [0, o.subClaim(SUB)], [3_000, o.pre], [3_000, o.req], [8_500, o.req],
++      [9_400, o.note], [61_000, o.post], [66_200, o.note], [120_000, o.subPost(SUB)],
++    ],
++    screen: dlg(3_400, 90_000), until: 130_000, phase: 4_000,
++  },
++  "S1-control": {
++    hooks: [
++      [0, o.subPre(SUB)], [0, o.subClaim(SUB)], [3_000, o.pre], [3_000, o.req],
++      [9_400, o.note], [61_000, o.post], [120_000, o.subPost(SUB)],
++    ],
++    screen: dlg(3_400, 60_000), until: 130_000, phase: 4_000,
++  },
++  "S2 dead=false": {
++    hooks: [[0, o.pre], [0, o.req], [300, o.req], [6_400, o.note], [21_000, o.post], [26_200, o.note]],
++    screen: dlg(400, 200_000), until: 180_000, phase: 1_000,
++  },
++  "S2 dead=true": {
++    hooks: [
++      [0, o.pre], [0, o.req], [300, o.req], [3_000, o.subPre(SUB2)], [3_000, o.subClaim(SUB2)],
++      [45_000, o.subPre(SUB2, "toolu_bg2")], [6_400, o.note], [21_000, o.post], [26_200, o.note],
++    ],
++    screen: dlg(400, 200_000), until: 180_000, phase: 1_000,
++  },
++  "S2c": {
++    hooks: [
++      [0, o.subPre(SUB)], [0, o.subClaim(SUB)], [1_000, o.pre], [1_000, o.req], [1_300, o.req],
++      [7_600, o.note], [61_000, o.post], [66_200, o.note], [300_000, o.subPost(SUB)],
++    ],
++    screen: dlg(1_400, 400_000), until: 400_000, phase: 2_000,
++  },
++  "S8": {
++    hooks: [
++      [0, o.pre], [0, o.req], [500, o.subPre(SUB)], [500, o.subClaim(SUB)], [6_400, o.note],
++      [21_000, o.post], [41_000, o.subPost(SUB)],
++    ],
++    screen: dlg(400, 40_000), until: 60_000, phase: 0,
++  },
++};
++
++describe.runIf(CORPUS === "orig" || CORPUS === "both")(`c86 ORIG on ${TREE}`, () => {
++  for (const [id, s] of Object.entries(ORIG)) {
++    it(id, async () => emit(`ORIG ${id}`, await run(s)));
++  }
++  it("RY", async () => {
++    const h = harness();
++    h.at(0); h.hook(o.pre); h.hook(o.req);
++    h.at(1_300); h.seen(500);
++    h.at(1_000); h.hook({ ...o.pre, agent_id: SUB, tool_use_id: "toolu_s" }); h.hook({ ...o.req, agent_id: SUB });
++    h.at(3_000); h.hook(o.req);
++    h.at(5_300); h.seen(5_000);
++    h.at(6_000); await h.loop.pulse();
++    h.at(6_400); h.hook(o.note);
++    h.at(7_000); await h.loop.pulse();
++    emit("ORIG RY", h);
++  });
++  it("RX", async () => {
++    const h = harness();
++    h.at(0); h.hook(o.pre); h.hook(o.note);
++    h.at(1_000); await h.loop.pulse();
++    h.at(3_000); h.hook({ ...o.pre, agent_id: SUB, tool_use_id: "toolu_s" }); h.hook({ ...o.req, agent_id: SUB });
++    h.at(5_000); await h.loop.pulse();
++    h.at(10_000); h.hook(o.req);
++    h.at(11_000); await h.loop.pulse();
++    h.at(12_000); h.hook(o.note);
++    h.at(13_000); await h.loop.pulse();
++    emit("ORIG RX", h);
++  });
++  it("R6 sweep", async () => {
++    let lost = 0, bgAlerted = 0, falseResolved = 0, total = 0;
++    for (const bgAt of [500, 1_500, 3_000, 5_000])
++      for (const bgDelay of [2_000, 4_000, 6_000, 8_000, 12_000, 20_000])
++        for (const phase of [0, 1_000, 2_000, 3_000, 4_000]) {
++          const h = await run({
++            hooks: [
++              [0, o.pre], [0, o.req], [bgAt, { ...o.pre, agent_id: BG, tool_use_id: "toolu_bg" }],
++              [bgAt, { ...o.req, agent_id: BG }], [6_400, o.note],
++              [bgAt + bgDelay, { ...o.pre, agent_id: BG, tool_use_id: "toolu_bg2" }], [60_000, o.post],
++            ],
++            screen: dlg(400, 59_000), until: 70_000, phase,
++          });
++          const s = story(h);
++          total++;
++          if (!s.some((x) => x.startsWith("blocked:main"))) lost++;
++          if (s.some((x) => x.startsWith("blocked:SUB2"))) bgAlerted++;
++          if (s.some((x) => x.startsWith("resolved") && Number(x.split("@")[1]) < 59)) falseResolved++;
++        }
++    emit("ORIG R6 sweep", null, { total, mainNeverAlerted: lost, bgAlerted, resolvedWhileUp: falseResolved });
++  }, 300_000);
++});
++
++// ---------------------------------------------------------------------------
++// REAL corpus — every probe timeline and baseline, realized.
++// ---------------------------------------------------------------------------
++interface Scn {
++  hooks: Ev[];
++  screen: Screen;
++  until: number;
++  phase?: number;
++  note?: string;
++}
++const REAL: Record<string, Scn> = {};
++const add = (id: string, s: Scn) => {
++  REAL[id] = s;
++};
++
++// (i) lone main Bash dialog, approved at 60 s, every poll phase.
++for (const phase of [0, 1_000, 2_000, 3_000, 4_000])
++  add(`i lone main dialog phase=${phase / 1000}`, {
++    hooks: [[0, r.P(M, "A")], [400, r.R(M, "A")], [6_800, r.N()], [60_500, r.O(M, "A")]],
++    screen: dlg(800, 60_000), until: 70_000, phase,
++  });
++// (i) with the user typing: the Notification comes on the second 6 s check.
++add("i lone main dialog, user active (Notification at 12.8 s)", {
++  hooks: [[0, r.P(M, "A")], [400, r.R(M, "A")], [12_800, r.N()], [60_500, r.O(M, "A")]],
++  screen: dlg(800, 60_000), until: 70_000, phase: 2_000,
++});
++// Esc at a subagent's dialog while the main agent carries on: the listing reads busy.
++add("ii Esc at a subagent dialog, main carries on", {
++  hooks: [
++    [0, r.P(M, "spawn", { tool: "Agent" })], [100, r.P(SUB, "s1")], [500, r.R(SUB, "s1")], [6_900, r.N()],
++    [20_500, r.stop(SUB)], [20_600, r.O(M, "spawn", { tool: "Agent" })],
++  ],
++  screen: (at) => (at >= 900 && at < 20_000 ? ["waiting", DIALOG] : ["busy"]), until: 40_000, phase: 1_000,
++});
++// S1-control with the user active: main's Notification on its second check.
++add("S1-control, user active (Notification at 15.4 s)", {
++  hooks: [
++    [0, r.P(SUB, "s1")], [0, r.R(SUB, "s1")], [3_000, r.P(M, "A")], [3_000, r.R(M, "A")],
++    [15_400, r.N()], [61_000, r.O(M, "A")], [120_000, r.O(SUB, "s1")],
++  ],
++  screen: dlg(3_400, 60_000), until: 130_000, phase: 4_000,
++});
++// Two real dialogs from two subagents, queued, both answered in turn (fan-out).
++add("fan-out: three subagents ask at once", {
++  hooks: [
++    [0, r.P(M, "spawn", { tool: "Agent" })],
++    [1_000, r.P(SUB, "s1")], [1_400, r.R(SUB, "s1")], [1_100, r.P(SUB2, "t1")], [1_500, r.R(SUB2, "t1")],
++    [1_200, r.P("c3c3c3c3c3c3c3c3c", "u1")], [1_600, r.R("c3c3c3c3c3c3c3c3c", "u1")],
++    [7_800, r.N()], [20_300, r.O(SUB, "s1")], [26_300, r.N()], [40_300, r.O(SUB2, "t1")], [46_300, r.N()],
++    [60_300, r.O("c3c3c3c3c3c3c3c3c", "u1")],
++  ],
++  screen: dlg(1_800, 60_000), until: 70_000, phase: 3_000,
++});
++// (ii) Esc at 20 s: no hook, the listing reads idle.
++for (const phase of [0, 2_000, 4_000])
++  add(`ii Esc at 20s phase=${phase / 1000}`, {
++    hooks: [[0, r.P(M, "A")], [400, r.R(M, "A")], [6_800, r.N()]],
++    screen: (at) => (at >= 800 && at < 20_000 ? ["waiting", DIALOG] : at >= 20_000 ? ["idle"] : ["busy"]),
++    until: 40_000, phase,
++  });
++// (iii) approval at 20 s; quick tool (PostToolUse at 20.3 s) and long tool (PostToolUse at 200 s).
++add("iii approve quick tool", {
++  hooks: [[0, r.P(M, "A")], [400, r.R(M, "A")], [6_800, r.N()], [20_300, r.O(M, "A")]],
++  screen: dlg(800, 20_000), until: 40_000, phase: 1_000,
++});
++add("iii approve long tool", {
++  hooks: [[0, r.P(M, "A")], [400, r.R(M, "A")], [6_800, r.N()], [200_000, r.O(M, "A")]],
++  screen: dlg(800, 20_000), until: 60_000, phase: 1_000,
++});
++// (iv) auto mode: the classifier approves, no PermissionRequest, no Notification.
++add("iv auto-mode approval", {
++  hooks: [[0, r.P(M, "A")], [700, r.O(M, "A")], [1_000, r.P(M, "B")], [90_000, r.O(M, "B")]],
++  screen: () => ["busy"], until: 100_000, phase: 1_000,
++});
++// (v) a subagent's dialog: main runs the Agent tool, SUB asks; the Notification names no agent.
++add("v subagent dialog (R3)", {
++  hooks: [
++    [0, r.P(M, "spawn", { tool: "Agent" })], [100, r.P(SUB, "s1")], [500, r.R(SUB, "s1")],
++    [6_900, r.N()], [90_500, r.O(SUB, "s1")], [95_000, r.stop(SUB)], [96_000, r.O(M, "spawn", { tool: "Agent" })],
++  ],
++  screen: dlg(900, 90_000), until: 100_000, phase: 0,
++});
++// (vi) self-denied background asks: alone, and around a real main prompt (R1, R2, R6 below).
++add("vi self-denied bg ask alone", {
++  hooks: [
++    [0, r.P(M, "spawn", { tool: "Agent" })], [300, r.O(M, "spawn", { tool: "Agent" })],
++    ...selfDenied(2_000, BG, "bg1"), [9_000, r.P(BG, "bg2")], [9_500, r.O(BG, "bg2")],
++    ...selfDenied(12_000, BG, "bg3"), [30_000, r.stop(BG)],
++  ],
++  screen: () => ["idle"], until: 60_000, phase: 1_000,
++});
++// (vii) parallel asks from one agent: A and B both pending; A on screen 0.4-20, B 20-40.
++add("vii parallel asks one agent", {
++  hooks: [
++    [0, r.P(M, "A")], [100, r.P(M, "B")], [400, r.R(M, "A")], [500, r.R(M, "B")], [6_800, r.N()],
++    [20_300, r.O(M, "A")], [26_300, r.N()], [40_300, r.O(M, "B")], ...(BATCH ? ([[40_400, r.B(M, ["A", "B"])]] as Ev[]) : []),
++  ],
++  screen: dlg(800, 40_000), until: 60_000, phase: 1_000,
++});
++add("vii parallel asks one agent, identical input", {
++  hooks: [
++    [0, r.P(M, "A", { input: "same" })], [100, r.P(M, "B", { input: "same" })],
++    [400, r.R(M, "A", { input: "same" })], [500, r.R(M, "B", { input: "same" })], [6_800, r.N()],
++    [20_300, r.O(M, "A", { input: "same" })], [26_300, r.N()], [40_300, r.O(M, "B", { input: "same" })],
++  ],
++  screen: dlg(800, 40_000), until: 60_000, phase: 1_000,
++});
++// (viii) discovery down: no listing at all.
++add("viii discovery down: lone dialog", {
++  hooks: [[0, r.P(M, "A")], [400, r.R(M, "A")], [6_800, r.N()], [60_500, r.O(M, "A")]],
++  screen: null, until: 70_000,
++});
++add("viii discovery down: subagent dialog", {
++  hooks: [[0, r.P(M, "spawn", { tool: "Agent" })], [100, r.P(SUB, "s1")], [500, r.R(SUB, "s1")], [6_900, r.N()], [60_500, r.O(SUB, "s1")]],
++  screen: null, until: 70_000,
++});
++add("viii discovery down: Esc after the Notification", {
++  hooks: [[0, r.P(M, "A")], [400, r.R(M, "A")], [6_800, r.N()]],
++  screen: null, until: 120_000,
++});
++// AskUserQuestion: busy at ~1 s, waiting/"input needed" by ~8 s; Notification ~6.4 s.
++add("AUQ answered at 30 s", {
++  hooks: [[0, r.P(M, "Q", { tool: "AskUserQuestion" })], [400, r.R(M, "Q", { tool: "AskUserQuestion" })], [6_800, r.N()], [30_000, r.O(M, "Q", { tool: "AskUserQuestion" })]],
++  screen: (at) => (at < 1_500 ? ["busy"] : at < 30_000 ? ["waiting", "input needed"] : ["busy"]), until: 50_000, phase: 1_000,
++});
++add("AUQ Esc at 30 s", {
++  hooks: [[0, r.P(M, "Q", { tool: "AskUserQuestion" })], [400, r.R(M, "Q", { tool: "AskUserQuestion" })], [6_800, r.N()]],
++  screen: (at) => (at < 1_500 ? ["busy"] : at < 30_000 ? ["waiting", "input needed"] : ["idle"]), until: 50_000, phase: 1_000,
++});
++add("AUQ listing lags (busy to 6 s)", {
++  hooks: [[0, r.P(M, "Q", { tool: "AskUserQuestion" })], [400, r.R(M, "Q", { tool: "AskUserQuestion" })], [6_800, r.N()], [30_000, r.O(M, "Q", { tool: "AskUserQuestion" })]],
++  screen: (at) => (at < 6_000 ? ["busy"] : at < 30_000 ? ["waiting", "input needed"] : ["busy"]), until: 50_000, phase: 1_000,
++});
++
++// --- README findings and hunt S1..S8, realized ------------------------------
++// S1 / VR3-86-1 / F1: SUB approved at 0.8 s (tool runs to 120 s); main's A on screen 3.4-60; main's
++// parallel B (its own PreToolUse at 8.1 s) queued, on screen 60-90.
++add("S1 (F1)", {
++  hooks: [
++    [0, r.P(SUB, "s1")], [0, r.R(SUB, "s1")], [3_000, r.P(M, "A")], [3_000, r.R(M, "A")],
++    [8_100, r.P(M, "B")], [8_500, r.R(M, "B")], [9_400, r.N()], [61_000, r.O(M, "A")], [66_200, r.N()],
++    [91_000, r.O(M, "B")], [120_000, r.O(SUB, "s1")],
++  ],
++  screen: dlg(3_400, 90_000), until: 130_000, phase: 4_000,
++});
++add("S1-control", {
++  hooks: [
++    [0, r.P(SUB, "s1")], [0, r.R(SUB, "s1")], [3_000, r.P(M, "A")], [3_000, r.R(M, "A")],
++    [9_400, r.N()], [61_000, r.O(M, "A")], [120_000, r.O(SUB, "s1")],
++  ],
++  screen: dlg(3_400, 60_000), until: 130_000, phase: 4_000,
++});
++// S2 / F2 / F3: main asks A and parallel B; SUB2's ask (dead=true) is denied by Claude itself.
++for (const dead of [false, true])
++  add(`S2 dead=${dead} (F2,F3)`, {
++    hooks: [
++      [0, r.P(M, "A")], [0, r.R(M, "A")], [100, r.P(M, "B")], [300, r.R(M, "B")],
++      ...(dead ? [...selfDenied(3_000, SUB2, "d1"), [45_000, r.P(SUB2, "d2")] as Ev] : []),
++      [6_400, r.N()], [21_000, r.O(M, "A")], [26_200, r.N()],
++    ],
++    screen: dlg(400, 200_000), until: 180_000, phase: 1_000,
++  });
++add("S2b claimless dialog after main's approved tool", {
++  hooks: [
++    [0, r.P(M, "A")], [0, r.R(M, "A")], ...selfDenied(3_000, SUB2, "d1"), [21_000, r.O(M, "A")],
++    [22_000, r.P(M, "plan", { tool: "ExitPlanMode" })], [28_400, r.N()], [45_000, r.P(SUB2, "d2")],
++  ],
++  screen: (at) => ((at >= 400 && at < 20_000) || (at >= 22_400 && at < 90_000) ? ["waiting", DIALOG] : ["busy"]),
++  until: 90_000, phase: 1_000,
++});
++// S2c: SUB approved at 0.5 s, its tool runs 300 s; main's A 1.4-60, parallel B 60-400.
++add("S2c (F2)", {
++  hooks: [
++    [0, r.P(SUB, "s1")], [0, r.R(SUB, "s1")], [1_000, r.P(M, "A")], [1_000, r.R(M, "A")],
++    [1_100, r.P(M, "B")], [1_300, r.R(M, "B")], [7_600, r.N()], [61_000, r.O(M, "A")], [66_200, r.N()],
++    [300_000, r.O(SUB, "s1")],
++  ],
++  screen: dlg(1_400, 400_000), until: 400_000, phase: 2_000,
++});
++add("S2c-noparallel (F2 refute)", {
++  hooks: [
++    [0, r.P(SUB, "s1")], [0, r.R(SUB, "s1")], [1_000, r.P(M, "A")], [1_000, r.R(M, "A")], [7_600, r.N()],
++    [61_000, r.O(M, "A")], [65_000, r.P(M, "B")], [65_000, r.R(M, "B")], [71_200, r.N()], [300_000, r.O(SUB, "s1")],
++  ],
++  screen: (at) => ((at >= 1_400 && at < 60_000) || (at >= 65_400 && at < 400_000) ? ["waiting", DIALOG] : ["busy"]),
++  until: 400_000, phase: 2_000,
++});
++// S3: main's A on screen 0.4-4 (approved, tool runs to 64 s); SUB's queued, on screen 4-30.
++for (const notice of [true, false])
++  add(`S3 SUB queued after main's approval (notice=${notice})`, {
++    hooks: [
++      [0, r.P(M, "A")], [0, r.R(M, "A")], [2_000, r.P(SUB, "s1")], [2_000, r.R(SUB, "s1")],
++      ...(notice ? ([[10_200, r.N()]] as Ev[]) : []), [31_000, r.O(SUB, "s1")], [64_000, r.O(M, "A")],
++    ],
++    screen: dlg(400, 30_000), until: 70_000, phase: 1_000,
++  });
++// S8: main's A on screen 0.4-20, SUB queued 0.5 s later, on screen 20-40.
++add("S8", {
++  hooks: [
++    [0, r.P(M, "A")], [0, r.R(M, "A")], [500, r.P(SUB, "s1")], [500, r.R(SUB, "s1")], [6_400, r.N()],
++    [21_000, r.O(M, "A")], [26_200, r.N()], [41_000, r.O(SUB, "s1")],
++  ],
++  screen: dlg(400, 40_000), until: 60_000, phase: 0,
++});
++// R1: a self-denied BG ask newer than main's unseen real dialog.
++for (const bgNext of [3_000, 5_000, 8_000, 15_000, 40_000])
++  add(`R1 bgNext=${bgNext / 1000}`, {
++    hooks: [
++      [0, r.P(M, "A")], [0, r.R(M, "A")], ...selfDenied(1_000, BG, "bg1"), [6_400, r.N()],
++      [bgNext, r.P(BG, "bg2")], [60_000, r.O(M, "A")],
++    ],
++    screen: dlg(400, 59_000), until: 120_000, phase: 2_000,
++  });
++// R2: main seen, then a self-denied BG ask while main's dialog is up.
++for (const bgNext of [4_000, 9_000, 20_000])
++  add(`R2 bgNext=${bgNext / 1000}`, {
++    hooks: [
++      [0, r.P(M, "A")], [0, r.R(M, "A")], ...selfDenied(3_000, BG, "bg1"), [6_400, r.N()],
++      [bgNext, r.P(BG, "bg2")], [60_000, r.O(M, "A")],
++    ],
++    screen: dlg(400, 59_000), until: 120_000, phase: 1_000,
++  });
++// R1-reversed: the self-denied BG ask is OLDER than main's real dialog (the FIFO crux).
++for (const bgNext of [3_000, 8_000, 20_000])
++  for (const phase of [0, 2_000, 4_000])
++    add(`R1-rev bg first, bgNext=${bgNext / 1000} phase=${phase / 1000}`, {
++      hooks: [
++        ...selfDenied(0, BG, "bg1"), [1_000, r.P(M, "A")], [1_000, r.R(M, "A")], [7_400, r.N()],
++        [bgNext, r.P(BG, "bg2")], [60_000, r.O(M, "A")],
++      ],
++      screen: dlg(1_400, 59_000), until: 90_000, phase,
++    });
++// R4: agent_needs_input during a listing-seen block, then Esc.
++add("R4 / F5", {
++  hooks: [[0, r.P(M, "A")], [0, r.R(M, "A")], [5_500, r.N("agent_needs_input")]],
++  screen: (at) => (at >= 400 && at < 6_000 ? ["waiting", DIALOG] : ["idle"]),
++  until: 200_000, phase: 1_000,
++});
++// R5: a lone claim approved before any poll, then a claimless dialog that reads "permission prompt".
++for (const dlgAt of [6_000, 9_000, 12_000, 30_000])
++  add(`R5 dlgAt=${dlgAt / 1000}`, {
++    hooks: [[0, r.P(M, "A")], [0, r.R(M, "A")], [dlgAt + 6_200, r.N()]],
++    screen: (at) => (at >= dlgAt && at < dlgAt + 30_000 ? ["waiting", DIALOG] : ["busy"]),
++    until: 120_000, phase: 1_000,
++  });
++// F1 variants (zzv-f1): main's long tool approved at 4 s; a SUB ask at 3 s in several shapes.
++{
++  const longTool = 10 * 60_000;
++  const base: Ev[] = [[0, r.P(M, "A")], [0, r.R(M, "A")], [longTool, r.O(M, "A")]];
++  add("F1v control", { hooks: base, screen: dlg(400, 4_000), until: longTool - 1_000, phase: 1_000 });
++  add("F1v P2 bg claim then next event", {
++    hooks: [...base, ...selfDenied(3_000, SUB, "s1"), [3_500, r.P(SUB, "s2")]],
++    screen: dlg(400, 4_000), until: longTool - 1_000, phase: 1_000,
++  });
++  add("F1v P3 queued sub answered 5s", {
++    hooks: [...base, [3_000, r.P(SUB, "s1")], [3_000, r.R(SUB, "s1")], [5_500, r.O(SUB, "s1")]],
++    screen: dlg(400, 5_000), until: longTool - 1_000, phase: 1_000,
++  });
++  add("F1v P4 sub dialog still up at 6s", {
++    hooks: [...base, [3_000, r.P(SUB, "s1")], [3_000, r.R(SUB, "s1")], [21_500, r.O(SUB, "s1")]],
++    screen: dlg(400, 21_000), until: longTool - 1_000, phase: 1_000,
++  });
++}
++// F1R variants: V2/V3 B close to the Notification; V4 SUB claim long before; V5 SUB's tool short.
++{
++  const base = (bAt: number, subAt = 0, subPostAt = 120_000): Ev[] => [
++    [subAt, r.P(SUB, "s1")], [subAt, r.R(SUB, "s1")], [3_000, r.P(M, "A")], [3_000, r.R(M, "A")],
++    [bAt - 400, r.P(M, "B")], [bAt, r.R(M, "B")], [9_400, r.N()], [61_000, r.O(M, "A")], [66_200, r.N()],
++    [91_000, r.O(M, "B")], [subPostAt, r.O(SUB, "s1")],
++  ];
++  const scr = dlg(3_400, 90_000);
++  add("F1R V2 B@4.3", { hooks: base(4_300), screen: scr, until: 130_000, phase: 4_000 });
++  add("F1R V3 B@4.5", { hooks: base(4_500), screen: scr, until: 130_000, phase: 4_000 });
++  add("F1R V4 SUB@-7", { hooks: base(8_500, -7_000).map(([t, p]) => [t + 7_000, p] as Ev), screen: (at) => scr(at - 7_000), until: 137_000, phase: 11_000 });
++  add("F1R V5 SUBpost@5", { hooks: base(8_500, 0, 5_000), screen: scr, until: 130_000, phase: 4_000 });
++}
++// F3R V1/V2 (the CHANGELOG's documented case) and V2 with a concurrent auto-allowed Read.
++add("F3R V1 refusal 0.5 s after main's ask", {
++  hooks: [[0, r.P(M, "A")], [0, r.R(M, "A")], ...selfDenied(500, SUB2, "d1"), [6_400, r.N()], [45_000, r.P(SUB2, "d2")]],
++  screen: dlg(400, 200_000), until: 180_000, phase: 1_000,
++});
++add("F3R V2 refusal + concurrent auto-allowed Read", {
++  hooks: [
++    [0, r.P(M, "read", { tool: "Read" })], [0, r.P(M, "A")], [400, r.R(M, "A")], ...selfDenied(800, SUB2, "d1"),
++    [900, r.O(M, "read", { tool: "Read" })], [6_600, r.N()], [45_000, r.P(SUB2, "d2")],
++  ],
++  screen: dlg(800, 200_000), until: 180_000, phase: 1_000,
++});
++// F4/S4 decay: SUB's last event long ago while SUB2's dialog is up for 10 min.
++add("S4 (F4) SUB silent while SUB2 blocked 10 min", {
++  hooks: [
++    [0, r.P(M, "spawn", { tool: "Agent" })], [100, r.P(SUB, "s1")], [5_000, r.O(SUB, "s1")],
++    [10_000, r.P(SUB2, "t1")], [10_000, r.R(SUB2, "t1")], [16_400, r.N()], [602_000, r.O(SUB2, "t1")],
++  ],
++  screen: (at) => (at >= 10_400 && at < 601_000 ? ["waiting", DIALOG] : at < 606_000 ? ["busy"] : ["idle"]),
++  until: 660_000, phase: 1_000,
++});
++add("F4 P5 SUB running a long tool while SUB2 blocked", {
++  hooks: [
++    [0, r.P(M, "spawn", { tool: "Agent" })], [5_000, r.P(SUB, "build")], [10_000, r.P(SUB2, "t1")],
++    [10_000, r.R(SUB2, "t1")], [16_400, r.N()],
++  ],
++  screen: (at) => (at >= 10_400 ? ["waiting", DIALOG] : ["busy"]), until: 122_000, phase: 1_000,
++});
++add("F4 FileChanged during the block", {
++  hooks: [[0, r.P(M, "A")], [0, r.R(M, "A")], [2_000, r.fc()], [6_400, r.N()], [7_000, r.fc()], [30_000, r.fc()]],
++  screen: dlg(400, 130_000), until: 130_000, phase: 4_000,
++});
++// M19c: Esc ends a seen block; a claimless dialog is seen 3 s later.
++add("M19c Esc then claimless dialog", {
++  hooks: [[0, r.P(M, "A")], [0, r.R(M, "A")], [14_200, r.N()]],
++  screen: (at) => (at < 6_000 ? ["waiting", DIALOG] : at < 8_000 ? ["idle"] : ["waiting", DIALOG]),
++  until: 30_000, phase: 1_000,
++});
++// RY / VR3-86-1 realized: main A seen; SUB queued 1 s later; main's parallel B at 3 s; A's Notification.
++// FIFO: A 0.4-60, SUB's 60-90, B 90-120.
++add("RY (VR3-86-1)", {
++  hooks: [
++    [0, r.P(M, "A")], [0, r.R(M, "A")], [1_000, r.P(SUB, "s1")], [1_000, r.R(SUB, "s1")],
++    [2_600, r.P(M, "B")], [3_000, r.R(M, "B")], [6_400, r.N()], [60_000, r.O(M, "A")], [66_200, r.N()],
++    [90_000, r.O(SUB, "s1")], [96_200, r.N()], [120_000, r.O(M, "B")],
++  ],
++  screen: dlg(400, 120_000), until: 130_000, phase: 500,
++});
++// RX / VR3-86-2: a Notification-made block (no claim: hooks predate PermissionRequest), SUB asks
++// at 3 s, main asks again at 10 s while blocked, then a Notification at 12 s.
++add("RX (VR3-86-2)", {
++  hooks: [
++    [0, r.P(M, "A")], [0, r.N()], [3_000, r.P(SUB, "s1")], [3_000, r.R(SUB, "s1")],
++    [9_600, r.P(M, "B")], [10_000, r.R(M, "B")], [12_000, r.N()],
++  ],
++  screen: null, until: 30_000,
++});
++// DOCS (VR3-86-3): SUB's claim is the only claim, 3.4 s old at the Notification.
++add("DOCS lone young claim", {
++  hooks: [[0, r.P(M, "A")], [3_000, r.P(SUB, "s1")], [3_000, r.R(SUB, "s1")], [6_400, r.N()]],
++  screen: null, until: 30_000,
++});
++// MONO (zzv-vr3-refute): main A seen at 0.5 s; SUB claims at 1 s; main re-claims at 3 s.
++for (const [label, subAt, pollAt] of [["base", 1_000, 500], ["sub1.5", 1_500, 500], ["pollAfterSub", 1_000, 1_200]] as Array<[string, number, number]>)
++  add(`MONO ${label}`, {
++    hooks: [
++      [0, r.P(M, "A")], [0, r.R(M, "A")], [subAt, r.P(SUB, "s1")], [subAt, r.R(SUB, "s1")],
++      [2_600, r.P(M, "B")], [3_000, r.R(M, "B")], [6_400, r.N()],
++    ],
++    screen: dlg(400, 60_000), until: 30_000, phase: pollAt,
++  });
++
++describe.runIf(CORPUS === "real" || CORPUS === "both")(`c86 REAL on ${TREE}`, () => {
++  for (const [id, s] of Object.entries(REAL)) {
++    it(id, async () => emit(`REAL ${id}`, await run(s)));
++  }
++  // S5 / F5: agent_needs_input during an unannounced permission block, then Esc.
++  it("S5 (F5)", async () => {
++    const h = harness();
++    h.at(0); h.hook(r.P(M, "A")); h.hook(r.R(M, "A"));
++    h.at(1_300); h.seen(1_000);
++    h.at(3_000); await h.loop.pulse(); h.hook(r.N("agent_needs_input"));
++    h.at(4_300); h.poll("idle", 4_000);
++    for (let at = 5_000; at <= 120_000; at += 1_000) { h.at(at); await h.pulse(); if (at % 5_000 === 0) { h.at(at + 300); h.poll("idle", at); } }
++    emit("REAL S5 (F5)", h);
++  });
++  it("S5b (F5)", async () => {
++    const h = harness();
++    h.at(0); h.hook(r.P(M, "A")); h.hook(r.R(M, "A"));
++    h.at(500); h.hook(r.N("agent_needs_input"));
++    h.at(6_400); h.hook(r.N());
++    for (let at = 10_000; at <= 20_000; at += 5_000) { h.at(at + 300); h.poll("idle", at); h.at(at + 1_000); await h.pulse(); }
++    emit("REAL S5b (F5)", h, { mainState: h.agent()?.state });
++  });
++  // S4b: agent_needs_input on main, Esc; SUB silent since 5 s; 1 h of idle polls.
++  it("S4b (F4)", async () => {
++    const h = harness();
++    h.at(0); h.hook(r.P(M, "spawn", { tool: "Agent" }));
++    h.at(100); h.hook(r.P(SUB, "s1"));
++    h.at(5_000); h.hook(r.O(SUB, "s1"));
++    h.at(6_000); h.hook(r.N("agent_needs_input"));
++    for (let at = 10_000; at <= 3_600_000; at += 5_000) { h.at(at + 300); h.poll("idle", at); h.at(at + 1_000); await h.pulse(); }
++    emit("REAL S4b (F4)", h);
++  }, 120_000);
++  // S4 (F4) sampled mid-block: SUB went quiet at 5 s (no SubagentStop); SUB2's dialog is up 10-600 s.
++  it("S4 mid-block sample (F4)", async () => {
++    const h = await run({
++      hooks: [
++        [0, r.P(M, "spawn", { tool: "Agent" })], [100, r.P(SUB, "s1")], [5_000, r.O(SUB, "s1")],
++        [10_000, r.P(SUB2, "t1")], [10_000, r.R(SUB2, "t1")], [16_400, r.N()],
++      ],
++      screen: (at) => (at >= 10_400 ? ["waiting", DIALOG] : ["busy"]), until: 300_000, phase: 1_000,
++    });
++    emit("REAL S4 mid-block sample (F4)", h, { at300: { main: h.agent()?.state, SUB: h.agent(SUB)?.state, SUBactiveMs: h.agent(SUB)?.activeMs, SUB2: h.agent(SUB2)?.state } });
++  });
++  // S6b / S6c: an approved claim and a later claimless Notification.
++  it("S6b approved claim, claimless Notification at 16 s", async () => {
++    const h = harness();
++    h.at(0); h.hook(r.P(SUB, "s1")); h.hook(r.R(SUB, "s1"));
++    h.at(9_999); h.hook(r.P(M, "plan", { tool: "ExitPlanMode" }));
++    h.at(16_000); const res = h.hook(r.N());
++    h.at(17_000); await h.pulse();
++    emit("REAL S6b", h, { notificationWentTo: res && "becameBlocked" in res ? short(res.becameBlocked?.agentId ?? "none") : "none" });
++  });
++  it("S6c approved claim, claimless Notification at 7.6 s", async () => {
++    const h = harness();
++    h.at(0); h.hook(r.P(SUB, "s1")); h.hook(r.R(SUB, "s1"));
++    h.at(1_000); h.hook(r.P(M, "plan", { tool: "ExitPlanMode" }));
++    h.at(7_600); const res = h.hook(r.N());
++    h.at(8_000); await h.pulse();
++    emit("REAL S6c", h, { notificationWentTo: res && "becameBlocked" in res ? short(res.becameBlocked?.agentId ?? "none") : "none" });
++  });
++  // S6d masked session: the listing always reads "input needed".
++  it("S6d masked", async () => {
++    const h = await run({
++      hooks: [
++        [0, r.P(M, "A")], [0, r.R(M, "A")], [2_000, r.P(SUB, "s1")], [2_000, r.R(SUB, "s1")], [6_400, r.N()],
++        [30_000, r.O(M, "A")], [35_700, r.N()], [55_000, r.O(SUB, "s1")],
++      ],
++      screen: () => ["waiting", "input needed"], until: 60_000, phase: 1_000,
++    });
++    emit("REAL S6d masked", h);
++  });
++  // S7 / F6 / VR3-86-5: one real dialog, a self-denied SUB2 ask, counted once?
++  it("S7 counters (F6)", async () => {
++    const h = harness();
++    h.at(0); h.hook(r.P(M, "A")); h.hook(r.R(M, "A"));
++    h.at(300); h.poll("busy", 0);
++    h.at(3_000); for (const [, p] of selfDenied(0, SUB2, "d1")) h.hook(p);
++    h.at(5_300); h.seen(5_000);
++    h.at(6_400); h.hook(r.N());
++    h.at(7_000); await h.pulse();
++    emit("REAL S7 counters (F6)", h);
++  });
++  // R6 sweep, realized.
++  it("R6 sweep", async () => {
++    let lost = 0, bgAlerted = 0, falseResolved = 0, total = 0;
++    const lat: number[] = [];
++    for (const bgAt of [500, 1_500, 3_000, 5_000])
++      for (const bgDelay of [2_000, 4_000, 6_000, 8_000, 12_000, 20_000])
++        for (const phase of [0, 1_000, 2_000, 3_000, 4_000]) {
++          const h = await run({
++            hooks: [
++              [0, r.P(M, "A")], [0, r.R(M, "A")], ...selfDenied(bgAt, BG, "bg1"), [6_400, r.N()],
++              [bgAt + bgDelay, r.P(BG, "bg2")], [60_000, r.O(M, "A")],
++            ],
++            screen: dlg(400, 59_000), until: 70_000, phase,
++          });
++          const s = story(h);
++          total++;
++          const first = s.find((x) => x.startsWith("blocked:main"));
++          if (first === undefined) lost++;
++          else lat.push(Number(first.split("@")[1]));
++          if (s.some((x) => x.startsWith("blocked:SUB2"))) bgAlerted++;
++          if (s.some((x) => x.startsWith("resolved") && Number(x.split("@")[1]) < 59)) falseResolved++;
++        }
++    lat.sort((a, b) => a - b);
++    emit("REAL R6 sweep", null, {
++      total, mainNeverAlerted: lost, bgAlerted, resolvedWhileUp: falseResolved,
++      mainAlertSec: { min: lat[0], median: lat[Math.floor(lat.length / 2)], max: lat[lat.length - 1] },
++    });
++  }, 300_000);
++  // R1-rev sweep: self-denied ask first, real main ask second, every phase and gap.
++  it("R1-rev sweep", async () => {
++    let lost = 0, bgAlerted = 0, falseResolved = 0, total = 0;
++    const lat: number[] = [];
++    for (const mainAt of [500, 1_500, 3_000])
++      for (const bgDelay of [2_000, 4_000, 8_000, 20_000])
++        for (const phase of [0, 1_000, 2_000, 3_000, 4_000]) {
++          const h = await run({
++            hooks: [
++              ...selfDenied(0, BG, "bg1"), [mainAt, r.P(M, "A")], [mainAt, r.R(M, "A")], [mainAt + 6_400, r.N()],
++              [bgDelay, r.P(BG, "bg2")], [60_000, r.O(M, "A")],
++            ],
++            screen: dlg(mainAt + 400, 59_000), until: 70_000, phase,
++          });
++          const s = story(h);
++          total++;
++          const first = s.find((x) => x.startsWith("blocked:main"));
++          if (first === undefined) lost++;
++          else lat.push(Number(first.split("@")[1]) - mainAt / 1000);
++          if (s.some((x) => x.startsWith("blocked:SUB2"))) bgAlerted++;
++          if (s.some((x) => x.startsWith("resolved") && Number(x.split("@")[1]) < 59)) falseResolved++;
++        }
++    lat.sort((a, b) => a - b);
++    emit("REAL R1-rev sweep", null, {
++      total, mainNeverAlerted: lost, bgAlerted, resolvedWhileUp: falseResolved,
++      mainAlertAfterDialogSec: { min: lat[0], median: lat[Math.floor(lat.length / 2)], max: lat[lat.length - 1] },
++    });
++  }, 300_000);
++  // Ghost sweep: SUB approved quickly (long tool), main's dialog appears dt later; every phase.
++  it("ghost sweep (S1-control family)", async () => {
++    let subAlerted = 0, mainLost = 0, total = 0, mainResolvedEarly = 0;
++    const lat: number[] = [];
++    for (const dt of [1_000, 1_500, 2_000, 3_000, 4_000])
++      for (const phase of [0, 1_000, 2_000, 3_000, 4_000]) {
++        const h = await run({
++          hooks: [
++            [0, r.P(SUB, "s1")], [0, r.R(SUB, "s1")], [dt, r.P(M, "A")], [dt, r.R(M, "A")], [dt + 6_400, r.N()],
++            [61_000, r.O(M, "A")], [120_000, r.O(SUB, "s1")],
++          ],
++          screen: (at) => (at >= dt + 400 && at < 60_000 ? ["waiting", DIALOG] : ["busy"]), until: 130_000, phase,
++        });
++        const s = story(h);
++        total++;
++        if (s.some((x) => x.startsWith("blocked:SUB"))) subAlerted++;
++        const first = s.find((x) => x.startsWith("blocked:main"));
++        if (first === undefined) mainLost++;
++        else lat.push(Number(first.split("@")[1]) - dt / 1000);
++        if (s.some((x) => x.startsWith("resolved:main") && Number(x.split("@")[1]) < 60)) mainResolvedEarly++;
++      }
++    lat.sort((a, b) => a - b);
++    emit("REAL ghost sweep", null, {
++      total, subAlerted, mainNeverAlerted: mainLost, mainResolvedWhileUp: mainResolvedEarly,
++      mainAlertAfterDialogSec: { min: lat[0], median: lat[Math.floor(lat.length / 2)], max: lat[lat.length - 1] },
++    });
++  }, 300_000);
++  // Early answers: a lone dialog answered `ans` s after its claim, with a long tool. Does an
++  // alert go out for a dialog that is already gone?
++  it("early-answer sweep", async () => {
++    const rows: string[] = [];
++    let falseAlerts = 0, total = 0;
++    for (const ans of [1_000, 2_000, 3_000, 4_000, 4_500, 5_500])
++      for (const phase of [0, 1_000, 2_000, 3_000, 4_000]) {
++        const h = await run({
++          hooks: [[0, r.P(M, "A")], [400, r.R(M, "A")], ...(ans > 6_400 ? ([[6_800, r.N()]] as Ev[]) : []), [120_000, r.O(M, "A")]],
++          screen: (at) => (at >= 800 && at < ans ? ["waiting", DIALOG] : ["busy"]), until: 60_000, phase,
++        });
++        const s = story(h);
++        total++;
++        const alert = s.find((x) => x.startsWith("blocked:main"));
++        if (alert !== undefined && Number(alert.split("@")[1]) * 1000 > ans) { falseAlerts++; rows.push(`ans=${ans} phase=${phase} ${JSON.stringify(s)}`); }
++      }
++    emit("REAL early-answer sweep", null, { total, alertAfterAnswered: falseAlerts, cases: rows });
++  }, 300_000);
++  // Grid collisions: SUB's dialog (claimed 0, up from 0.1 s) is approved at `ap` and its tool runs
++  // on; main's ask, claimed at `dt`, is queued behind it and mounts at max(dt + 0.1, ap); its
++  // Notification comes 6.3 s after it mounts. The listing reads a dialog throughout.
++  it("ghost sweep, close claims", async () => {
++    const out: Record<string, { subAlerted: number; mainNeverAlerted: number; total: number }> = {};
++    for (const ap of [800, 1_200, 1_600, 2_000, 3_000])
++      for (const dt of [300, 500, 800])
++        for (const phase of [0, 1_000, 2_000, 3_000, 4_000]) {
++          if (dt >= ap) continue;
++          const mount = Math.max(dt + 100, ap);
++          const h = await run({
++            hooks: [
++              [0, r.P(SUB, "s1")], [0, r.R(SUB, "s1")], [dt, r.P(M, "A")], [dt, r.R(M, "A")], [mount + 6_300, r.N()],
++              [61_000, r.O(M, "A")], [120_000, r.O(SUB, "s1")],
++            ],
++            screen: (at) => (at >= 400 && at < 60_000 ? ["waiting", DIALOG] : ["busy"]), until: 130_000, phase,
++          });
++          const s = story(h);
++          const k = `ap=${ap / 1000}`;
++          out[k] ??= { subAlerted: 0, mainNeverAlerted: 0, total: 0 };
++          out[k].total++;
++          if (s.some((x) => x.startsWith("blocked:SUB"))) out[k].subAlerted++;
++          if (!s.some((x) => x.startsWith("blocked:main"))) out[k].mainNeverAlerted++;
++        }
++    emit("REAL ghost sweep, close claims", null, { byApprovalSec: out });
++  }, 300_000);
++  // Identical input from two agents: main and SUB run the same command at the same time; only
++  // SUB's needs permission (say SUB is in a stricter mode); main's is auto-allowed.
++  it("identical input, two agents, one asks", async () => {
++    const h = await run({
++      hooks: [
++        [0, r.P(M, "m1", { input: "same" })], [50, r.P(SUB, "s1", { input: "same" })],
++        [450, r.R(SUB, "s1", { input: "same" })], [900, r.O(M, "m1", { input: "same" })],
++        [6_850, r.N()], [30_000, r.O(SUB, "s1", { input: "same" })],
++      ],
++      screen: dlg(850, 30_000), until: 40_000, phase: 2_000,
++    });
++    emit("REAL identical input, two agents, one asks", h);
++  });
++  it("identical input, two agents, both ask", async () => {
++    const h = await run({
++      hooks: [
++        [0, r.P(M, "m1", { input: "same" })], [50, r.P(SUB, "s1", { input: "same" })],
++        [400, r.R(M, "m1", { input: "same" })], [450, r.R(SUB, "s1", { input: "same" })],
++        [6_800, r.N()], [20_300, r.O(M, "m1", { input: "same" })], [26_300, r.N()],
++        [40_000, r.O(SUB, "s1", { input: "same" })],
++      ],
++      screen: dlg(800, 40_000), until: 50_000, phase: 2_000,
++    });
++    emit("REAL identical input, two agents, both ask", h);
++  });
++  // (x) Codex: PreToolUse, PermissionRequest (-> permission_prompt), Interrupt (Esc).
++  it("x Codex approval prompt, then Esc", async () => {
++    const h = harness();
++    const cx = (hook: string, extra: Payload = {}): Payload => ({
++      session_id: "cx-1", cwd: CWD, hook_event_name: hook, turn_id: "t1", ...extra,
++    });
++    h.at(0); h.codex(cx("PreToolUse", { tool_name: "shell", tool_use_id: "call_1", tool_input: { command: "x" } }));
++    h.at(100); h.codex(cx("PermissionRequest", { tool_name: "shell", tool_input: { command: "x" } }));
++    for (let at = 1_000; at <= 40_000; at += 1_000) {
++      h.at(at);
++      if (at === 35_000) h.codex(cx("Interrupt"));
++      await h.pulse();
++    }
++    const cxStory = h.sent.map((e) => `${e.kind}:${e.session.agentId}@${e.ts / 1000}`);
++    emit("REAL x Codex", null, { story: cxStory, end: h.registry.get("cx-1")?.agents.get("cx-1")?.state });
++  });
++  it("x Codex sibling stall (S4c)", async () => {
++    const h = harness();
++    const cx = (hook: string, extra: Payload = {}): Payload => ({ session_id: "cx-2", cwd: CWD, hook_event_name: hook, turn_id: "t1", ...extra });
++    h.at(0); h.codex(cx("PostToolUse", { agent_id: "cx-sub", tool_name: "shell", tool_use_id: "c1", tool_input: { command: "x" }, tool_response: {} }));
++    h.codex(cx("PermissionRequest", { tool_name: "shell", tool_input: { command: "x" } }));
++    h.at(16 * 60_000); h.registry.tick();
++    emit("REAL x Codex sibling stall (S4c)", null, { sub: h.registry.get("cx-2")?.agents.get("cx-sub")?.state });
++  });
++});

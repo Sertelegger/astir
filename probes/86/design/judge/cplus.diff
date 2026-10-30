@@ -1,0 +1,624 @@
+# Judge's C+ prototype: candidate C (minimal.diff) plus the judge's grafts behind knobs. Run with D86_DATING=c0 D86_HOLD=1 D86_DECAY=1 D86_SETTLE=2000 (D86_NOGRAFT=1 disables the Notification-as-sighting line; D86_SETTLE=0 shows the AskUserQuestion-lag hole). Throwaway, not for commit. Diff against 07c3935, src/ only.
+diff --git a/src/adapters/claude/normalize.ts b/src/adapters/claude/normalize.ts
+index 2625796..5b0f3d5 100644
+--- a/src/adapters/claude/normalize.ts
++++ b/src/adapters/claude/normalize.ts
+@@ -31,11 +31,33 @@ import {
+  */
+ export const SPAWN_TOOLS = new Set(["Agent", "Task"]);
+ 
++/**
++ * #86 — `PermissionRequest` dates a block; it does not prove one.
++ *
++ * Before a dialog opens Claude fires `PermissionRequest` (~0.4 s after
++ * `PreToolUse`, measured); the `permission_prompt` `Notification` comes ~6 s
++ * later, and it was the only one astir listened to, so every Claude alert came
++ * ~6 s late on top of the PSH-16 dwell
++ * (test/fixtures/claude/permission-request.json).
++ *
++ * But `PermissionRequest` is not "the dialog opened". Claude also runs it for
++ * an ask that can never show one — a background agent's, a headless
++ * session's — and then denies the ask itself (read from the 2.1.312 binary).
++ * So it becomes `permission_request`, which marks the agent's dialog as
++ * claimed. The registry blocks the agent, dated from the claim, once something
++ * has SEEN the dialog: Claude's session listing reading `waiting` for a
++ * `"permission prompt"`, or the Notification, which Claude sends only while
++ * the dialog is still up.
++ *
++ * Neither hook says when a dialog ends if the human presses Esc — nothing
++ * fires at all. The listing does (`listingClearsBlocks`, registry.reconcile).
++ */
+ const KIND_BY_HOOK: Record<string, Kind> = {
+   SessionStart: "session_start",
+   PreToolUse: "pre_tool",
+   PostToolUse: "post_tool",
+   PostToolUseFailure: "tool_failed",
++  PermissionRequest: "notification",
+   Notification: "notification",
+   SubagentStart: "subagent_start",
+   SubagentStop: "subagent_stop",
+@@ -177,7 +199,16 @@ export function normalizeClaudeHook(payload: unknown, deps: NormalizeDeps): Norm
+   }
+ 
+   let notificationKind: NotificationKind | null = null;
+-  if (kind === "notification") {
++  if (hookName === "PermissionRequest") {
++    // It carries no `notification_type`, and read like a Notification it would
++    // come out `other` and be lost. Nor is it `permission_prompt`: Claude fires
++    // it for asks that never reach a screen too, so it marks a dialog the
++    // registry has not yet seen (`permission_request`). Whatever the tool —
++    // `AskUserQuestion` fires it as well, and that is a question the human must
++    // answer just the same. The tool is not carried: the PreToolUse before it
++    // already named it.
++    notificationKind = "permission_request";
++  } else if (kind === "notification") {
+     const nt = typeof p.notification_type === "string" ? p.notification_type : "";
+     notificationKind = NOTIFICATION_KINDS.has(nt) ? (nt as NotificationKind) : "other";
+   }
+diff --git a/src/cli/main.ts b/src/cli/main.ts
+index 6aaf9ab..ad5c79f 100644
+--- a/src/cli/main.ts
++++ b/src/cli/main.ts
+@@ -35,7 +35,7 @@ import { probeDaemon } from "../daemon/detect.js";
+ import { BUILD_STAMP, Daemon } from "../daemon/server.js";
+ import { createPidLister, createProcessTable } from "../discovery/pids.js";
+ import { createSshLister, RemoteDiscovery } from "../discovery/remote.js";
+-import { createClaudeLister } from "../discovery/sessions.js";
++import { createClaudeLister, pollInto } from "../discovery/sessions.js";
+ import { Registry } from "../model/registry.js";
+ import { parseSnapshot } from "../model/snapshot.js";
+ import { detectNotifier } from "../notify/detect.js";
+@@ -433,16 +433,11 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
+   // a record exists here only once a hook has arrived under that id, so this is
+   // "the id the running session identifies itself as".
+   const lister = createClaudeLister({ known: (id) => registry.get(id) !== undefined });
+-  const reconcile = (): void => {
+-    void lister()
+-      .then((found) =>
+-        registry.reconcile(found?.sessions ?? null, {
+-          complete: found?.complete ?? false,
+-          provider: "claude",
+-        }),
+-      )
+-      .catch(() => undefined);
+-  };
++  // #86 — `pollInto` dates the answer from when the question was ASKED. The
++  // listing reads session status that starts and ends a permission block, and
++  // an answer to a poll begun before a dialog was claimed says nothing about
++  // it, however late it lands.
++  const reconcile = (): void => void pollInto(lister, registry, "claude");
+   // Codex has no session listing, so its sessions are vouched for by the pid
+   // their hook relay reported — see discovery/pids.ts. Without this nothing
+   // reaps a Codex session that dies without SessionEnd.
+diff --git a/src/contract/capabilities.ts b/src/contract/capabilities.ts
+index d7c67a6..96d45a5 100644
+--- a/src/contract/capabilities.ts
++++ b/src/contract/capabilities.ts
+@@ -32,6 +32,22 @@ export interface ProviderCapabilities {
+    * never have seen, so its silence proves nothing.
+    */
+   liveness: "listing" | "pid";
++  /**
++   * #86 — the provider's session listing says when nothing is on screen, so
++   * it can end a permission block that no hook ends. Claude's `claude agents
++   * --json` reads `idle` once Esc dismissed a dialog (measured, 2.1.291/
++   * 2.1.312), and Esc fires no hook at all. The lister translates that into
++   * `DiscoveredSession.screen`; the registry reads only that word.
++   */
++  listingEndsPermissionBlocks: boolean;
++  /**
++   * #86 (variant c0) — how long a permission dialog has been on screen, at
++   * least, when the provider's `permission_prompt` notification arrives; 0
++   * when that notification is the ask itself. Claude sends it only once the
++   * dialog has been up 6 s (read from 2.1.312; measured 6.2–6.6 s after
++   * `PermissionRequest`, the dialog visible ~0.4 s after it).
++   */
++  promptNoticeAgeMs: number;
+ }
+ 
+ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+@@ -40,6 +56,8 @@ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+     blockDwellMs: 5_000,
+     fileWatch: true,
+     liveness: "listing",
++    listingEndsPermissionBlocks: true,
++    promptNoticeAgeMs: 5_000,
+   },
+   codex: {
+     // Its automatic reviewer answered the captured auto-reviewed request after
+@@ -48,5 +66,10 @@ export const CAPABILITIES: Record<Provider, ProviderCapabilities> = {
+     fileWatch: false,
+     // No session listing exists (verified against rust-v0.154.0).
+     liveness: "pid",
++    // Nothing to read, and Codex says Esc itself (`Interrupt`).
++    listingEndsPermissionBlocks: false,
++    // Codex's `permission_prompt` is its `PermissionRequest`, sent BEFORE its
++    // automatic review: the block it makes has proved nothing yet.
++    promptNoticeAgeMs: 0,
+   },
+ };
+diff --git a/src/contract/event.ts b/src/contract/event.ts
+index fb1c977..4c8630c 100644
+--- a/src/contract/event.ts
++++ b/src/contract/event.ts
+@@ -18,13 +18,27 @@ export type Kind =
+ /** How CAP-05 resolved this agent's parent. `inferred` means "we guessed". */
+ export type ParentSource = "sidecar" | "tooluse" | "inferred";
+ 
+-/** Claude's Notification matcher values. The first three mean "come look". */
++/**
++ * Claude's Notification matcher values. The first three mean "come look".
++ *
++ * `permission_prompt` is also what Codex's `PermissionRequest` hook becomes:
++ * it is the only blocking signal Codex sends.
++ *
++ * `permission_request` is Claude's `PermissionRequest` hook (#86), and it does
++ * NOT mean "come look". Claude fires it before every dialog, ~6 s ahead of the
++ * Notification — but also for asks that can never show one (a background
++ * agent's, a headless session's), which it then denies itself. So it is a
++ * claim that a dialog may be open, not a sighting of one: the registry blocks
++ * on it, dated from it, only once the Notification or Claude's session listing
++ * has seen the dialog.
++ */
+ export type NotificationKind =
+   | "permission_prompt"
+   | "agent_needs_input"
+   | "worker_permission_prompt"
+   | "idle_prompt"
+   | "agent_completed"
++  | "permission_request"
+   | "other";
+ 
+ export interface ContractVersion {
+@@ -109,6 +123,7 @@ const NOTIFICATION_KINDS = new Set<string>([
+   "worker_permission_prompt",
+   "idle_prompt",
+   "agent_completed",
++  "permission_request",
+   "other",
+ ]);
+ 
+diff --git a/src/discovery/sessions.ts b/src/discovery/sessions.ts
+index b7cb8c4..49a500d 100644
+--- a/src/discovery/sessions.ts
++++ b/src/discovery/sessions.ts
+@@ -8,6 +8,8 @@
+  */
+ 
+ import { execFile } from "node:child_process";
++import type { Provider } from "../contract/event.js";
++import type { Registry } from "../model/registry.js";
+ import { createTtyReader, isAttended, type TtyReader } from "./attended.js";
+ import { candidateConfigDirs } from "./profiles.js";
+ 
+@@ -17,6 +19,14 @@ export interface DiscoveredSession {
+   pid: number | null;
+   /** `status` for attached sessions, `state` for background ones. */
+   status: string | null;
++  /**
++   * #86 — what the provider's listing says is on the session's screen, in
++   * astir's words (SessionScreen). The lister translates; the registry reads
++   * only this, never a provider's own vocabulary (CAP-02). Absent when the
++   * listing says nothing it can be translated from — every lister but
++   * Claude's.
++   */
++  screen?: SessionScreen;
+   name: string | null;
+   /**
+    * Epoch ms the session started, when the provider reports it.
+@@ -35,6 +45,70 @@ export interface DiscoveredSession {
+   attended?: boolean;
+ }
+ 
++/**
++ * #86 — what is on a session's screen, as far as a permission dialog goes. It
++ * is what the registry reads to begin and end a block no hook reports on
++ * (`listingClearsBlocks`):
++ *
++ * - `permission-dialog`: a permission dialog is open. Which agent's, the
++ *   listing does not say.
++ * - `other-dialog`: something is on screen that is not known to be one. No
++ *   evidence either way.
++ * - `at-prompt`: nothing is on screen and the turn is over.
++ * - `working`: nothing is on screen and the session is working.
++ */
++export type SessionScreen = "permission-dialog" | "other-dialog" | "at-prompt" | "working";
++
++/**
++ * #86 — the one `waitingFor` that means "a permission dialog is on screen" in
++ * `claude agents --json`, which carries `waitingFor` beside `status:
++ * "waiting"` and nowhere else (the field measured on 2.1.312).
++ *
++ * Read from the binary (2.1.296–2.1.312): `"permission prompt"` is the DEFAULT,
++ * what every dialog reads that declares nothing else — a tool's permission
++ * dialog, but also plan approval, entering plan mode, a message from another
++ * session awaiting approval, browser and Chrome setup, computer-use approval
++ * and auto-mode setup proposals. The value was not seen live, because that
++ * takes starting a session. Were it ever different, a dialog would be seen by
++ * its Notification instead, ~6 s in — later, never not at all.
++ *
++ * `waiting` alone is not: `AskUserQuestion`, an MCP elicitation, and an
++ * elicitation queued BEHIND whatever is on top all read `"input needed"` —
++ * the last whether or not anything is on top, and for as long as it stays
++ * queued (four of thirteen sessions on the machine this was measured on read
++ * that, one while working). There are also `"dialog open"`, `"worker
++ * request"`, `"sandbox request"` and `"goal proposal"`.
++ */
++const CLAUDE_PERMISSION_DIALOG = "permission prompt";
++
++/**
++ * #86 — Claude statuses that mean "at its prompt, nothing on screen".
++ *
++ * `shell` is Claude's word for idle with a background shell still running (its
++ * session file, 2.1.312). `claude agents --json` folds it into `busy` today —
++ * everything but `idle` and `waiting` comes out `busy` (read from the binary,
++ * 2.1.296–2.1.312) — so it is here for the day that stops, not for anything
++ * astir sees now.
++ */
++const CLAUDE_AT_PROMPT = new Set(["idle", "shell"]);
++
++/**
++ * #86 — Claude statuses that mean "working". `--json` says `busy`; the others
++ * are the registry's own PROVIDER_BUSY words, kept so that nothing read as
++ * working before reads as anything else now.
++ */
++const CLAUDE_WORKING = new Set(["busy", "running", "working"]);
++
++/** #86 — Claude's listing, in astir's words. Undefined when it says nothing usable. */
++export function claudeScreen(status: string | null, waitingFor: string | null): SessionScreen | undefined {
++  if (status === null) return undefined;
++  if (status === "waiting")
++    return waitingFor === CLAUDE_PERMISSION_DIALOG ? "permission-dialog" : "other-dialog";
++  if (CLAUDE_AT_PROMPT.has(status)) return "at-prompt";
++  if (CLAUDE_WORKING.has(status)) return "working";
++  return undefined;
++}
++
+ /**
+  * `null` means "could not determine" — a missing binary, a timeout, unparseable
+  * output. That is deliberately distinct from `[]` ("no sessions are running"),
+@@ -57,12 +131,40 @@ export interface DiscoveryResult {
+ 
+ export type SessionLister = () => Promise<DiscoveryResult | null>;
+ 
++/**
++ * DMN-05 — run one poll and fold its answer into the registry. Never throws.
++ *
++ * The clock is read BEFORE the lister is called, and that time travels with
++ * the answer as `observedAt` (#86). A listing describes the session as it was
++ * when it was asked, and `claude agents --json` is a child process that can
++ * take a second or more; read the clock when the answer lands instead and an
++ * `idle` from before a dialog was claimed would be dated after it, and end it.
++ */
++export function pollInto(
++  lister: SessionLister,
++  registry: Pick<Registry, "reconcile">,
++  provider: Provider,
++  now: () => number = Date.now,
++): Promise<void> {
++  const observedAt = now();
++  return lister()
++    .then((found) => {
++      registry.reconcile(found?.sessions ?? null, {
++        complete: found?.complete ?? false,
++        provider,
++        observedAt,
++      });
++    })
++    .catch(() => undefined);
++}
++
+ interface RawAgent {
+   sessionId?: unknown;
+   cwd?: unknown;
+   pid?: unknown;
+   status?: unknown;
+   state?: unknown;
++  waitingFor?: unknown;
+   name?: unknown;
+   startedAt?: unknown;
+ }
+@@ -79,14 +181,17 @@ export function parseAgentsJson(stdout: string): DiscoveredSession[] | null {
+   const out: DiscoveredSession[] = [];
+   for (const item of parsed as RawAgent[]) {
+     if (typeof item?.sessionId !== "string") continue; // a session with no id is useless to us
++    const status =
++      typeof item.status === "string" ? item.status : typeof item.state === "string" ? item.state : null;
++    const screen = claudeScreen(status, typeof item.waitingFor === "string" ? item.waitingFor : null);
+     out.push({
+       sessionId: item.sessionId,
+       cwd: typeof item.cwd === "string" ? item.cwd : "",
+       pid: typeof item.pid === "number" ? item.pid : null,
+-      status:
+-        typeof item.status === "string" ? item.status : typeof item.state === "string" ? item.state : null,
++      status,
+       name: typeof item.name === "string" ? item.name : null,
+       startedAt: typeof item.startedAt === "number" ? item.startedAt : null,
++      ...(screen === undefined ? {} : { screen }),
+     });
+   }
+   return out;
+diff --git a/src/model/registry.ts b/src/model/registry.ts
+index df7980d..160bccf 100644
+--- a/src/model/registry.ts
++++ b/src/model/registry.ts
+@@ -42,6 +42,29 @@ const TURN_END = new Set<AgentState>(["waiting", "idle"]);
+  */
+ const PROVIDER_BUSY = new Set(["busy", "running", "working"]);
+ 
++/**
++ * #86 (candidate C) — how far back a `permission_prompt` notification looks
++ * for the ask that dates it. The notification comes ~6.2–6.6 s after
++ * `PermissionRequest` (measured, 2.1.291/2.1.312); ten seconds covers that
++ * with room for a late hook. A wider window only banks more running time as
++ * blocked (G4): it can never make an alert that would not otherwise fire,
++ * because the notification itself is sent only while a dialog is up.
++ */
++const ASK_WINDOW_MS = 10_000;
++/** #86 (candidate C) — the `ref` dating variant prefers an ask at least this old. */
++const ASK_MIN_AGE_MS = 5_000;
++/**
++ * #86 (candidate C) — a listing must have STARTED at least this long after a
++ * block's date before its `at-prompt` is believed to end the block.
++ */
++const LISTING_SETTLE_MS = 1_000;
++
++/** #86 prototype knobs — measurement only, not part of the design. */
++function knob(name: string, fallback: string): string {
++  const v = typeof process !== "undefined" ? process.env[name] : undefined;
++  return v === undefined || v === "" ? fallback : v;
++}
++
+ export interface AgentRecord {
+   id: string;
+   provider: Provider;
+@@ -79,6 +102,12 @@ export interface AgentRecord {
+   lastActivityMs: number;
+   /** Why this agent is blocked, e.g. `permission_prompt`. Null when not blocked. */
+   blockedReason: string | null;
++  /**
++   * #86 (C+busy variant only) — when a poll begun during this permission
++   * block last found a dialog on the session's screen. A later `working`
++   * then means that dialog was answered. Cleared by every state change.
++   */
++  waitSeenAt?: number | null;
+   /**
+    * What this agent was sent to do, from the sidecar. Set once at spawn and
+    * never cleared — it is the agent's standing brief, not its current state.
+@@ -240,6 +269,20 @@ export interface SessionRecord {
+   startedAt: number | null;
+   /** DMN-11 — false when no human is sitting at it (a plugin or script drives it). */
+   attended?: boolean;
++  /**
++   * #86 (candidate C) — wall ms of this session's recent permission asks
++   * (`permission_request`), newest last, none older than ASK_WINDOW_MS.
++   *
++   * Session-level on purpose: an ask names no dialog, and nothing here tries
++   * to say whose it was. It only dates a block that a `permission_prompt`
++   * notification makes — the dialog that notification reports opened about
++   * when the session last asked. Never persisted, on no surface.
++   */
++  asks?: number[];
++  /** #86 judge C+ — listing memory: last poll start that saw a dialog / gave an informative screen / its screen. */
++  dialogSeenAt?: number | null;
++  informativeAt?: number | null;
++  screenNow?: string | null;
+   /**
+    * This state came from the crash-recovery snapshot, not from an event.
+    *
+@@ -505,6 +548,15 @@ export class Registry {
+     // corrected — which is why the flag says "restored" rather than nothing.
+     session.restored = false;
+     this.heard(event.sessionId);
++    // #86 (candidate C) — an ask is a date, not an event about any agent. It
++    // changes no agent's state, tool or activity: Claude also fires it for asks
++    // that never show a dialog (a background agent's, which it denies itself),
++    // so nothing may block on it, and it does not say whose dialog it is.
++    if (event.notificationKind === "permission_request") {
++      const now = this.nowMs();
++      session.asks = [...(session.asks ?? []).filter((t) => now - t <= ASK_WINDOW_MS), now];
++      return { applied: true };
++    }
+     const agent = this.ensureAgent(session, event);
+     if (agent.description === null && event.description !== null) {
+       agent.description = event.description;
+@@ -529,6 +581,26 @@ export class Registry {
+     if (event.kind === "session_end") session.endedAt = this.nowMs();
+     else if (event.kind === "session_start") session.endedAt = null; // resumed
+ 
++    // #86 judge C+ — while the main agent is blocked on a permission dialog and
++    // the listing is live, its own progress does not end the block (a parallel
++    // call or a subagent's completion is not an answer); FileChanged never does.
++    if (
++      knob("D86_HOLD", "0") === "1" &&
++      agent.id === session.sessionId &&
++      agent.state === "blocked" &&
++      agent.blockedReason === "permission_prompt" &&
++      CAPABILITIES[event.provider].listingEndsPermissionBlocks &&
++      (event.kind === "file_changed" ||
++        ((event.kind === "pre_tool" || event.kind === "post_tool" || event.kind === "tool_failed" || event.kind === "subagent_start") &&
++          session.informativeAt != null &&
++          this.nowMs() - session.informativeAt <= 12_000))
++    ) {
++      return { applied: true };
++    }
++    // #86 judge C+ — the permission_prompt Notification is itself a sighting of the dialog (D's R3).
++    if (knob("D86_HOLD", "0") === "1" && knob("D86_NOGRAFT", "0") !== "1" && event.kind === "notification" && event.notificationKind === "permission_prompt") {
++      session.dialogSeenAt = Math.max(session.dialogSeenAt ?? this.nowMs(), this.nowMs());
++    }
+     const next = this.nextState(event, agent.state);
+     const becameBlocked =
+       next !== agent.state && HUMAN_BLOCKING.has(next)
+@@ -550,11 +622,46 @@ export class Registry {
+       agent.toolPath = null;
+     }
+ 
+-    this.transition(agent, next);
++    // #86 (candidate C) — a permission_prompt notification is sent only once
++    // its dialog has been up ~6 s, so the block it makes began then, not now.
++    const since =
++      becameBlocked && event.notificationKind === "permission_prompt"
++        ? this.promptOpenedAt(session, event.provider)
++        : undefined;
++    this.transition(agent, next, since);
+ 
+     return becameBlocked ? { applied: true, becameBlocked } : { applied: true };
+   }
+ 
++  /**
++   * #86 (candidate C) — when the dialog a `permission_prompt` notification
++   * reports was opened, as best this session can say. Only a date: the block
++   * goes where it always went (the notification's agent), and an earlier date
++   * only spends PSH-16's dwell sooner. It cannot make an alert by itself — the
++   * notification is sent only while a dialog is still up.
++   *
++   * `lit` (the brief): the session's newest ask within ASK_WINDOW_MS.
++   * `ref`: the newest ask at least ASK_MIN_AGE_MS old, else `lit`.
++   * `c0`: no ask at all — the provider's declared notice age.
++   * `none`: now (main's dating).
++   */
++  private promptOpenedAt(session: SessionRecord, provider: Provider): number | undefined {
++    const now = this.nowMs();
++    const mode = knob("D86_DATING", "lit");
++    if (mode === "none") return undefined;
++    if (mode === "c0") {
++      const age = CAPABILITIES[provider].promptNoticeAgeMs;
++      return age > 0 ? now - age : undefined;
++    }
++    const asks = (session.asks ?? []).filter((t) => now - t <= ASK_WINDOW_MS);
++    if (asks.length === 0) return undefined;
++    if (mode === "ref") {
++      const old = asks.filter((t) => now - t >= ASK_MIN_AGE_MS);
++      if (old.length > 0) return Math.max(...old);
++    }
++    return Math.max(...asks);
++  }
++
+   /** Advance wall-clock-derived transitions. Must be called periodically. */
+   tick(): void {
+     const now = this.nowMs();
+@@ -607,6 +714,8 @@ export class Registry {
+         if (IDLE_EXEMPT.has(a.state)) continue;
+         // Positive evidence that it is working. Do not contradict it.
+         if (providerBusy) continue;
++        // #86 judge C+ — an agent mid-tool while the screen shows a permission dialog is the asker (or a running tool), not idle.
++        if (knob("D86_DECAY", "0") === "1" && a.state === "tool-running" && s.screenNow === "permission-dialog") continue;
+         // With no word from the provider there is nothing to corroborate, so
+         // wait far longer before overriding what the hooks last told us — a
+         // long build must not be declared idle just because discovery is
+@@ -647,12 +756,20 @@ export class Registry {
+     }
+   }
+ 
+-  /** MOD-05 — bank the time spent in the state we are leaving. */
+-  private transition(agent: AgentRecord, next: AgentState): void {
++  /**
++   * MOD-05 — bank the time spent in the state we are leaving.
++   *
++   * `since` dates the new state earlier than now (#86): a block that began
++   * before the notification that reported it. Never before the state being
++   * left began — that time is already banked, and an ask from before it (an
++   * approved tool that has since finished) is not this dialog's.
++   */
++  private transition(agent: AgentRecord, next: AgentState, since?: number): void {
+     const now = this.nowMs();
+     if (agent.state === next) return; // not a transition; banking would double-count
+ 
+-    const elapsed = Math.max(0, now - agent.stateSince);
++    const at = Math.min(now, Math.max(since ?? now, agent.stateSince));
++    const elapsed = Math.max(0, at - agent.stateSince);
+     if (HUMAN_BLOCKING.has(agent.state)) {
+       agent.blockedMs += elapsed;
+     } else if (WORKING_STATES.has(agent.state)) {
+@@ -665,7 +782,9 @@ export class Registry {
+     if (TURN_END.has(next)) agent.turnMs = 0;
+ 
+     agent.state = next;
+-    agent.stateSince = now;
++    agent.stateSince = at;
++    // #86 (C+busy variant) — a dialog seen belongs to the block it was seen in.
++    agent.waitSeenAt = null;
+     // A new state is a new situation: whatever the human dismissed is over.
+     agent.acknowledgedAt = null;
+     // And whatever they were told about. Cleared here rather than left for the
+@@ -728,11 +847,14 @@ export class Registry {
+    */
+   reconcile(
+     discovered: DiscoveredSession[] | null,
+-    opts: { complete?: boolean; provider?: Provider } = {},
++    opts: { complete?: boolean; provider?: Provider; observedAt?: number } = {},
+   ): { enriched: number; pruned: number } {
+     if (discovered === null) return { enriched: 0, pruned: 0 };
+     const complete = opts.complete ?? true;
+     const provider: Provider = opts.provider ?? "claude";
++    // #86 — when the poll that produced `discovered` STARTED. Its answer is
++    // about the screen then, however late it lands.
++    const observedAt = opts.observedAt ?? this.nowMs();
+     this.discoveryEverWorked.add(provider);
+ 
+     const live = new Set<string>();
+@@ -768,6 +890,9 @@ export class Registry {
+       s.startedAt = d.startedAt;
+       if (d.attended !== undefined) s.attended = d.attended;
+       if (d.cwd) s.cwd = d.cwd;
++      if (s.provider === provider && CAPABILITIES[provider].listingEndsPermissionBlocks) {
++        this.settleFromListing(s, d, observedAt);
++      }
+       enriched++;
+     }
+ 
+@@ -915,6 +1040,54 @@ export class Registry {
+     };
+   }
+ 
++  /**
++   * #86 (candidate C) — Esc at a permission dialog fires no hook; the
++   * provider's listing is the only thing that says the dialog is gone.
++   *
++   * `at-prompt` (nothing on screen, turn over), from a poll begun at least
++   * LISTING_SETTLE_MS after a permission block's date, ends that block: the
++   * human has the floor, so the agent is `waiting`. Only `permission_prompt`
++   * blocks: nobody has measured what the listing shows for the others.
++   *
++   * Nothing here BEGINS a block, and nothing here picks an agent: every
++   * permission block in the session ends, because a screen with nothing on it
++   * has no dialog for any of them.
++   *
++   * C+busy variant (`D86_BUSY=1`, not the candidate): a poll that finds any
++   * dialog on screen during the block records it, and a later `working` ends
++   * the block as answered (`tool-running`).
++   */
++  private settleFromListing(s: SessionRecord, d: DiscoveredSession, observedAt: number): void {
++    const screen = d.screen;
++    if (screen === undefined) return;
++    const hold = knob("D86_HOLD", "0") === "1";
++    const prevDialogSeen = s.dialogSeenAt ?? null;
++    if (hold) {
++      if (screen === "permission-dialog" || screen === "other-dialog") s.dialogSeenAt = Math.max(s.dialogSeenAt ?? observedAt, observedAt);
++      if (screen === "permission-dialog" || screen === "at-prompt" || screen === "working") s.informativeAt = Math.max(s.informativeAt ?? observedAt, observedAt);
++      s.screenNow = screen;
++    }
++    const busyRule = knob("D86_BUSY", "0") === "1";
++    const idleRule = knob("D86_IDLE", "1") === "1";
++    for (const a of s.agents.values()) {
++      if (!HUMAN_BLOCKING.has(a.state) || a.blockedReason !== "permission_prompt") continue;
++      if (observedAt - a.stateSince < LISTING_SETTLE_MS) continue;
++      if (screen === "at-prompt" && idleRule) {
++        debug("reconcile", "listing ended a permission block", { session: s.sessionId, agent: a.id, screen });
++        a.blockedReason = null;
++        this.transition(a, "waiting");
++      } else if (busyRule && (screen === "permission-dialog" || screen === "other-dialog")) {
++        a.waitSeenAt = Math.max(a.waitSeenAt ?? observedAt, observedAt);
++      } else if (hold && screen === "working" && prevDialogSeen !== null && prevDialogSeen >= a.stateSince && observedAt > prevDialogSeen && observedAt >= prevDialogSeen + Number(knob("D86_SETTLE", "0"))) {
++        a.blockedReason = null;
++        this.transition(a, "tool-running");
++      } else if (busyRule && screen === "working" && a.waitSeenAt != null && observedAt > a.waitSeenAt) {
++        a.blockedReason = null;
++        this.transition(a, "tool-running");
++      }
++    }
++  }
++
+   silent(): DiscoveredSession[] {
+     return [...this.silentByProvider.values()].flat();
+   }
