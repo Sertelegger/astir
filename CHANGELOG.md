@@ -103,10 +103,10 @@ release is cut, named and published is in
     not this one), so there `doctor` names only a hung notifier: it says
     `astir autostart` restarts it, and where its log is, and does not send
     you looking for what holds the port.
-  - A notifier `doctor` finds running with nothing to restart it was told
-    "`astir autostart` fixes that" everywhere. That is macOS only, and
-    refuses anywhere else; there `doctor` now says so, and to start the
-    notifier from what runs at login.
+  - A notifier `doctor` finds running with nothing to restart it, and a
+    daemon with no autostart, were told "`astir autostart` fixes that"
+    everywhere. That is macOS only, and refuses anywhere else; there
+    `doctor` now says so, and to start them from what runs at login.
   - A hang-up is a tunnel with nothing at its far end, and doctor says to
     start the notifier there. None of them is told to set up a tunnel any
     more.
@@ -127,7 +127,7 @@ release is cut, named and published is in
     fails.
   - The line finds its notifier in that list by address, not by how the
     name is spelled: `--notify-url http://localhost:47001/notify` (or any
-    loopback address on that port) is the notifier the line asks at
+    plain-http loopback address on that port) is the notifier the line asks at
     127.0.0.1:47001. One on another host is not, whatever its port.
 - `hooks/hooks.json` no longer carries a `_comment` key, which Claude Code
   reported as an unknown key on every session start. JSON has no comments; the

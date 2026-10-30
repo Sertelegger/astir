@@ -1464,6 +1464,23 @@ describe("runStatusLine — off the socket", () => {
     });
   }
 
+  it("#82 — keeps the cap for a name that only ends like a target's", async () => {
+    // review:82 NP3 — the name is matched whole, not found inside another.
+    vi.useFakeTimers();
+    const pending = runStatusLine(
+      { session: null, json: false, notifyPort: 47_001 },
+      deps({
+        fetchHealth: async () =>
+          health({ delivery: { live: ["local"], attached: ["xremote(http://127.0.0.1:47001/notify)"] } }),
+        fetchRemote: never,
+      }),
+    );
+    const line = watch(pending);
+    await vi.advanceTimersByTimeAsync(NOTIFIER_BUDGET_MS);
+    expect(line.settled).toBe(true);
+    expect(await pending).toBe(LINE_TEXT.notifierHung);
+  });
+
   it("#82 — reads past what is not a target's name, from a daemon that sent it", async () => {
     // `/healthz` answers without a token. An entry that is not a name must
     // take neither the vouch nor the line with it.

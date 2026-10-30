@@ -718,5 +718,21 @@ describe.skipIf(process.platform === "win32")(
       expect(hung).toBeGreaterThan(forward);
       expect(out.indexOf("`sshd`")).toBeLessThan(out.indexOf("`node`"));
     }, 30_000);
+
+    it("promises `astir autostart` for the daemon only where it exists", async () => {
+      // review:82 NP1 — the same screen's notifier row stopped offering it off
+      // macOS (F8); the daemon's row three lines above must not contradict it.
+      const out = await doctor(false);
+      const lines = out.split("\n");
+      const row = lines.findIndex((l) => l.trimStart().startsWith("autostart"));
+      expect(row).toBeGreaterThan(-1);
+      const text = lines.slice(row, row + 2).join("\n");
+      if (process.platform === "darwin") {
+        expect(text).toContain("`astir autostart` fixes that");
+      } else {
+        expect(text).not.toContain("`astir autostart` fixes that");
+        expect(text).toContain("`astir autostart` is macOS only");
+      }
+    }, 30_000);
   },
 );

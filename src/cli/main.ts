@@ -30,7 +30,13 @@ import {
 } from "../config/plugin.js";
 import { CLAUDE_CLI, CODEX_CLI, registerPlugin } from "../config/register.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
-import { installService, serviceInstalled, servicePath, uninstallService } from "../config/service.js";
+import {
+  autostartSupported,
+  installService,
+  serviceInstalled,
+  servicePath,
+  uninstallService,
+} from "../config/service.js";
 import { probeDaemon } from "../daemon/detect.js";
 import { BUILD_STAMP, Daemon } from "../daemon/server.js";
 import { createPidLister, createProcessTable } from "../discovery/pids.js";
@@ -864,14 +870,16 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
   }
 
   // DMN-12 — whether it will still be here after a reboot. A daemon that must be
-  // started by hand is one hook-error storm away from being uninstalled.
-  out(
-    `  autostart       ${
-      serviceInstalled()
-        ? `on (${servicePath()})`
-        : "off — hooks error while the daemon is down; `astir autostart` fixes that"
-    }`,
-  );
+  // started by hand is one hook-error storm away from being uninstalled. And
+  // `astir autostart` is the fix only where it exists (review:82 NP1).
+  if (serviceInstalled()) {
+    out(`  autostart       on (${servicePath()})`);
+  } else if (autostartSupported(process.platform)) {
+    out("  autostart       off — hooks error while the daemon is down; `astir autostart` fixes that");
+  } else {
+    out("  autostart       off — hooks error while the daemon is down; `astir autostart` is macOS only,");
+    out("                  so start `astir daemon` from what runs at login (a systemd user unit, say)");
+  }
 
   const status = await fetchStatus(port);
   if (status.ok) {
