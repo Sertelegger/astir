@@ -109,7 +109,9 @@ function causeCode(err: unknown): string | undefined {
  *   `TimeoutError` DOMException with no cause;
  * - a socket that accepts and closes: `cause.code` `UND_ERR_SOCKET` ("other
  *   side closed"); one that resets: `ECONNRESET`;
- * - one that writes something not HTTP: an `HPE_*` code.
+ * - one that writes something not HTTP: an `HPE_*` code. Node 24's undici
+ *   leaves `code` unset there, and only the cause's name says it:
+ *   `HTTPParserError`.
  *
  * Only for a failure BEFORE the response's headers: a deadline that passes
  * while the body is read is something that answered and stalled, and must not
@@ -129,18 +131,26 @@ export function classifyProbeFailure(err: unknown): ProbeFailure {
   return "other";
 }
 
+/** The `name` of a fetch failure's cause, where it has one. */
+function causeName(err: unknown): string | undefined {
+  const name = ((err as { cause?: unknown } | null)?.cause as { name?: unknown } | undefined)?.name;
+  return typeof name === "string" ? name : undefined;
+}
+
 /**
  * What the daemon's log and `doctor` print for a failure. Content-free: never
  * the error's own text, and a code only when it looks like the constant a code
  * is — the reason goes into a log and a terminal, and the error came off a
- * socket.
+ * socket. With no code (Node 24's parser errors carry none), the cause's
+ * class name, when it looks like one.
  */
 export function probeReason(failure: ProbeFailure, err: unknown): string {
   if (failure !== "other") return PROBE_REASON[failure];
   const code = causeCode(err);
-  return code !== undefined && /^[A-Z][A-Z0-9_]{0,39}$/.test(code)
-    ? `probe failed (${code})`
-    : "probe failed";
+  if (code !== undefined && /^[A-Z][A-Z0-9_]{0,39}$/.test(code)) return `probe failed (${code})`;
+  const name = causeName(err);
+  if (name !== undefined && /^[A-Z][A-Za-z0-9]{0,39}Error$/.test(name)) return `probe failed (${name})`;
+  return "probe failed";
 }
 
 /**

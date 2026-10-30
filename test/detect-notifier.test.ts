@@ -91,7 +91,8 @@ describe("detectNotifier tells a closed port from a silent one", () => {
     const { port } = await held(garbageOn());
     const got = await detectNotifier(port, QUICK);
     expect(got.failure).toBe("other");
-    expect(got.reason).toMatch(/^probe failed \(HPE_[A-Z_]+\)$/);
+    // Node 20/22 give the parser's code; Node 24 gives none, only the name.
+    expect(got.reason).toMatch(/^probe failed \((HPE_[A-Z_]+|HTTPParserError)\)$/);
     expect(got.reason).not.toContain("SSH-2.0");
   });
 
@@ -178,6 +179,29 @@ describe("probeReason never prints what came off the socket", () => {
       expect(probeReason("other", { cause: { code } })).toBe("probe failed");
     }
     expect(probeReason("other", new Error("boom"))).toBe("probe failed");
+  });
+
+  it("names the cause's class when it has no code, as Node 24's parser errors do", () => {
+    expect(probeReason("other", { cause: { name: "HTTPParserError" } })).toBe(
+      "probe failed (HTTPParserError)",
+    );
+    // A code that looks like one still wins.
+    expect(probeReason("other", { cause: { name: "HTTPParserError", code: "HPE_INVALID_CONSTANT" } })).toBe(
+      "probe failed (HPE_INVALID_CONSTANT)",
+    );
+  });
+
+  it("leaves out a name that does not look like a class's", () => {
+    for (const name of [
+      "Error",
+      "SSH-2.0-OpenSSH_9.6",
+      "Bad\nError",
+      "#[fg=red]Error",
+      `X${"x".repeat(40)}Error`,
+      42,
+    ]) {
+      expect(probeReason("other", { cause: { name } })).toBe("probe failed");
+    }
   });
 });
 
