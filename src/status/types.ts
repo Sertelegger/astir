@@ -243,8 +243,12 @@ export interface HealthBody {
    * PSH-07 / #78 — the delivery paths that can reach a human right now, by
    * name only. Absent from an older daemon, which means "cannot tell" and must
    * not be rendered as "nothing can reach you".
+   *
+   * #82 — `attached`: the notifiers the daemon reaches (its last probe, or a
+   * `--notify-url` notifier's last `/state` read), whether or not they can
+   * deliver. Absent from a daemon older than it.
    */
-  delivery?: { live: string[] };
+  delivery?: { live: string[]; attached?: string[] };
 }
 
 /**

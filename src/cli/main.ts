@@ -30,7 +30,13 @@ import {
 } from "../config/plugin.js";
 import { CLAUDE_CLI, CODEX_CLI, registerPlugin } from "../config/register.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
-import { installService, serviceInstalled, servicePath, uninstallService } from "../config/service.js";
+import {
+  autostartSupported,
+  installService,
+  serviceInstalled,
+  servicePath,
+  uninstallService,
+} from "../config/service.js";
 import { probeDaemon } from "../daemon/detect.js";
 import { BUILD_STAMP, Daemon } from "../daemon/server.js";
 import { createPidLister, createProcessTable } from "../discovery/pids.js";
@@ -39,7 +45,13 @@ import { createClaudeLister } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
 import { parseSnapshot } from "../model/snapshot.js";
 import { detectNotifier } from "../notify/detect.js";
-import { Dispatcher, localTarget, NotifierWatch, remoteTarget } from "../notify/dispatch.js";
+import {
+  Dispatcher,
+  localTarget,
+  NotifierWatch,
+  remoteTarget,
+  remoteTargetName,
+} from "../notify/dispatch.js";
 import { buildEnvelope } from "../notify/envelope.js";
 import { NotifyLoop } from "../notify/loop.js";
 import { createNotifierBackend } from "../notify/notify.js";
@@ -325,9 +337,16 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   // which reads the notifier directly, could do both. One surface contradicting
   // the other about the same machine is the drift this closes.
   let pushed: RemoteSession[] = [];
+  // #82 — whether the last of these reads got an answer. For a `--notify-url`
+  // notifier, which nothing probes, it is the daemon's only evidence that it
+  // reaches it, and so what `/healthz` says as `delivery.attached`: one read
+  // every 5 s with a 2 s timeout is the line's own request, made from here.
+  // A stale forward fails the next read, and the vouch goes with it.
+  let stateAnswered = false;
   const readNotifier = async (): Promise<void> => {
     if (notifierUrl === null) {
       pushed = [];
+      stateAnswered = false;
       return;
     }
     try {
@@ -335,8 +354,13 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
         headers: { authorization: `Bearer ${remoteToken}` },
         signal: AbortSignal.timeout(2_000),
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        // A refusal is still an answer: it is reached, whatever it said.
+        stateAnswered = true;
+        return;
+      }
       const body = (await res.json()) as { sessions?: RemoteSession[] };
+      stateAnswered = true;
       // Drop what this machine pushed itself. The notifier may well be on
       // another box, reached through `ssh -R` on 127.0.0.1, in which case it
       // holds our roster legitimately — and hands it straight back.
@@ -344,11 +368,17 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
     } catch {
       // The tunnel comes and goes; the probe above owns that story. Keeping the
       // last known list is better than blanking the view on one failed poll.
+      // Not answering is not reached, though (#82).
+      stateAnswered = false;
     }
   };
   void readNotifier();
   const notifierTick = setInterval(() => void readNotifier(), 5_000);
   notifierTick.unref();
+
+  // PSH-14 — what attaches the notifier, probed once the daemon is listening
+  // (below). None with `--notify-url`: that notifier is configured, not found.
+  const watch = typeof notifyUrl !== "string" ? new NotifierWatch(dispatcher, remoteToken) : null;
 
   const daemon = new Daemon({
     token,
@@ -357,6 +387,15 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
     pushedSessions: () => pushed,
     // #78 — read per request: the notifier attaches and detaches below.
     deliveryLive: () => dispatcher.live(),
+    // #82 — what the daemon reaches, apart from what can deliver: what the
+    // probe attached, or, with `--notify-url`, which nothing probes, that
+    // notifier while its `/state` answers the reads above.
+    deliveryAttached: () =>
+      watch !== null
+        ? watch.reached()
+        : notifierUrl !== null && stateAnswered
+          ? [remoteTargetName(notifierUrl)]
+          : [],
   });
 
   // A bind that fails is the moment somebody is actually present and looking,
@@ -415,8 +454,7 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   // Every tick reports to the attached path too (#78): whether the notifier
   // can show anything, and that it is reachable — which lifts a failure left
   // by one POST that fell into a restart.
-  if (typeof notifyUrl !== "string") {
-    const watch = new NotifierWatch(dispatcher, remoteToken);
+  if (watch !== null) {
     const probe = async (): Promise<void> => {
       const said = watch.observe(await detectNotifier(notifyPort));
       notifierUrl = watch.url;
@@ -832,14 +870,16 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
   }
 
   // DMN-12 — whether it will still be here after a reboot. A daemon that must be
-  // started by hand is one hook-error storm away from being uninstalled.
-  out(
-    `  autostart       ${
-      serviceInstalled()
-        ? `on (${servicePath()})`
-        : "off — hooks error while the daemon is down; `astir autostart` fixes that"
-    }`,
-  );
+  // started by hand is one hook-error storm away from being uninstalled. And
+  // `astir autostart` is the fix only where it exists (review:82 NP1).
+  if (serviceInstalled()) {
+    out(`  autostart       on (${servicePath()})`);
+  } else if (autostartSupported(process.platform)) {
+    out("  autostart       off — hooks error while the daemon is down; `astir autostart` fixes that");
+  } else {
+    out("  autostart       off — hooks error while the daemon is down; `astir autostart` is macOS only,");
+    out("                  so start `astir daemon` from what runs at login (a systemd user unit, say)");
+  }
 
   const status = await fetchStatus(port);
   if (status.ok) {
@@ -896,7 +936,17 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
       // A notifier that answered the probe and not this is still a notifier.
     }
   }
-  for (const line of describeNotifier(notifier, serviceInstalled("notifier"), rosters)) out(line);
+  // #82 — `notifierExpected` is "this machine's own notifier serves the port"
+  // (its service, or a pairing that forwards it from here to others). It
+  // decides which cause of a port that holds and does not answer doctor names
+  // first — that notifier hung, or a stale forward into this machine — and
+  // never rules either out: it reads ~/.ssh/config alone, so it misses a
+  // forward kept anywhere else.
+  const notifierLines = describeNotifier(notifier, serviceInstalled("notifier"), rosters, {
+    local: notifierExpected(port + 1),
+    platform: process.platform,
+  });
+  for (const line of notifierLines) out(line);
 
   // #78 — the floor beneath the notifier, which doctor never graded. The
   // daemon's own answer comes from its environment, which may not be this

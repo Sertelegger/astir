@@ -118,6 +118,15 @@ export interface DaemonOpts {
    * Absent means nothing was wired, which is reported as nothing live.
    */
   deliveryLive?: () => string[];
+  /**
+   * #82 — the notifiers the daemon reaches, whether or not they can deliver:
+   * what its last probe attached (`NotifierWatch.reached()`), or a
+   * `--notify-url` notifier, which nothing probes, while its last `/state`
+   * read was answered. `status --line` waits its whole budget only for a
+   * notifier listed here. Absent means not wired, and `/healthz` then omits
+   * the field, which the line reads as an older daemon.
+   */
+  deliveryAttached?: () => string[];
   nowSeconds?: () => number;
   /** Where the built view lives. Injectable so tests need no build output. */
   viewRoot?: string;
@@ -389,7 +398,14 @@ export class Daemon {
         // never why or about what, since this route answers without a token.
         // A surface reading an empty list can say "no one will be told", which
         // is the one thing silence cannot.
-        delivery: { live: this.opts.deliveryLive?.() ?? [] },
+        //
+        // #82 — and, apart from that, which notifiers the daemon reaches: a
+        // notifier can answer every probe and still not be live (one failed
+        // POST, or it cannot show). Names only, for the same reason. Additive.
+        delivery: {
+          live: this.opts.deliveryLive?.() ?? [],
+          ...(this.opts.deliveryAttached !== undefined ? { attached: this.opts.deliveryAttached() } : {}),
+        },
         counters: this.counters,
       });
     }

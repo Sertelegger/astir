@@ -150,6 +150,28 @@ type PostFailure = {
 export const REMOTE_TIMEOUT_MS = 5_000;
 
 /**
+ * The name a remote target is listed under in `Dispatcher.live()` and
+ * `NotifierWatch.reached()`, and so in the daemon's `/healthz`
+ * `delivery.live` and `delivery.attached`. The URL is the one the target was
+ * given — a `--notify-url` exactly as it was typed — so a reader matches what
+ * it names by address, never by this string (#82): see `remoteTargetUrl`.
+ */
+export function remoteTargetName(url: string): string {
+  return `remote(${url})`;
+}
+
+/**
+ * #82 — the URL inside a `remoteTargetName`, or null for anything that is not
+ * one: `local`, or whatever else an unauthenticated `/healthz` answer held.
+ * `status --line` reads it back to learn whether the daemon reaches the
+ * notifier it is about to ask.
+ */
+export function remoteTargetUrl(name: unknown): string | null {
+  if (typeof name !== "string") return null;
+  return /^remote\((.+)\)$/s.exec(name)?.[1] ?? null;
+}
+
+/**
  * A notifier on another host, reached over loopback or an `ssh -R` tunnel.
  * Never throws — a dead tunnel is a reported outcome, not an exception.
  */
@@ -180,7 +202,7 @@ export function remoteTarget(url: string, token: string, timeoutMs = REMOTE_TIME
     return { ok: false, reason };
   };
   return {
-    name: `remote(${url})`,
+    name: remoteTargetName(url),
     live: () => !cannotShow && failure === null,
     get unavailableReason() {
       // Fixed words, never the refusal's body: this is repeated on the
@@ -244,6 +266,23 @@ export class NotifierWatch {
   /** The notifier attached now, if any — the roster push and `/state` read follow it. */
   get url(): string | null {
     return this.attached;
+  }
+
+  /**
+   * #82 — the targets this watch has attached, which is the targets its last
+   * probe reached: a probe that finds nothing detaches. What `/healthz` says
+   * as `delivery.attached`.
+   *
+   * Not `Dispatcher.live()`, which is "can deliver": one failed POST, a
+   * refusal the probe cannot overturn, or a notifier that cannot show takes a
+   * target out of that while the probe still reaches it every time. `status
+   * --line` asks the other question — will this notifier answer if I wait
+   * for it — and, reading `live`, it called a slow notifier it could reach
+   * hung. A `--notify-url` target is never here, since nothing probes it:
+   * `runDaemon` vouches for that one from its `/state` reads instead.
+   */
+  reached(): string[] {
+    return this.target === null ? [] : [this.target.name];
   }
 
   /** Apply one probe's answer. Returns the line for the daemon's log, or null when nothing changed. */

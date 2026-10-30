@@ -148,12 +148,20 @@ export interface ServiceResult {
 }
 
 /**
+ * Where `astir autostart` does anything: launchd only. Asked by anything that
+ * would tell someone to run it (#82).
+ */
+export function autostartSupported(platform: string): boolean {
+  return platform === "darwin";
+}
+
+/**
  * `bootstrap` is the modern verb and `load` the deprecated one. Both are tried
  * because which works depends on the macOS version, and a service that silently
  * failed to load would leave the user believing the problem is fixed.
  */
 export function installService(spec: ServiceSpec, deps: ServiceDeps = defaultServiceDeps()): ServiceResult {
-  if (deps.platform !== "darwin") {
+  if (!autostartSupported(deps.platform)) {
     return {
       ok: false,
       detail:
@@ -187,7 +195,7 @@ export function uninstallService(
   role: ServiceRole = "daemon",
   deps: ServiceDeps = defaultServiceDeps(),
 ): ServiceResult {
-  if (deps.platform !== "darwin") {
+  if (!autostartSupported(deps.platform)) {
     return { ok: false, detail: `autostart is only implemented for macOS, not ${deps.platform}` };
   }
   const path = servicePath(role);

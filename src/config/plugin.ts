@@ -26,6 +26,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { candidateConfigDirs } from "../discovery/profiles.js";
+import { PROBE_REASON, type ProbeFailure } from "../notify/detect.js";
+import { autostartSupported } from "./service.js";
 
 export interface InstalledPlugin {
   /** The config directory it was found in, e.g. `/home/dev/.claude-nv`. */
@@ -190,6 +192,34 @@ export function describeDaemonBuild(
     .slice(0, 16)}${age}. A restart that failed to bind leaves the old one serving.`;
 }
 
+/** The port in a probe's URL, or a placeholder when it has none to give. */
+function portOf(url: string | undefined): string {
+  try {
+    const port = url === undefined ? "" : new URL(url).port;
+    return port === "" ? "<port>" : port;
+  } catch {
+    return "<port>";
+  }
+}
+
+/**
+ * #82 — how to learn which process holds a listening port, on the platform
+ * that has it; both where neither is known. As root, because the process that
+ * holds a stale forward is sshd's per-session child, whose sockets its own
+ * user cannot read through /proc. Its PID is otherwise not to be had.
+ *
+ * `netstat` beside `ss` on Linux: a container can ship one without the other
+ * — megabrain, where #82 was filed, has net-tools and no iproute2.
+ */
+function portHolderCommands(port: string, platform: string): string[] {
+  const lsof = `\`sudo lsof -iTCP:${port} -sTCP:LISTEN\``;
+  const ss = `\`sudo ss -ltnp 'sport = :${port}'\``;
+  if (platform === "darwin") return [lsof];
+  if (platform === "linux")
+    return [ss, `(or \`sudo netstat -ltnp | grep :${port}\` where there is no \`ss\`)`];
+  return [`${lsof} (macOS) or`, `${ss} (Linux)`];
+}
+
 /**
  * The notifier's half of the report, as lines.
  *
@@ -203,10 +233,35 @@ export function describeDaemonBuild(
  * tested, and what counts as a healthy notifier is a judgement worth pinning.
  */
 export function describeNotifier(
-  probe: { found: boolean; reason?: string | undefined; canShow?: boolean | undefined },
+  probe: {
+    found: boolean;
+    reason?: string | undefined;
+    canShow?: boolean | undefined;
+    failure?: ProbeFailure | undefined;
+    url?: string | undefined;
+  },
   supervised: boolean,
   rosters: number | null,
+  here: {
+    /**
+     * #82 — the notifier port is meant to be served by a notifier on THIS
+     * machine: its service is installed, or `astir pair` forwards the port
+     * from here to others. A hint, not a fact: it is read off ~/.ssh/config
+     * alone, so a forward kept in an `Include`d file, under a pattern host or
+     * typed as `ssh -R` reads as not local. It orders the causes of a silent
+     * port and never rules one out. Defaults to `supervised`.
+     */
+    local?: boolean;
+    /**
+     * The platform doctor runs on, which is the one holding the port: whether
+     * `astir autostart` exists here, and which command finds what holds a
+     * port. Defaults to this process's.
+     */
+    platform?: string;
+  } = {},
 ): string[] {
+  const local = here.local ?? supervised;
+  const platform = here.platform ?? process.platform;
   const pad = `  ${"".padEnd(16)}`;
   const lines: string[] = [];
 
@@ -216,8 +271,88 @@ export function describeNotifier(
     // tunnel" and "something else is on that port" need different fixes and
     // must not read the same.
     lines.push(`  ${"notifier".padEnd(16)}none — remote machines cannot reach you`);
+    if (probe.failure === undefined || probe.failure === "refused") {
+      // Nothing there, or an answer that was not a notifier's: the setup
+      // advice. Only these: every other failure is something already holding
+      // the port, which a new notifier or a new tunnel cannot bind past.
+      if (probe.reason !== undefined) lines.push(`${pad}${probe.reason}`);
+      lines.push(`${pad}\`astir notifier\` starts one; \`astir pair <host>\` connects a machine to it`);
+      return lines;
+    }
+    let where = "the notifier port";
+    try {
+      if (probe.url !== undefined) where = new URL(probe.url).host;
+    } catch {
+      // Not a URL: say it without the address.
+    }
+    if (probe.failure === "silent") {
+      // #82 — decided by time alone, so the cause is a judgement.
+      lines.push(`${pad}something holds ${where} but did not answer in time`);
+      if (supervised && autostartSupported(platform)) {
+        // The port is the notifier service's, and `astir autostart` boots
+        // that service out and back in, which restarts a hung one. Only then:
+        // a notifier started by hand is a process launchd does not manage,
+        // which autostart neither stops nor can bind past, and whose output
+        // went to its terminal, not to notifier.log.
+        lines.push(`${pad}the notifier on this machine is most likely hung — \`astir autostart\``);
+        lines.push(`${pad}restarts it (and the daemon); its log is ~/.astir/notifier.log`);
+        return lines;
+      }
+      // Two causes, and `local` cannot be trusted to pick one: a notifier here
+      // that hung, or a forward left by an ssh session that dropped — a tunnel
+      // that is half there, which accepts on this machine and has no client to
+      // carry the connection to. Neither is fixed by starting a notifier or
+      // pairing again, which cannot bind while the port is held. Both are
+      // fixed by ending what holds it, so the remedy is to find that process,
+      // which names its cause; `local` only says which to suspect first.
+      lines.push(
+        ...(local
+          ? [
+              `${pad}the notifier on this machine has most likely hung; or an ssh session`,
+              `${pad}that dropped left its \`ssh -R\` forward holding the port`,
+            ]
+          : [
+              `${pad}most likely an ssh session that dropped left its \`ssh -R\` forward`,
+              `${pad}holding the port; or a notifier on this machine has hung`,
+            ]),
+      );
+      lines.push(`${pad}find which, and end that process:`);
+      lines.push(...portHolderCommands(portOf(probe.url), platform).map((cmd) => `${pad}  ${cmd}`));
+      const notifier = [`${pad}- \`node\`: stop the \`astir notifier\` you started and start it again`];
+      // What ends a stale forward is ending the session that holds it, and
+      // what stops the next one lingering is the SERVER noticing a dead
+      // client — the client's own keepalive only makes the client give up.
+      // Its process title says which session, if it is not obvious from the
+      // PID alone; an interactive `ssh` (the README's flow) is `@pts/N`.
+      // OpenSSH 9.8 moved the per-session server into its own binary, so what
+      // holds the port can be named `sshd-session` rather than `sshd`.
+      const forward = [
+        `${pad}- \`sshd\` (\`sshd-session\` on OpenSSH 9.8 and later): the stale forward.`,
+        `${pad}  \`ps -o args= -p <pid>\` shows \`sshd: <user>@pts/N\` for an interactive`,
+        `${pad}  session, \`sshd: <user>@notty\` for a non-interactive one (\`sshd: <user>\``,
+        `${pad}  alone for \`ssh -N\`).`,
+        `${pad}  \`ClientAliveInterval 30\` and \`ClientAliveCountMax 3\` in this machine's`,
+        `${pad}  sshd_config keep the next one from lingering (\`ServerAliveInterval\``,
+        `${pad}  on the client alone does not end it)`,
+      ];
+      lines.push(...(local ? [...notifier, ...forward] : [...forward, ...notifier]));
+      return lines;
+    }
+    if (probe.failure === "closed") {
+      // A hang-up is what `ssh -R` does with the tunnel UP and nothing at its
+      // far end: the client refuses the channel, and sshd closes the
+      // connection it accepted. The tunnel needs no setting up; the far end
+      // needs a notifier.
+      lines.push(`${pad}${PROBE_REASON.closed}`);
+      lines.push(`${pad}if ${where} is an \`ssh -R\` forward, the tunnel is up and nothing`);
+      lines.push(`${pad}listens at its other end: start \`astir notifier\` on that machine`);
+      return lines;
+    }
+    // Something on the port that is not a notifier and does not speak HTTP to
+    // it. Neither a notifier nor a tunnel can bind while it holds the port.
     if (probe.reason !== undefined) lines.push(`${pad}${probe.reason}`);
-    lines.push(`${pad}\`astir notifier\` starts one; \`astir pair <host>\` connects a machine to it`);
+    lines.push(`${pad}something that is not a notifier holds ${where} — here, or at the`);
+    lines.push(`${pad}other end of an \`ssh -R\` forward; it has to give the port up first`);
     return lines;
   }
 
@@ -237,8 +372,15 @@ export function describeNotifier(
     lines.push(`${pad}${rosters} roster(s) received`);
   }
   if (!supervised) {
-    // #69 — nothing restarts it, so this comes back at every reboot.
-    lines.push(`${pad}not supervised — it will not survive a reboot; \`astir autostart\` fixes that`);
+    // #69 — nothing restarts it, so this comes back at every reboot. And
+    // `astir autostart` is the fix only where it exists (review:82 F8):
+    // anywhere but macOS it refuses, and offered there it is a dead end.
+    if (autostartSupported(platform)) {
+      lines.push(`${pad}not supervised — it will not survive a reboot; \`astir autostart\` fixes that`);
+    } else {
+      lines.push(`${pad}not supervised — it will not survive a reboot; \`astir autostart\` is macOS only,`);
+      lines.push(`${pad}so start \`astir notifier\` from what runs at login (a systemd user unit, say)`);
+    }
   }
   return lines;
 }

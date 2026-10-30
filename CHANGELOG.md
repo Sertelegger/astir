@@ -76,6 +76,59 @@ release is cut, named and published is in
   expected (the notifier service is installed, or `astir pair` set up a
   forward), the menu says it is unreachable. A machine that never paired
   anything stays calm.
+- **A stale `ssh -R` forward is no longer reported as "no tunnel"**
+  ([#82](https://github.com/Sertelegger/astir/issues/82)).
+  - When the session that opened the forward drops, sshd can keep holding
+    the port: it accepts every connection and never answers. `astir doctor`
+    called that "no tunnel" and told you to set one up, which cannot work
+    while the old forward holds the port. The daemon's log said the same.
+  - The notifier probe now tells a refused port (no tunnel) from one that
+    accepts and does not answer, one that hangs up, and one that does not
+    speak HTTP, and the daemon's log line says which it saw.
+  - For a port that accepts and does not answer, `doctor` (but for the one
+    exception below) names both causes — a notifier on this machine that
+    hung, or a forward left by an ssh session that dropped — the likelier
+    one first, and says how to find which process holds the port
+    (`sudo lsof -iTCP:<port> -sTCP:LISTEN` on macOS,
+    `sudo ss -ltnp 'sport = :<port>'` on Linux, or `netstat` where there is
+    no `ss`) so you end that one.
+    A stale forward is `sshd` (`sshd-session` on OpenSSH 9.8 and later):
+    `sshd: <user>@pts/N` for an interactive session, `@notty` for one that
+    is not; setting `ClientAliveInterval` / `ClientAliveCountMax` in that
+    machine's `sshd_config` keeps the next one from lingering. A hung
+    `astir notifier` you started by hand is told to restart what you
+    started.
+  - The exception is a Mac with the notifier service installed. The port is
+    that service's (an `ssh -R` forward of it listens on the other machine,
+    not this one), so there `doctor` names only a hung notifier: it says
+    `astir autostart` restarts it, and where its log is, and does not send
+    you looking for what holds the port.
+  - A notifier `doctor` finds running with nothing to restart it, and a
+    daemon with no autostart, were told "`astir autostart` fixes that"
+    everywhere. That is macOS only, and refuses anywhere else; there
+    `doctor` now says so, and to start them from what runs at login.
+  - A hang-up is a tunnel with nothing at its far end, and doctor says to
+    start the notifier there. None of them is told to set up a tunnel any
+    more.
+  - `astir status --line` now waits at most half a second for a notifier
+    the daemon has not attached, instead of its whole 1.5 s budget, so a
+    stale forward no longer adds 1.5 s to every tmux refresh and astir-tui
+    tick. A notifier the daemon reaches keeps the whole budget, so a
+    healthy one that is slow over the link is not called hung — even while
+    it cannot deliver (after a failed doorbell, or when it cannot show). The
+    daemon's own fetches keep the full budget.
+  - The daemon's `/healthz` gains `delivery.attached`: the notifiers its
+    probe last reached, by name only, whether or not they can deliver.
+    Additive; the line falls back to `delivery.live` for a daemon without
+    it. A notifier given with `--notify-url`, which nothing probes, is listed
+    while the daemon's `/state` reads of it (every 5 s) are answered, and
+    drops out at the first that is not — so a stale forward there loses the
+    whole budget within seconds, rather than keeping it until a doorbell
+    fails.
+  - The line finds its notifier in that list by address, not by how the
+    name is spelled: `--notify-url http://localhost:47001/notify` (or any
+    plain-http loopback address on that port) is the notifier the line asks at
+    127.0.0.1:47001. One on another host is not, whatever its port.
 - `hooks/hooks.json` no longer carries a `_comment` key, which Claude Code
   reported as an unknown key on every session start. JSON has no comments; the
   prose moved to `hooks/README.md`.
