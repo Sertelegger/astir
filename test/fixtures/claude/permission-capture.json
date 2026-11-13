@@ -1,0 +1,4774 @@
+{
+ "_source": {
+  "what": "Claude Code 2.1.322, live capture for #86 (probes/86/capture/ on feat/86-claude-permission-signal, b46fc09; REPORT.md there)",
+  "claudeVersion": "2.1.322",
+  "lanes": "listing (2 sessions), hooks (3), queue (1); claude-haiku-5-5, default permission mode",
+  "times": "ms relative to the step's prompt submit; hooks are receipt times (20-40 ms of python start-up included)",
+  "polls": "`claude agents --json` polled every 1 s by the lane recorder; start/end bracket each poll, and the state is read near its end",
+  "screen": "the lane's screen recorder: when a dialog was on screen (true) and when nothing was (false)",
+  "sec01": "metadata only: no session ids, tool_use_ids, hashes, inputs, responses or prompts. Agent ids are relabelled main/subN.",
+  "reportFacts": {
+   "noticeAfterPermissionRequestMs": {
+    "min": 5983,
+    "max": 6125,
+    "n": 53
+   },
+   "dialogVisibleAroundPermissionRequestMs": {
+    "min": -9,
+    "max": 244,
+    "n": 45
+   },
+   "noticeAfterKeyTicks": "a key restarts the 6 s idle check: 12016, 12043 ms (n=2), 18020 ms (n=1)",
+   "escReadsIdleFirstPoll": "20/20",
+   "approvalLeavesWaitingFirstPoll": "11/11",
+   "busyPollsDuringDialogs": "0 of 27 dialogs",
+   "pollMs": {
+    "median": "484-612 by lane",
+    "p99": 800,
+    "max": 3549
+   },
+   "serialBashBusyGapMs": {
+    "min": 179,
+    "max": 281
+   },
+   "backgroundAgentLaunches": "17/17 general-purpose Agent launches ran in the background"
+  }
+ },
+ "notices": [
+  {
+   "session": "s1",
+   "step": "B2-bash-approve",
+   "tool": "Bash",
+   "noticeAfterRequestMs": 6010,
+   "visibleAfterRequestMs": 145,
+   "noticeAfterVisibleMs": 5865,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "B3-bash-esc",
+   "tool": "Bash",
+   "noticeAfterRequestMs": 6026,
+   "visibleAfterRequestMs": 120,
+   "noticeAfterVisibleMs": 5906,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "C1a-bash-inert-right",
+   "tool": "Bash",
+   "noticeAfterRequestMs": 12016,
+   "visibleAfterRequestMs": 139,
+   "noticeAfterVisibleMs": 11877,
+   "keyBeforeNotice": true
+  },
+  {
+   "session": "s1",
+   "step": "C1b-bash-inert-right-5s",
+   "tool": "Bash",
+   "noticeAfterRequestMs": 12043,
+   "visibleAfterRequestMs": 148,
+   "noticeAfterVisibleMs": 11895,
+   "keyBeforeNotice": true
+  },
+  {
+   "session": "s1",
+   "step": "E1-edit-approve",
+   "tool": "Edit",
+   "noticeAfterRequestMs": 6047,
+   "visibleAfterRequestMs": 99,
+   "noticeAfterVisibleMs": 5948,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "E2-edit-esc",
+   "tool": "Edit",
+   "noticeAfterRequestMs": 6004,
+   "visibleAfterRequestMs": 2,
+   "noticeAfterVisibleMs": 6002,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "W1-write-approve",
+   "tool": "Write",
+   "noticeAfterRequestMs": 5983,
+   "visibleAfterRequestMs": 56,
+   "noticeAfterVisibleMs": 5927,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "W2-write-esc",
+   "tool": "Write",
+   "noticeAfterRequestMs": 6056,
+   "visibleAfterRequestMs": 122,
+   "noticeAfterVisibleMs": 5934,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "F1-webfetch-approve",
+   "tool": "WebFetch",
+   "noticeAfterRequestMs": 5983,
+   "visibleAfterRequestMs": 118,
+   "noticeAfterVisibleMs": 5865,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "F3-webfetch-sub-esc",
+   "tool": "WebFetch",
+   "noticeAfterRequestMs": 6011,
+   "visibleAfterRequestMs": 34,
+   "noticeAfterVisibleMs": 5977,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "Q1-ask-answer",
+   "tool": "AskUserQuestion",
+   "noticeAfterRequestMs": 6022,
+   "visibleAfterRequestMs": 119,
+   "noticeAfterVisibleMs": 5903,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "Q2-ask-esc",
+   "tool": "AskUserQuestion",
+   "noticeAfterRequestMs": 5994,
+   "visibleAfterRequestMs": 63,
+   "noticeAfterVisibleMs": 5931,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "M1-mcp-approve",
+   "tool": "mcp__cap__cap_ping",
+   "noticeAfterRequestMs": 6077,
+   "visibleAfterRequestMs": 11,
+   "noticeAfterVisibleMs": 6066,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "M2-mcp-esc",
+   "tool": "mcp__cap__cap_ping",
+   "noticeAfterRequestMs": 6006,
+   "visibleAfterRequestMs": -9,
+   "noticeAfterVisibleMs": 6015,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "P1-plan-esc",
+   "tool": "ExitPlanMode",
+   "noticeAfterRequestMs": 6000,
+   "visibleAfterRequestMs": -7,
+   "noticeAfterVisibleMs": 6007,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "P2-plan-approve",
+   "tool": "ExitPlanMode",
+   "noticeAfterRequestMs": 5999,
+   "visibleAfterRequestMs": 112,
+   "noticeAfterVisibleMs": 5887,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "B4-bash-slow-approve",
+   "tool": "Bash",
+   "noticeAfterRequestMs": 6013,
+   "visibleAfterRequestMs": 18,
+   "noticeAfterVisibleMs": 5995,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s1",
+   "step": "B5-bash-longhold-esc",
+   "tool": "Bash",
+   "noticeAfterRequestMs": 6015,
+   "visibleAfterRequestMs": 121,
+   "noticeAfterVisibleMs": 5894,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s2 (no PermissionRequest hook registered)",
+   "step": "S2-Q3-ask-answer",
+   "tool": null,
+   "noticeAfterRequestMs": null,
+   "visibleAfterRequestMs": null,
+   "noticeAfterVisibleMs": 6008,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s2 (no PermissionRequest hook registered)",
+   "step": "S2-Q4-ask-esc",
+   "tool": null,
+   "noticeAfterRequestMs": null,
+   "visibleAfterRequestMs": null,
+   "noticeAfterVisibleMs": 5976,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s2 (no PermissionRequest hook registered)",
+   "step": "S2-B6-bash-approve",
+   "tool": null,
+   "noticeAfterRequestMs": null,
+   "visibleAfterRequestMs": null,
+   "noticeAfterVisibleMs": 5964,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s2 (no PermissionRequest hook registered)",
+   "step": "S2-B7-bash-esc",
+   "tool": null,
+   "noticeAfterRequestMs": null,
+   "visibleAfterRequestMs": null,
+   "noticeAfterVisibleMs": 5961,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s2 (no PermissionRequest hook registered)",
+   "step": "S2-P3-plan-esc",
+   "tool": null,
+   "noticeAfterRequestMs": null,
+   "visibleAfterRequestMs": null,
+   "noticeAfterVisibleMs": 5943,
+   "keyBeforeNotice": false
+  },
+  {
+   "session": "s2 (no PermissionRequest hook registered)",
+   "step": "S2-C1c-bash-inert-3s-9s",
+   "tool": null,
+   "noticeAfterRequestMs": null,
+   "visibleAfterRequestMs": null,
+   "noticeAfterVisibleMs": 17978,
+   "keyBeforeNotice": true
+  }
+ ],
+ "timelines": {
+  "B2-bash-approve": {
+   "lane": "listing",
+   "step": "B2-bash-approve",
+   "note": "Bash on main, approved after its Notification; the tool is fast",
+   "events": [
+    {
+     "t": 58,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 3369,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 3434,
+     "hook": "PermissionRequest",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 9444,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 14816,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 14864,
+     "hook": "PostToolBatch",
+     "agent": "main"
+    },
+    {
+     "t": 15684,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 16856,
+     "hook": "SubagentStop",
+     "agent": "sub1",
+     "agentType": ""
+    }
+   ],
+   "polls": [
+    {
+     "start": 850,
+     "end": 1501,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 1850,
+     "end": 2397,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 2850,
+     "end": 3384,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 3850,
+     "end": 4428,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 4850,
+     "end": 5341,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 5850,
+     "end": 6429,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 6851,
+     "end": 7367,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 7851,
+     "end": 8400,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 8851,
+     "end": 9397,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 9851,
+     "end": 10390,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 10851,
+     "end": 11435,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 11851,
+     "end": 12531,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 12852,
+     "end": 13393,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 13852,
+     "end": 14464,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 14852,
+     "end": 15378,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 15852,
+     "end": 16382,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 16852,
+     "end": 17410,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 17852,
+     "end": 18447,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 18852,
+     "end": 19414,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 19852,
+     "end": 20398,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 20853,
+     "end": 21415,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 21853,
+     "end": 22456,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 22853,
+     "end": 23363,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 23854,
+     "end": 24376,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 24854,
+     "end": 25427,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 25855,
+     "end": 26422,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 26855,
+     "end": 27409,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 27855,
+     "end": 28412,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 28855,
+     "end": 29369,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 29855,
+     "end": 30397,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 30855,
+     "end": 31399,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 31855,
+     "end": 32521,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 32855,
+     "end": 33360,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 33855,
+     "end": 34395,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 34855,
+     "end": 35381,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 35855,
+     "end": 36463,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 36855,
+     "end": 37432,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 37855,
+     "end": 38409,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 38855,
+     "end": 39363,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 39856,
+     "end": 40454,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 40857,
+     "end": 41389,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 41857,
+     "end": 42786,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 42858,
+     "end": 43412,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 43859,
+     "end": 44479,
+     "status": "busy",
+     "waitingFor": null
+    }
+   ],
+   "screen": [
+    {
+     "t": 8,
+     "dialog": false
+    },
+    {
+     "t": 3579,
+     "dialog": true
+    },
+    {
+     "t": 14951,
+     "dialog": false
+    }
+   ],
+   "actions": [
+    {
+     "t": 0,
+     "action": "prompt_submit"
+    },
+    {
+     "t": 14691,
+     "action": "approve Enter"
+    }
+   ]
+  },
+  "B3-bash-esc": {
+   "lane": "listing",
+   "step": "B3-bash-esc",
+   "note": "Bash on main, Esc after its Notification; no hook fires",
+   "events": [
+    {
+     "t": 45,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 1537,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 1586,
+     "hook": "PermissionRequest",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 7612,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    }
+   ],
+   "polls": [
+    {
+     "start": 804,
+     "end": 1322,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 1804,
+     "end": 2328,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 2805,
+     "end": 3330,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 3805,
+     "end": 4312,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 4805,
+     "end": 5300,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 5805,
+     "end": 6261,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 6806,
+     "end": 7329,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 7806,
+     "end": 8351,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 8806,
+     "end": 9321,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 9806,
+     "end": 10272,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 10807,
+     "end": 11353,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 11807,
+     "end": 12361,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 12807,
+     "end": 13448,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 13807,
+     "end": 14309,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 14808,
+     "end": 15328,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 15808,
+     "end": 16302,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 16808,
+     "end": 17359,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 17809,
+     "end": 18400,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 18809,
+     "end": 19379,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 19809,
+     "end": 20283,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 20809,
+     "end": 21348,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 21810,
+     "end": 22334,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 22810,
+     "end": 23333,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 23810,
+     "end": 24323,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 24810,
+     "end": 25276,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 25810,
+     "end": 26232,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 26810,
+     "end": 27338,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 27811,
+     "end": 28328,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 28811,
+     "end": 29278,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 29811,
+     "end": 30334,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 30811,
+     "end": 31310,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 31811,
+     "end": 32260,
+     "status": "idle",
+     "waitingFor": null
+    }
+   ],
+   "screen": [
+    {
+     "t": 7,
+     "dialog": false
+    },
+    {
+     "t": 1706,
+     "dialog": true
+    },
+    {
+     "t": 13003,
+     "dialog": false
+    }
+   ],
+   "actions": [
+    {
+     "t": 0,
+     "action": "prompt_submit"
+    },
+    {
+     "t": 12741,
+     "action": "esc Escape"
+    }
+   ]
+  },
+  "B4-bash-slow-approve": {
+   "lane": "listing",
+   "step": "B4-bash-slow-approve",
+   "note": "Bash on main, approved after its Notification; the tool runs for seconds",
+   "events": [
+    {
+     "t": 31,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 1466,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 1538,
+     "hook": "PermissionRequest",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 7551,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 15755,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 15786,
+     "hook": "PostToolBatch",
+     "agent": "main"
+    },
+    {
+     "t": 16633,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 17544,
+     "hook": "SubagentStop",
+     "agent": "sub1",
+     "agentType": ""
+    }
+   ],
+   "polls": [
+    {
+     "start": 972,
+     "end": 1450,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 1973,
+     "end": 2489,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 2973,
+     "end": 3465,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 3973,
+     "end": 4412,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 4974,
+     "end": 5484,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 5974,
+     "end": 6494,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 6974,
+     "end": 7426,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 7974,
+     "end": 8403,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 8974,
+     "end": 9527,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 9974,
+     "end": 10435,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 10974,
+     "end": 11467,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 11974,
+     "end": 12393,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 12974,
+     "end": 13419,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 13974,
+     "end": 14462,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 14975,
+     "end": 15400,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 15975,
+     "end": 16503,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 16975,
+     "end": 17473,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 17975,
+     "end": 18395,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 18975,
+     "end": 19449,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 19975,
+     "end": 20421,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 20975,
+     "end": 21434,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 21975,
+     "end": 22497,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 22975,
+     "end": 23421,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 23975,
+     "end": 24422,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 24975,
+     "end": 25475,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 25975,
+     "end": 26460,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 26975,
+     "end": 27456,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 27975,
+     "end": 28467,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 28976,
+     "end": 29444,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 29976,
+     "end": 30457,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 30976,
+     "end": 31444,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 31976,
+     "end": 32429,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 32976,
+     "end": 33426,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 33976,
+     "end": 34455,
+     "status": "idle",
+     "waitingFor": null
+    }
+   ],
+   "screen": [
+    {
+     "t": 6,
+     "dialog": false
+    },
+    {
+     "t": 1556,
+     "dialog": true
+    },
+    {
+     "t": 10946,
+     "dialog": false
+    }
+   ],
+   "actions": [
+    {
+     "t": 0,
+     "action": "prompt_submit"
+    },
+    {
+     "t": 10690,
+     "action": "approve Enter"
+    }
+   ]
+  },
+  "C1a-bash-inert-right": {
+   "lane": "listing",
+   "step": "C1a-bash-inert-right",
+   "note": "Bash on main; an inert key at ~3 s moves the Notification to the 12 s tick; then Esc",
+   "events": [
+    {
+     "t": 48,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 1693,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 1729,
+     "hook": "PermissionRequest",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 13745,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    }
+   ],
+   "polls": [
+    {
+     "start": 467,
+     "end": 1029,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 1467,
+     "end": 1986,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 2467,
+     "end": 2946,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 3467,
+     "end": 4002,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 4467,
+     "end": 4932,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 5467,
+     "end": 5997,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 6467,
+     "end": 6993,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 7468,
+     "end": 8011,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 8469,
+     "end": 8959,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 9469,
+     "end": 9970,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 10469,
+     "end": 11026,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 11470,
+     "end": 12074,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 12472,
+     "end": 13019,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 13472,
+     "end": 13898,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 14472,
+     "end": 14986,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 15472,
+     "end": 16023,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 16472,
+     "end": 16964,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 17472,
+     "end": 17907,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 18472,
+     "end": 18924,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 19472,
+     "end": 19968,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 20472,
+     "end": 20975,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 21472,
+     "end": 21994,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 22475,
+     "end": 23037,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 23475,
+     "end": 23939,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 24475,
+     "end": 25026,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 25475,
+     "end": 26287,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 26476,
+     "end": 27064,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 27476,
+     "end": 27993,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 28476,
+     "end": 29026,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 29476,
+     "end": 30031,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 30476,
+     "end": 31100,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 31476,
+     "end": 32012,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 32476,
+     "end": 33058,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 33477,
+     "end": 33935,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 34477,
+     "end": 34951,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 35477,
+     "end": 36040,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 36477,
+     "end": 37069,
+     "status": "busy",
+     "waitingFor": null
+    }
+   ],
+   "screen": [
+    {
+     "t": 7,
+     "dialog": false
+    },
+    {
+     "t": 1868,
+     "dialog": true
+    },
+    {
+     "t": 17083,
+     "dialog": false
+    }
+   ],
+   "actions": [
+    {
+     "t": 0,
+     "action": "prompt_submit"
+    },
+    {
+     "t": 4894,
+     "action": "inert_key"
+    },
+    {
+     "t": 16827,
+     "action": "esc Escape"
+    }
+   ]
+  },
+  "Q1-ask-answer": {
+   "lane": "listing",
+   "step": "Q1-ask-answer",
+   "note": "AskUserQuestion on main: the listing reads waiting/'input needed' throughout; answered",
+   "events": [
+    {
+     "t": 62,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 1742,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "AskUserQuestion"
+    },
+    {
+     "t": 1775,
+     "hook": "PermissionRequest",
+     "agent": "main",
+     "tool": "AskUserQuestion"
+    },
+    {
+     "t": 7797,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 20045,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "AskUserQuestion"
+    },
+    {
+     "t": 20293,
+     "hook": "PostToolBatch",
+     "agent": "main"
+    },
+    {
+     "t": 21072,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 21812,
+     "hook": "SubagentStop",
+     "agent": "sub1",
+     "agentType": ""
+    }
+   ],
+   "polls": [
+    {
+     "start": 415,
+     "end": 941,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 1415,
+     "end": 1941,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 2415,
+     "end": 2917,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 3416,
+     "end": 4152,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 4416,
+     "end": 4945,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 5416,
+     "end": 5943,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 6416,
+     "end": 7210,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 7416,
+     "end": 7967,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 8416,
+     "end": 8951,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 9416,
+     "end": 9968,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 10416,
+     "end": 10967,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 11416,
+     "end": 11970,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 12416,
+     "end": 12976,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 13416,
+     "end": 13998,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 14417,
+     "end": 15095,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 15418,
+     "end": 15959,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 16419,
+     "end": 16993,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 17419,
+     "end": 17959,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 18420,
+     "end": 19035,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 19420,
+     "end": 20085,
+     "status": "waiting",
+     "waitingFor": "input needed"
+    },
+    {
+     "start": 20420,
+     "end": 21114,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 21420,
+     "end": 22004,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 22420,
+     "end": 22939,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 23420,
+     "end": 24036,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 24420,
+     "end": 24925,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 25420,
+     "end": 26091,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 26421,
+     "end": 26914,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 27421,
+     "end": 27940,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 28421,
+     "end": 28992,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 29421,
+     "end": 30005,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 30421,
+     "end": 30944,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 31421,
+     "end": 32004,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 32421,
+     "end": 33211,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 33422,
+     "end": 33973,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 34422,
+     "end": 34890,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 35422,
+     "end": 35940,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 36422,
+     "end": 36926,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 37422,
+     "end": 37920,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 38422,
+     "end": 39080,
+     "status": "idle",
+     "waitingFor": null
+    }
+   ],
+   "screen": [
+    {
+     "t": 12,
+     "dialog": false
+    },
+    {
+     "t": 1894,
+     "dialog": true
+    },
+    {
+     "t": 20214,
+     "dialog": false
+    }
+   ],
+   "actions": [
+    {
+     "t": 0,
+     "action": "prompt_submit"
+    },
+    {
+     "t": 19953,
+     "action": "approve Enter"
+    }
+   ]
+  },
+  "P2-plan-approve": {
+   "lane": "listing",
+   "step": "P2-plan-approve",
+   "note": "ExitPlanMode (plan approval) on main, approved",
+   "events": [
+    {
+     "t": 50,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 2295,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Write"
+    },
+    {
+     "t": 2353,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Write"
+    },
+    {
+     "t": 2472,
+     "hook": "PostToolBatch",
+     "agent": "main"
+    },
+    {
+     "t": 3107,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "ExitPlanMode"
+    },
+    {
+     "t": 3147,
+     "hook": "PermissionRequest",
+     "agent": "main",
+     "tool": "ExitPlanMode"
+    },
+    {
+     "t": 9146,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 24316,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "ExitPlanMode"
+    },
+    {
+     "t": 24358,
+     "hook": "PostToolBatch",
+     "agent": "main"
+    },
+    {
+     "t": 25337,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 26163,
+     "hook": "SubagentStop",
+     "agent": "sub1",
+     "agentType": ""
+    }
+   ],
+   "polls": [
+    {
+     "start": 125,
+     "end": 807,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 1125,
+     "end": 1689,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 2125,
+     "end": 2604,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 3125,
+     "end": 3597,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 4125,
+     "end": 4587,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 5125,
+     "end": 5593,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 6125,
+     "end": 6689,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 7125,
+     "end": 7611,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 8125,
+     "end": 8625,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 9125,
+     "end": 9613,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 10125,
+     "end": 10585,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 11125,
+     "end": 11615,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 12125,
+     "end": 12601,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 13125,
+     "end": 13610,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 14125,
+     "end": 14652,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 15126,
+     "end": 15569,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 16126,
+     "end": 16632,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 17126,
+     "end": 17578,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 18127,
+     "end": 18568,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 19127,
+     "end": 19579,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 20127,
+     "end": 20612,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 21127,
+     "end": 21576,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 22127,
+     "end": 22549,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 23127,
+     "end": 23566,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 24128,
+     "end": 24595,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 25128,
+     "end": 25616,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 26128,
+     "end": 26666,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 27128,
+     "end": 27578,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 28128,
+     "end": 28598,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 29129,
+     "end": 29598,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 30130,
+     "end": 30607,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 31130,
+     "end": 31707,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 32130,
+     "end": 32589,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 33130,
+     "end": 33662,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 34130,
+     "end": 34602,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 35130,
+     "end": 35778,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 36130,
+     "end": 36760,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 37130,
+     "end": 37567,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 38131,
+     "end": 38615,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 39131,
+     "end": 39687,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 40131,
+     "end": 40613,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 41131,
+     "end": 41585,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 42131,
+     "end": 42556,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 43132,
+     "end": 43584,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 44133,
+     "end": 44579,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 45133,
+     "end": 45566,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 46134,
+     "end": 46634,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 47135,
+     "end": 47633,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 48135,
+     "end": 48582,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 49136,
+     "end": 49642,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 50136,
+     "end": 50736,
+     "status": "busy",
+     "waitingFor": null
+    }
+   ],
+   "screen": [
+    {
+     "t": 5,
+     "dialog": false
+    },
+    {
+     "t": 3259,
+     "dialog": true
+    }
+   ],
+   "actions": [
+    {
+     "t": 0,
+     "action": "prompt_submit"
+    },
+    {
+     "t": 24280,
+     "action": "approve 2"
+    }
+   ]
+  },
+  "Q1-slow": {
+   "lane": "queue",
+   "step": "Q1-slow",
+   "note": "two serial Bash dialogs on main; the first approved after its Notification, the second mounts ~0.2 s later",
+   "events": [
+    {
+     "t": 86,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 1742,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 1795,
+     "hook": "PermissionRequest",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 7804,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 10899,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 10946,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 10994,
+     "hook": "PermissionRequest",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 17007,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 31142,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 31228,
+     "hook": "PostToolBatch",
+     "agent": "main"
+    },
+    {
+     "t": 32148,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 33244,
+     "hook": "SubagentStop",
+     "agent": "sub1",
+     "agentType": ""
+    }
+   ],
+   "polls": [
+    {
+     "start": 648,
+     "end": 1242,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 1648,
+     "end": 2203,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 2648,
+     "end": 3241,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 3648,
+     "end": 4186,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 4648,
+     "end": 5169,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 5648,
+     "end": 6175,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 6648,
+     "end": 7153,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 7648,
+     "end": 8168,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 8648,
+     "end": 9147,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 9648,
+     "end": 10111,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 10648,
+     "end": 11147,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 11648,
+     "end": 12188,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 12648,
+     "end": 13375,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 13648,
+     "end": 14175,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 14648,
+     "end": 15086,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 15648,
+     "end": 16085,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 16648,
+     "end": 17120,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 17648,
+     "end": 18129,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 18648,
+     "end": 19200,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 19648,
+     "end": 20197,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 20648,
+     "end": 21206,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 21648,
+     "end": 22211,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 22648,
+     "end": 23256,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 23648,
+     "end": 24205,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 24648,
+     "end": 25161,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 25648,
+     "end": 26183,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 26648,
+     "end": 27190,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 27648,
+     "end": 28219,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 28648,
+     "end": 29172,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 29648,
+     "end": 30270,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 30648,
+     "end": 31258,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 31648,
+     "end": 32123,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 32648,
+     "end": 33170,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 33648,
+     "end": 34243,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 34648,
+     "end": 35144,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 35648,
+     "end": 36400,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 36648,
+     "end": 37117,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 37648,
+     "end": 38108,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 38648,
+     "end": 39307,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 39648,
+     "end": 40152,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 40648,
+     "end": 41180,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 41648,
+     "end": 42179,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 42648,
+     "end": 43224,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 43648,
+     "end": 44266,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 44648,
+     "end": 45239,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 45648,
+     "end": 46253,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 46648,
+     "end": 47106,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 47648,
+     "end": 48331,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 48648,
+     "end": 49311,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 49648,
+     "end": 50190,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 50648,
+     "end": 51193,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 51648,
+     "end": 52312,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 52648,
+     "end": 53274,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 53648,
+     "end": 54321,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 54648,
+     "end": 55246,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 55648,
+     "end": 56195,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 56648,
+     "end": 57179,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 57648,
+     "end": 58257,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 58648,
+     "end": 59243,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 59648,
+     "end": 60254,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 60648,
+     "end": 61240,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 61648,
+     "end": 62209,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 62648,
+     "end": 63957,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 64007,
+     "end": 64864,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 65007,
+     "end": 65630,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 66007,
+     "end": 66648,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 67007,
+     "end": 67543,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 68007,
+     "end": 68742,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 69007,
+     "end": 69633,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 70007,
+     "end": 70577,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 71007,
+     "end": 71604,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 72007,
+     "end": 72558,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 73009,
+     "end": 73685,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 74009,
+     "end": 74621,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 75009,
+     "end": 75645,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 76009,
+     "end": 76524,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 77009,
+     "end": 77673,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 78009,
+     "end": 78768,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 79009,
+     "end": 79589,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 80009,
+     "end": 80555,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 81009,
+     "end": 81561,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 82009,
+     "end": 82524,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 83009,
+     "end": 83764,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 84009,
+     "end": 84605,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 85009,
+     "end": 85592,
+     "status": "busy",
+     "waitingFor": null
+    }
+   ],
+   "screen": [
+    {
+     "t": 1794,
+     "dialog": true
+    },
+    {
+     "t": 10856,
+     "dialog": false
+    },
+    {
+     "t": 11064,
+     "dialog": true
+    },
+    {
+     "t": 31182,
+     "dialog": false
+    }
+   ],
+   "actions": [
+    {
+     "t": 0,
+     "action": "submit Q1-slow prompt"
+    },
+    {
+     "t": 10818,
+     "action": "key Enter"
+    },
+    {
+     "t": 31049,
+     "action": "key Enter"
+    }
+   ]
+  },
+  "Q2-sub-slow": {
+   "lane": "queue",
+   "step": "Q2-sub-slow",
+   "note": "two background subagents ask; main's turn Stops while sub2's dialog is still up (SUB2)",
+   "events": [
+    {
+     "t": 45,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 1703,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 1774,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 1776,
+     "hook": "SubagentStart",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 2018,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 2070,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 2074,
+     "hook": "SubagentStart",
+     "agent": "sub2",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 2108,
+     "hook": "PostToolBatch",
+     "agent": "main"
+    },
+    {
+     "t": 3150,
+     "hook": "PreToolUse",
+     "agent": "sub1",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 3190,
+     "hook": "PermissionRequest",
+     "agent": "sub1",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 3284,
+     "hook": "PreToolUse",
+     "agent": "sub2",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 3364,
+     "hook": "PermissionRequest",
+     "agent": "sub2",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 3650,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 9229,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 9447,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 12317,
+     "hook": "PostToolUse",
+     "agent": "sub1",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 12348,
+     "hook": "PostToolBatch",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 13067,
+     "hook": "SubagentStop",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 13251,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 14824,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 15745,
+     "hook": "SubagentStop",
+     "agent": "sub3",
+     "agentType": ""
+    },
+    {
+     "t": 24309,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 32573,
+     "hook": "PostToolUse",
+     "agent": "sub2",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 32701,
+     "hook": "PostToolBatch",
+     "agent": "sub2",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 33504,
+     "hook": "SubagentStop",
+     "agent": "sub2",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 33593,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 34987,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 36347,
+     "hook": "SubagentStop",
+     "agent": "sub4",
+     "agentType": ""
+    }
+   ],
+   "polls": [
+    {
+     "start": 429,
+     "end": 1054,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 1429,
+     "end": 2004,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 2429,
+     "end": 3155,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 3429,
+     "end": 3953,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 4429,
+     "end": 4925,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 5429,
+     "end": 5933,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 6429,
+     "end": 6918,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 7429,
+     "end": 7926,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 8429,
+     "end": 8944,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 9429,
+     "end": 9941,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 10429,
+     "end": 10928,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 11429,
+     "end": 11946,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 12429,
+     "end": 13008,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 13429,
+     "end": 13987,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 14429,
+     "end": 15044,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 15429,
+     "end": 16088,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 16429,
+     "end": 16929,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 17429,
+     "end": 18087,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 18429,
+     "end": 18975,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 19429,
+     "end": 19939,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 20429,
+     "end": 21028,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 21429,
+     "end": 21930,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 22429,
+     "end": 23078,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 23429,
+     "end": 23976,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 24429,
+     "end": 24903,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 25429,
+     "end": 25937,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 26429,
+     "end": 26950,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 27429,
+     "end": 28077,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 28429,
+     "end": 32003,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 32053,
+     "end": 32679,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 33053,
+     "end": 33788,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 34053,
+     "end": 34580,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 35053,
+     "end": 35651,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 36053,
+     "end": 36551,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 37053,
+     "end": 37635,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 38053,
+     "end": 38567,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 39053,
+     "end": 39628,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 40053,
+     "end": 40627,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 41053,
+     "end": 41726,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 42053,
+     "end": 42612,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 43053,
+     "end": 43772,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 44053,
+     "end": 44633,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 45053,
+     "end": 45589,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 46053,
+     "end": 46702,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 47053,
+     "end": 47583,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 48053,
+     "end": 48688,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 49053,
+     "end": 49751,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 50053,
+     "end": 50734,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 51053,
+     "end": 51543,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 52053,
+     "end": 52619,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 53053,
+     "end": 53667,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 54053,
+     "end": 54579,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 55053,
+     "end": 55606,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 56053,
+     "end": 56589,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 57053,
+     "end": 57736,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 58053,
+     "end": 58583,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 59053,
+     "end": 59612,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 60053,
+     "end": 60668,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 61053,
+     "end": 61663,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 62053,
+     "end": 62659,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 63053,
+     "end": 63793,
+     "status": "busy",
+     "waitingFor": null
+    }
+   ],
+   "screen": [
+    {
+     "t": 2586,
+     "dialog": false
+    },
+    {
+     "t": 3237,
+     "dialog": true
+    },
+    {
+     "t": 32423,
+     "dialog": false
+    }
+   ],
+   "actions": [
+    {
+     "t": 0,
+     "action": "submit Q2-sub-slow prompt"
+    },
+    {
+     "t": 12275,
+     "action": "key Enter"
+    },
+    {
+     "t": 32341,
+     "action": "key Enter"
+    }
+   ]
+  },
+  "Q3-sub-esc": {
+   "lane": "queue",
+   "step": "Q3-sub-esc",
+   "note": "two background subagents ask; Esc at the first; main Stops while the second is still up (SUB6)",
+   "events": [
+    {
+     "t": 48,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 1783,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 1839,
+     "hook": "SubagentStart",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 1839,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 2048,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 2099,
+     "hook": "SubagentStart",
+     "agent": "sub2",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 2099,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 2172,
+     "hook": "PostToolBatch",
+     "agent": "main"
+    },
+    {
+     "t": 2766,
+     "hook": "PreToolUse",
+     "agent": "sub1",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 2897,
+     "hook": "PermissionRequest",
+     "agent": "sub1",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 3068,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 3586,
+     "hook": "PreToolUse",
+     "agent": "sub2",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 3704,
+     "hook": "PermissionRequest",
+     "agent": "sub2",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 8945,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 9763,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 11619,
+     "hook": "PostToolBatch",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 13831,
+     "hook": "SubagentStop",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 13896,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 15499,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 16544,
+     "hook": "SubagentStop",
+     "agent": "sub3",
+     "agentType": ""
+    },
+    {
+     "t": 23653,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 41242,
+     "hook": "PostToolBatch",
+     "agent": "sub2",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 43369,
+     "hook": "SubagentStop",
+     "agent": "sub2",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 43504,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 45312,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 46464,
+     "hook": "SubagentStop",
+     "agent": "sub4",
+     "agentType": ""
+    }
+   ],
+   "polls": [
+    {
+     "start": 94,
+     "end": 740,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 1094,
+     "end": 1708,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 2094,
+     "end": 2678,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 3094,
+     "end": 3768,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 4094,
+     "end": 4622,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 5094,
+     "end": 5634,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 6094,
+     "end": 6682,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 7094,
+     "end": 7634,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 8094,
+     "end": 8639,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 9094,
+     "end": 9729,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 10094,
+     "end": 10675,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 11094,
+     "end": 11671,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 12094,
+     "end": 12630,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 13094,
+     "end": 13596,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 14094,
+     "end": 14662,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 15094,
+     "end": 15702,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 16094,
+     "end": 16728,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 17094,
+     "end": 17635,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 18094,
+     "end": 18609,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 19095,
+     "end": 19578,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 20095,
+     "end": 20561,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 21095,
+     "end": 21760,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 22095,
+     "end": 22680,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 23095,
+     "end": 23638,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 24095,
+     "end": 24579,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 25095,
+     "end": 25559,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 26095,
+     "end": 26650,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 27095,
+     "end": 27583,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 28095,
+     "end": 28565,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 29095,
+     "end": 29637,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 30095,
+     "end": 30747,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 31095,
+     "end": 31763,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 32095,
+     "end": 32660,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 33095,
+     "end": 33642,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 34095,
+     "end": 34621,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 35095,
+     "end": 35595,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 36095,
+     "end": 36547,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 37095,
+     "end": 37534,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 38095,
+     "end": 38604,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 39095,
+     "end": 39667,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 40095,
+     "end": 40589,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 41095,
+     "end": 41635,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 42095,
+     "end": 42578,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 43095,
+     "end": 43627,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 44095,
+     "end": 44589,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 45095,
+     "end": 45650,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 46095,
+     "end": 46637,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 47095,
+     "end": 47537,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 48095,
+     "end": 48743,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 49095,
+     "end": 49918,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 50095,
+     "end": 50561,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 51095,
+     "end": 51667,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 52095,
+     "end": 52581,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 53095,
+     "end": 53620,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 54095,
+     "end": 54728,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 55095,
+     "end": 55638,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 56095,
+     "end": 56575,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 57095,
+     "end": 57540,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 58095,
+     "end": 58561,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 59095,
+     "end": 59579,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 60095,
+     "end": 60568,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 61095,
+     "end": 61675,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 62095,
+     "end": 62571,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 63095,
+     "end": 63744,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 64095,
+     "end": 64612,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 65095,
+     "end": 65611,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 66095,
+     "end": 66712,
+     "status": "busy",
+     "waitingFor": null
+    }
+   ],
+   "screen": [
+    {
+     "t": 2100,
+     "dialog": false
+    },
+    {
+     "t": 2961,
+     "dialog": true
+    },
+    {
+     "t": 41302,
+     "dialog": false
+    }
+   ],
+   "actions": [
+    {
+     "t": 0,
+     "action": "submit Q3-sub-esc prompt"
+    },
+    {
+     "t": 11487,
+     "action": "key Escape"
+    },
+    {
+     "t": 41133,
+     "action": "key Escape"
+    }
+   ]
+  },
+  "Q2c-mixed": {
+   "lane": "queue",
+   "step": "Q2c-mixed",
+   "note": "main's Read dialog with a background subagent's Bash queued behind it; main Stops while the subagent's is up (SUB8)",
+   "events": [
+    {
+     "t": 79,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 1628,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 1713,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 1714,
+     "hook": "SubagentStart",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 1847,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 2225,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Read"
+    },
+    {
+     "t": 2406,
+     "hook": "PermissionRequest",
+     "agent": "main",
+     "tool": "Read"
+    },
+    {
+     "t": 2630,
+     "hook": "PreToolUse",
+     "agent": "sub1",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 2671,
+     "hook": "PermissionRequest",
+     "agent": "sub1",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 7922,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 8418,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 8700,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 16500,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Read"
+    },
+    {
+     "t": 16538,
+     "hook": "PostToolBatch",
+     "agent": "main"
+    },
+    {
+     "t": 17272,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 18202,
+     "hook": "SubagentStop",
+     "agent": "sub2",
+     "agentType": ""
+    },
+    {
+     "t": 24574,
+     "hook": "PostToolUse",
+     "agent": "sub1",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 24616,
+     "hook": "PostToolBatch",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 25571,
+     "hook": "SubagentStop",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 25631,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 26833,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 28121,
+     "hook": "SubagentStop",
+     "agent": "sub3",
+     "agentType": ""
+    }
+   ],
+   "polls": [
+    {
+     "start": 752,
+     "end": 1404,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 1752,
+     "end": 2323,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 2752,
+     "end": 3234,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 3752,
+     "end": 4253,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 4752,
+     "end": 5244,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 5752,
+     "end": 6266,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 6752,
+     "end": 7196,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 7752,
+     "end": 8351,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 8752,
+     "end": 9246,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 9752,
+     "end": 10206,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 10752,
+     "end": 11185,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 11752,
+     "end": 12297,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 12752,
+     "end": 13349,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 13752,
+     "end": 14248,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 14752,
+     "end": 15230,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 15752,
+     "end": 16168,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 16752,
+     "end": 17300,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 17752,
+     "end": 18529,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 18752,
+     "end": 19240,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 19752,
+     "end": 20242,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 20752,
+     "end": 21405,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 21752,
+     "end": 22206,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 22752,
+     "end": 23278,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 23752,
+     "end": 24305,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 24752,
+     "end": 25233,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 25752,
+     "end": 26500,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 26752,
+     "end": 27264,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 27752,
+     "end": 28298,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 28752,
+     "end": 29268,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 29752,
+     "end": 30329,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 30752,
+     "end": 31306,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 31752,
+     "end": 32212,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 32752,
+     "end": 33220,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 33752,
+     "end": 34232,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 34752,
+     "end": 35232,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 35752,
+     "end": 36212,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 36752,
+     "end": 37335,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 37752,
+     "end": 38275,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 38752,
+     "end": 39209,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 39752,
+     "end": 40226,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 40752,
+     "end": 41199,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 41752,
+     "end": 42289,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 42752,
+     "end": 43243,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 43752,
+     "end": 44258,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 44752,
+     "end": 45235,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 45752,
+     "end": 46273,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 46752,
+     "end": 47251,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 47752,
+     "end": 48238,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 48752,
+     "end": 49306,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 49752,
+     "end": 50280,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 50752,
+     "end": 51270,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 51752,
+     "end": 52283,
+     "status": "idle",
+     "waitingFor": null
+    }
+   ],
+   "screen": [
+    {
+     "t": 2427,
+     "dialog": true
+    },
+    {
+     "t": 24538,
+     "dialog": false
+    }
+   ],
+   "actions": [
+    {
+     "t": 0,
+     "action": "submit Q2c-mixed prompt"
+    },
+    {
+     "t": 16458,
+     "action": "key Enter"
+    },
+    {
+     "t": 24521,
+     "action": "key Enter"
+    }
+   ]
+  },
+  "OOO": {
+   "lane": "hooks",
+   "step": "submit-OOO-sub-PPP-main",
+   "note": "main's Bash dialog (PPP) with a background subagent's (OOO) behind it; main approves, its turn Stops while OOO is up",
+   "events": [
+    {
+     "t": 52,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 2192,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 2258,
+     "hook": "SubagentStart",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 2260,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Agent"
+    },
+    {
+     "t": 2354,
+     "hook": "PreToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 2414,
+     "hook": "PermissionRequest",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 3275,
+     "hook": "PreToolUse",
+     "agent": "sub1",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 3312,
+     "hook": "PermissionRequest",
+     "agent": "sub1",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 8412,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 9340,
+     "hook": "Notification",
+     "agent": "main",
+     "notificationType": "permission_prompt"
+    },
+    {
+     "t": 22487,
+     "hook": "PostToolUse",
+     "agent": "main",
+     "tool": "Bash"
+    },
+    {
+     "t": 22519,
+     "hook": "PostToolBatch",
+     "agent": "main"
+    },
+    {
+     "t": 23394,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 24507,
+     "hook": "SubagentStop",
+     "agent": "sub2",
+     "agentType": ""
+    },
+    {
+     "t": 25823,
+     "hook": "PostToolUse",
+     "agent": "sub1",
+     "agentType": "general-purpose",
+     "tool": "Bash"
+    },
+    {
+     "t": 25872,
+     "hook": "PostToolBatch",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 26547,
+     "hook": "SubagentStop",
+     "agent": "sub1",
+     "agentType": "general-purpose"
+    },
+    {
+     "t": 26616,
+     "hook": "UserPromptSubmit",
+     "agent": "main"
+    },
+    {
+     "t": 27823,
+     "hook": "Stop",
+     "agent": "main"
+    },
+    {
+     "t": 28483,
+     "hook": "SubagentStop",
+     "agent": "sub3",
+     "agentType": ""
+    }
+   ],
+   "polls": [
+    {
+     "start": 142,
+     "end": 803,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 1142,
+     "end": 1694,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 2142,
+     "end": 2719,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 3142,
+     "end": 3670,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 4142,
+     "end": 4661,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 5142,
+     "end": 5681,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 6145,
+     "end": 6758,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 7145,
+     "end": 7662,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 8145,
+     "end": 8657,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 9145,
+     "end": 9654,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 10145,
+     "end": 10700,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 11145,
+     "end": 11595,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 12145,
+     "end": 12695,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 13145,
+     "end": 13790,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 14145,
+     "end": 14602,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 15145,
+     "end": 15636,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 16145,
+     "end": 16576,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 17145,
+     "end": 17737,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 18145,
+     "end": 18715,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 19145,
+     "end": 19646,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 20145,
+     "end": 20591,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 21145,
+     "end": 21674,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 22145,
+     "end": 22844,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 23145,
+     "end": 23878,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 24145,
+     "end": 24648,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 25145,
+     "end": 25752,
+     "status": "waiting",
+     "waitingFor": "permission prompt"
+    },
+    {
+     "start": 26145,
+     "end": 26707,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 27145,
+     "end": 27733,
+     "status": "busy",
+     "waitingFor": null
+    },
+    {
+     "start": 28145,
+     "end": 28724,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 29145,
+     "end": 29629,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 30145,
+     "end": 30775,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 31145,
+     "end": 31605,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 32145,
+     "end": 32678,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 33145,
+     "end": 33639,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 34146,
+     "end": 34704,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 35146,
+     "end": 35733,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 36146,
+     "end": 36644,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 37146,
+     "end": 37730,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 38146,
+     "end": 38589,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 39146,
+     "end": 39640,
+     "status": "idle",
+     "waitingFor": null
+    },
+    {
+     "start": 40146,
+     "end": 40577,
+     "status": "idle",
+     "waitingFor": null
+    }
+   ],
+   "screen": [
+    {
+     "t": 2403,
+     "dialog": true
+    },
+    {
+     "t": 25809,
+     "dialog": false
+    }
+   ],
+   "actions": [
+    {
+     "t": 0,
+     "action": "submit-OOO-sub-PPP-main"
+    },
+    {
+     "t": 22434,
+     "action": "approve-PPP-main"
+    },
+    {
+     "t": 25737,
+     "action": "approve-OOO-sub"
+    }
+   ]
+  }
+ }
+}

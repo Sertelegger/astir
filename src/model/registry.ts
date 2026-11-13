@@ -1,8 +1,8 @@
 /** MOD-04/05/06 — session + agent state, and the active-vs-blocked accounting. */
 
 import { CAPABILITIES } from "../contract/capabilities.js";
-import type { AstirEvent, ParentSource, Provider } from "../contract/event.js";
-import type { DiscoveredSession } from "../discovery/sessions.js";
+import type { AstirEvent, Kind, NotificationKind, ParentSource, Provider } from "../contract/event.js";
+import type { DiscoveredSession, SessionScreen } from "../discovery/sessions.js";
 import { debug } from "../obs/debug.js";
 import { RepoMap } from "./map.js";
 import { identityMatches, SNAPSHOT_VERSION, type Snapshot, type SnapshotSession } from "./snapshot.js";
@@ -12,6 +12,16 @@ export type AgentState = "thinking" | "tool-running" | "waiting" | "blocked" | "
 /** States that mean "a human is the bottleneck" — the whole point of G1. */
 const HUMAN_BLOCKING = new Set<AgentState>(["blocked"]);
 const TERMINAL = new Set<AgentState>(["done", "error"]);
+
+/**
+ * The Notification kinds that mean "come look": the only ones that block, and
+ * so the only ones that can be a block's reason.
+ */
+const BLOCKING_NOTICES = new Set<NotificationKind | null>([
+  "permission_prompt",
+  "agent_needs_input",
+  "worker_permission_prompt",
+]);
 
 /**
  * The only states in which the agent is actually doing work.
@@ -41,6 +51,92 @@ const TURN_END = new Set<AgentState>(["waiting", "idle"]);
  * rather than as evidence of idleness.
  */
 const PROVIDER_BUSY = new Set(["busy", "running", "working"]);
+
+/*
+ * #86 — a permission block the provider's listing ends (design C+, for a
+ * provider that declares `listingEndsPermissionBlocks`; Claude does).
+ *
+ * Claude's `permission_prompt` Notification begins the block, as it always
+ * did, and names no agent, so it is the session's main agent's. It comes once
+ * the dialog has been left alone for 6 s, so the block is dated
+ * `promptNoticeAgeMs` back. Nothing fires when Esc dismisses a dialog, and
+ * main's own events say nothing about a dialog that may be a background
+ * agent's — so while the listing can see the screen, the listing ends the
+ * block, and main's own progress does not. Measured against Claude Code
+ * 2.1.322 (test/fixtures/claude/permission-capture.json).
+ */
+
+/**
+ * #86 — how long a listing reading keeps vouching for the screen.
+ *
+ * The daemon polls every 5 s and a poll took ~0.5 s (p99 0.8 s, max 3.6 s), so
+ * the latest reading is normally under 6 s old; 12 s survives one poll that
+ * failed or ran long. Past it the listing is not watching (discovery down, a
+ * session it does not list) and main's own progress ends a block, as before.
+ */
+const LISTING_FRESH_MS = 12_000;
+
+/**
+ * #86 — an `at-prompt` reading ends a block only from a poll begun at least
+ * this long after the block's date. A poll begun earlier may describe the
+ * screen before the dialog opened.
+ */
+const ESC_SETTLE_MS = 1_000;
+
+/**
+ * #86 — a `working` reading means the dialog was answered only from a poll
+ * begun at least this long after the dialog was last seen.
+ *
+ * Insurance, not a measured need. The design was sized from a report that
+ * AskUserQuestion's listing read busy for a second or two after its
+ * Notification on older builds (2.1.291/2.1.312, not re-measured); on 2.1.322
+ * no dialog read busy while it was up (0 of 27). At a 5 s poll it costs a
+ * poll only when the answer comes within 2 s of the last sighting.
+ */
+const ANSWER_SETTLE_MS = 2_000;
+
+/**
+ * #86 — main's own events that say nothing about a dialog on screen: a
+ * parallel call finishing, the next call starting. While the listing is
+ * watching they do not end a permission block.
+ */
+const SILENT_ON_DIALOGS = new Set<Kind>(["pre_tool", "post_tool", "tool_failed", "subagent_start"]);
+
+/**
+ * #86 — what the listing last said about one session's screen. Memory only:
+ * held off `SessionRecord` so no surface and no snapshot can carry it.
+ */
+interface ListingMemory {
+  /** The latest poll start, or `permission_prompt` Notification, that saw a dialog. */
+  dialogSeenAt: number | null;
+  /**
+   * The latest poll start whose reading says something about a permission
+   * dialog: one on screen, or nothing on screen. `other-dialog` counts only
+   * while a permission block stands (it is then that block's dialog, or one
+   * queued with it).
+   */
+  informativeAt: number | null;
+  /** The reading of the latest poll to BEGIN, and when it began. */
+  screen: SessionScreen | null;
+  screenAt: number | null;
+  /**
+   * Where main's latest held step (rule 6) would have taken it, and when that
+   * step came. Kept, not dropped: a held step is still main's progress, so a
+   * block the listing ends after it ends there (rule 5), and one the listing
+   * stops watching takes it then (rule 7). `block` is the `stateSince` of the
+   * block it was held in; a step held in one block says nothing about the
+   * next. The outcome only, never the event.
+   */
+  heldOutcome: { state: AgentState; at: number; block: number } | null;
+  /**
+   * The state main's permission block began from, and the block (its
+   * `stateSince`). Main's own dialog always follows its PreToolUse, so a block
+   * that begins with main `waiting` after its Stop is a background agent's
+   * dialog, and main's turn is over whatever the listing reads once it is
+   * answered. `idle` is not that: it is decay, with no Stop seen.
+   */
+  blockedFrom: { state: AgentState; block: number } | null;
+}
 
 export interface AgentRecord {
   id: string;
@@ -333,6 +429,8 @@ export class Registry {
   private silentByProvider = new Map<Provider, DiscoveredSession[]>();
   /** Saved sessions awaiting a provider's confirmation. See `stageRestore`. */
   private pendingRestore = new Map<string, SnapshotSession>();
+  /** #86 — per session, what its listing last said. Dies with the record. */
+  private listing = new WeakMap<SessionRecord, ListingMemory>();
 
   constructor(opts: RegistryOpts) {
     this.nowMs = opts.nowMs;
@@ -529,14 +627,43 @@ export class Registry {
     if (event.kind === "session_end") session.endedAt = this.nowMs();
     else if (event.kind === "session_start") session.endedAt = null; // resumed
 
+    const caps = CAPABILITIES[session.provider];
+    if (caps.listingEndsPermissionBlocks) {
+      // #86 — the Notification is sent only while its dialog is up, so it is
+      // a sighting of it, as a poll reading the dialog is.
+      if (event.kind === "notification" && event.notificationKind === "permission_prompt") {
+        const m = this.memoryOf(session);
+        m.dialogSeenAt = Math.max(m.dialogSeenAt ?? this.nowMs(), this.nowMs());
+      }
+      if (this.heldForListing(session, agent, event)) {
+        if (event.kind !== "file_changed") {
+          this.memoryOf(session).heldOutcome = {
+            state: this.nextState(event, agent.state),
+            at: this.nowMs(),
+            block: agent.stateSince,
+          };
+        }
+        return { applied: true };
+      }
+    }
+
     const next = this.nextState(event, agent.state);
+    const from = agent.state;
     const becameBlocked =
       next !== agent.state && HUMAN_BLOCKING.has(next)
         ? { sessionId: session.sessionId, agentId: agent.id, kind: event.notificationKind ?? "blocked" }
         : undefined;
 
-    if (HUMAN_BLOCKING.has(next)) agent.blockedReason = event.notificationKind ?? "blocked";
-    else agent.blockedReason = null;
+    // A block's reason is the latest blocking Notification's. One that does
+    // not block (`idle_prompt`, `agent_completed`, or a type astir does not
+    // know, `other`) leaves a standing block's reason as it is: taken as the
+    // reason, it put a `permission_prompt` block outside the listing's rules
+    // (#86), so Esc went unseen and it reminded every minute until main's
+    // next step.
+    if (!HUMAN_BLOCKING.has(next)) agent.blockedReason = null;
+    else if (event.kind === "notification" && BLOCKING_NOTICES.has(event.notificationKind)) {
+      agent.blockedReason = event.notificationKind;
+    }
 
     // What it is doing, for as long as it is doing it. `pre_tool` opens the
     // action and anything else closes it — including `notification`, because an
@@ -550,9 +677,110 @@ export class Registry {
       agent.toolPath = null;
     }
 
-    this.transition(agent, next);
+    // #86 — a `permission_prompt` that reports a dialog already some seconds
+    // old begins the block that long ago (clamped in `transition`).
+    const since =
+      becameBlocked !== undefined &&
+      event.notificationKind === "permission_prompt" &&
+      caps.promptNoticeAgeMs > 0
+        ? this.nowMs() - caps.promptNoticeAgeMs
+        : undefined;
+    this.transition(agent, next, since);
+    if (
+      becameBlocked !== undefined &&
+      caps.listingEndsPermissionBlocks &&
+      agent.id === session.sessionId &&
+      event.notificationKind === "permission_prompt"
+    ) {
+      this.memoryOf(session).blockedFrom = { state: from, block: agent.stateSince };
+    }
 
     return becameBlocked ? { applied: true, becameBlocked } : { applied: true };
+  }
+
+  /**
+   * #86 — an event the main agent's permission block outlasts, because the
+   * listing is watching the screen and the event says nothing about the dialog
+   * on it.
+   *
+   * - `file_changed` never ends one: a watched file changing is not an answer.
+   * - `pre_tool`, `post_tool`, `tool_failed`, `subagent_start`: a parallel call
+   *   finishing, or the next one starting ~0.2 s after an approval with its own
+   *   dialog, is not the end of the block either. Held while the listing has
+   *   said something in the last LISTING_FRESH_MS; past that it is not
+   *   watching, and they end the block as they always did.
+   * - `stop`, likewise, while the listing's latest reading is a dialog.
+   *   General-purpose agents launch in the background (17/17), so main's turn
+   *   Stops while their dialogs are still up: 4 times in the capture after the
+   *   Notification had blocked main, the listing reading `waiting` throughout.
+   *   Ending the block there sent `resolved` with a dialog on screen.
+   *
+   * `session_end` and `session_start` are never held. What a held step would
+   * have done is kept (`heldOutcome`), not dropped: see `settleFromListing`
+   * and `releaseHeld`.
+   */
+  private heldForListing(session: SessionRecord, agent: AgentRecord, event: AstirEvent): boolean {
+    if (agent.id !== session.sessionId) return false;
+    if (agent.state !== "blocked" || agent.blockedReason !== "permission_prompt") return false;
+    if (event.kind === "file_changed") return true;
+    if (!SILENT_ON_DIALOGS.has(event.kind) && event.kind !== "stop") return false;
+    const m = this.listing.get(session);
+    if (m?.informativeAt == null || this.nowMs() - m.informativeAt > LISTING_FRESH_MS) return false;
+    if (event.kind === "stop") return m.screen === "permission-dialog" || m.screen === "other-dialog";
+    return true;
+  }
+
+  private memoryOf(session: SessionRecord): ListingMemory {
+    let m = this.listing.get(session);
+    if (m === undefined) {
+      m = {
+        dialogSeenAt: null,
+        informativeAt: null,
+        screen: null,
+        screenAt: null,
+        heldOutcome: null,
+        blockedFrom: null,
+      };
+      this.listing.set(session, m);
+    }
+    return m;
+  }
+
+  /**
+   * #86 — main's held step, if it was held in the block main is still in.
+   * Taken: it is used once, by whichever rule ends that block.
+   */
+  private takeHeld(m: ListingMemory, main: AgentRecord): ListingMemory["heldOutcome"] {
+    const held = m.heldOutcome;
+    m.heldOutcome = null;
+    if (held === null) return null;
+    const same = main.state === "blocked" && main.blockedReason === "permission_prompt";
+    return same && main.stateSince === held.block ? held : null;
+  }
+
+  /**
+   * #86 rule 7 — the listing has said nothing about the screen for
+   * LISTING_FRESH_MS, so it is no longer what ends main's permission block.
+   * Main's own steps do that again, and the latest one it held while the
+   * listing was still watching counts too, dated when it came. Otherwise a
+   * listing that fails just after reading the dialog would leave the block to
+   * stand on steps that had already been taken: the approved tool's
+   * PostToolUse and the turn's Stop, which arrive once and are not repeated.
+   */
+  private releaseHeld(s: SessionRecord, now: number): void {
+    const m = this.listing.get(s);
+    if (m?.heldOutcome == null) return;
+    if (m.informativeAt !== null && now - m.informativeAt <= LISTING_FRESH_MS) return;
+    const main = s.agents.get(s.sessionId);
+    if (main === undefined) return;
+    const held = this.takeHeld(m, main);
+    if (held === null) return;
+    debug("reconcile", "listing stale; main's held step ends its permission block", {
+      session: s.sessionId,
+      state: held.state,
+    });
+    main.blockedReason = null;
+    this.transition(main, held.state, held.at);
   }
 
   /** Advance wall-clock-derived transitions. Must be called periodically. */
@@ -592,6 +820,8 @@ export class Registry {
         continue;
       }
 
+      this.releaseHeld(s, now);
+
       // The idle timer exists to catch a session that stopped without telling
       // us. It must not fire on one that is simply BUSY — and it did, constantly:
       // `lastActivityMs` only moves when an event arrives, and between
@@ -603,10 +833,16 @@ export class Registry {
       // Discovery already answers this authoritatively, every five seconds, and
       // its answer was being ignored here.
       const providerBusy = s.status !== null && PROVIDER_BUSY.has(s.status);
+      // #86 — the screen shows a permission dialog. An agent mid-tool is then
+      // the one asking, or is running a tool beside it; either way not idle.
+      // A background agent's dialog sat 37 s in the capture, past the 30 s
+      // that idled it (Q3-sub-esc).
+      const dialogUp = this.listing.get(s)?.screen === "permission-dialog";
       for (const a of s.agents.values()) {
         if (IDLE_EXEMPT.has(a.state)) continue;
         // Positive evidence that it is working. Do not contradict it.
         if (providerBusy) continue;
+        if (dialogUp && a.state === "tool-running") continue;
         // With no word from the provider there is nothing to corroborate, so
         // wait far longer before overriding what the hooks last told us — a
         // long build must not be declared idle just because discovery is
@@ -637,22 +873,25 @@ export class Registry {
         return "done";
       case "notification":
         // Only the "come look" kinds are human-blocking.
-        return event.notificationKind === "permission_prompt" ||
-          event.notificationKind === "agent_needs_input" ||
-          event.notificationKind === "worker_permission_prompt"
-          ? "blocked"
-          : current;
+        return BLOCKING_NOTICES.has(event.notificationKind) ? "blocked" : current;
       default:
         return current;
     }
   }
 
-  /** MOD-05 — bank the time spent in the state we are leaving. */
-  private transition(agent: AgentRecord, next: AgentState): void {
+  /**
+   * MOD-05 — bank the time spent in the state we are leaving.
+   *
+   * `since` dates the new state earlier than now (#86: a block that began
+   * before the Notification that reported it). Never before the state being
+   * left began: that time is already the agent's, and banked as such.
+   */
+  private transition(agent: AgentRecord, next: AgentState, since?: number): void {
     const now = this.nowMs();
     if (agent.state === next) return; // not a transition; banking would double-count
 
-    const elapsed = Math.max(0, now - agent.stateSince);
+    const at = since === undefined ? now : Math.min(now, Math.max(since, agent.stateSince));
+    const elapsed = Math.max(0, at - agent.stateSince);
     if (HUMAN_BLOCKING.has(agent.state)) {
       agent.blockedMs += elapsed;
     } else if (WORKING_STATES.has(agent.state)) {
@@ -665,7 +904,7 @@ export class Registry {
     if (TURN_END.has(next)) agent.turnMs = 0;
 
     agent.state = next;
-    agent.stateSince = now;
+    agent.stateSince = at;
     // A new state is a new situation: whatever the human dismissed is over.
     agent.acknowledgedAt = null;
     // And whatever they were told about. Cleared here rather than left for the
@@ -728,11 +967,14 @@ export class Registry {
    */
   reconcile(
     discovered: DiscoveredSession[] | null,
-    opts: { complete?: boolean; provider?: Provider } = {},
+    opts: { complete?: boolean; provider?: Provider; observedAt?: number } = {},
   ): { enriched: number; pruned: number } {
     if (discovered === null) return { enriched: 0, pruned: 0 };
     const complete = opts.complete ?? true;
     const provider: Provider = opts.provider ?? "claude";
+    // #86 — when the poll that produced `discovered` began (`pollInto`). Its
+    // answer is about the screen then, however late it lands.
+    const observedAt = opts.observedAt ?? this.nowMs();
     this.discoveryEverWorked.add(provider);
 
     const live = new Set<string>();
@@ -768,6 +1010,13 @@ export class Registry {
       s.startedAt = d.startedAt;
       if (d.attended !== undefined) s.attended = d.attended;
       if (d.cwd) s.cwd = d.cwd;
+      if (
+        d.screen !== undefined &&
+        s.provider === provider &&
+        CAPABILITIES[provider].listingEndsPermissionBlocks
+      ) {
+        this.settleFromListing(s, d.screen, observedAt);
+      }
       enriched++;
     }
 
@@ -913,6 +1162,69 @@ export class Registry {
           })),
         })),
     };
+  }
+
+  /**
+   * #86 — one listing reading of a session's screen, from a poll begun at
+   * `observedAt`. It never begins a block and never picks an agent: a screen
+   * with nothing on it has no dialog for anyone.
+   *
+   * - A dialog on screen is a sighting (`dialogSeenAt`).
+   * - `at-prompt` ends every `permission_prompt` block in the session: Esc,
+   *   which fires no hook, or an approved tool that has already finished. The
+   *   agent has handed the floor back (`waiting`).
+   * - `working`, from a poll begun ANSWER_SETTLE_MS after the dialog was last
+   *   seen, ends it as answered (`tool-running`), or where main's latest held
+   *   step had taken it. Main's turn may well be over: a held Stop leaves it
+   *   `waiting`, and what the listing sees working is then a background agent
+   *   (which its own hooks report), or the screen before the Stop, from a poll
+   *   begun before it and landing after. With nothing held, a block that began
+   *   with main `waiting` after its Stop (`blockedFrom`) returns it there.
+   *
+   * A block with no sighting at all was restored (DMN-06), which does not save
+   * sightings. Its own Notification stands in for one: the latest it can have
+   * come is promptNoticeAgeMs after the block's date. Without that a busy
+   * listing never ended a block answered while the daemon was down, and rule
+   * 6 held every step main took after it.
+   *
+   * Other reasons (`agent_needs_input`, `worker_permission_prompt`) are left
+   * alone: what the listing shows for them was not measured.
+   */
+  private settleFromListing(s: SessionRecord, screen: SessionScreen, observedAt: number): void {
+    const m = this.memoryOf(s);
+    const seenBefore = m.dialogSeenAt;
+    const noticeAge = CAPABILITIES[s.provider].promptNoticeAgeMs;
+    const blocks = [...s.agents.values()].filter(
+      (a) => a.state === "blocked" && a.blockedReason === "permission_prompt",
+    );
+
+    const dialog = screen === "permission-dialog" || screen === "other-dialog";
+    if (dialog) m.dialogSeenAt = Math.max(m.dialogSeenAt ?? observedAt, observedAt);
+    if (screen !== "other-dialog" || blocks.length > 0) {
+      m.informativeAt = Math.max(m.informativeAt ?? observedAt, observedAt);
+    }
+    if (m.screenAt === null || observedAt >= m.screenAt) {
+      m.screen = screen;
+      m.screenAt = observedAt;
+    }
+
+    for (const a of blocks) {
+      const seen = seenBefore ?? a.stateSince + noticeAge;
+      let next: AgentState | null = null;
+      if (screen === "at-prompt" && observedAt - a.stateSince >= ESC_SETTLE_MS) {
+        next = "waiting";
+      } else if (screen === "working" && seen >= a.stateSince && observedAt - seen >= ANSWER_SETTLE_MS) {
+        const main = a.id === s.sessionId;
+        const held = main ? this.takeHeld(m, a) : null;
+        const from = main && m.blockedFrom?.block === a.stateSince ? m.blockedFrom.state : null;
+        next = held?.state ?? (from === "waiting" ? "waiting" : "tool-running");
+      }
+      if (next === null) continue;
+      debug("reconcile", "listing ended a permission block", { session: s.sessionId, agent: a.id, screen });
+      if (a.id === s.sessionId) m.heldOutcome = null;
+      a.blockedReason = null;
+      this.transition(a, next);
+    }
   }
 
   silent(): DiscoveredSession[] {

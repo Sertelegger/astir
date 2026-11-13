@@ -8,6 +8,8 @@
  */
 
 import { execFile } from "node:child_process";
+import type { Provider } from "../contract/event.js";
+import type { Registry } from "../model/registry.js";
 import { createTtyReader, isAttended, type TtyReader } from "./attended.js";
 import { candidateConfigDirs } from "./profiles.js";
 
@@ -17,6 +19,13 @@ export interface DiscoveredSession {
   pid: number | null;
   /** `status` for attached sessions, `state` for background ones. */
   status: string | null;
+  /**
+   * #86 — what the provider's listing says is on the session's screen, in
+   * astir's words. The lister translates; the registry reads only this, never
+   * a provider's own vocabulary (CAP-02). Absent when the listing says nothing
+   * it can be translated from, and from every lister but Claude's.
+   */
+  screen?: SessionScreen;
   name: string | null;
   /**
    * Epoch ms the session started, when the provider reports it.
@@ -33,6 +42,68 @@ export interface DiscoveredSession {
    * is far worse than listing a background one.
    */
   attended?: boolean;
+}
+
+/**
+ * #86 — what is on a session's screen, as far as a dialog goes. The registry
+ * reads it to END a permission block that no hook ends; nothing here begins
+ * one.
+ *
+ * - `permission-dialog`: a permission dialog is open. Whose, the listing does
+ *   not say.
+ * - `other-dialog`: a dialog is open that is not known to be a permission one
+ *   (a question, an MCP elicitation).
+ * - `at-prompt`: nothing is on screen and the turn is over.
+ * - `working`: nothing is on screen and the session is working.
+ */
+export type SessionScreen = "permission-dialog" | "other-dialog" | "at-prompt" | "working";
+
+/**
+ * #86 — the `waitingFor` that means a permission dialog is open, in `claude
+ * agents --json`, which carries `waitingFor` beside `status: "waiting"`.
+ *
+ * Read live on Claude Code 2.1.322 (test/fixtures/claude/permission-capture.
+ * json) for Bash, Edit, Write, WebFetch, MCP tools and ExitPlanMode's plan
+ * approval (n=20). It is Claude's default for a dialog that declares nothing
+ * else, so plan, goal and sandbox dialogs read it too.
+ *
+ * `waiting` alone is not: AskUserQuestion (n=5) and an MCP elicitation (n=2)
+ * read `"input needed"`, as does an elicitation queued behind whatever is on
+ * top. Those are dialogs as well, just not known to be permission ones.
+ */
+const CLAUDE_PERMISSION_DIALOG = "permission prompt";
+
+/**
+ * #86 — Claude statuses that mean "at its prompt, nothing on screen". `idle`
+ * is what Esc at a dialog read on the first poll after the key (20/20).
+ *
+ * `shell` is Claude's session-file word for idle with a background shell still
+ * running; `--json` folds it into `busy` today (read from the binary), so it is
+ * here for the day that stops, not for anything astir sees now.
+ */
+const CLAUDE_AT_PROMPT = new Set(["idle", "shell"]);
+
+/**
+ * #86 — Claude statuses that mean "working". `--json` says `busy`, which an
+ * approved tool read on the first poll after the key (7 of 11; the other 4
+ * had already finished and read idle). The others are the registry's own
+ * PROVIDER_BUSY words, kept so that nothing read as working before reads as
+ * anything else now.
+ */
+const CLAUDE_WORKING = new Set(["busy", "running", "working"]);
+
+/**
+ * #86 — Claude's listing, in astir's words. Undefined when it says nothing
+ * usable: a session with no status yet (seen only before its SessionStart),
+ * or a word this does not know.
+ */
+export function claudeScreen(status: string | null, waitingFor: string | null): SessionScreen | undefined {
+  if (status === null) return undefined;
+  if (status === "waiting")
+    return waitingFor === CLAUDE_PERMISSION_DIALOG ? "permission-dialog" : "other-dialog";
+  if (CLAUDE_AT_PROMPT.has(status)) return "at-prompt";
+  if (CLAUDE_WORKING.has(status)) return "working";
+  return undefined;
 }
 
 /**
@@ -57,12 +128,41 @@ export interface DiscoveryResult {
 
 export type SessionLister = () => Promise<DiscoveryResult | null>;
 
+/**
+ * DMN-05 — run one poll and fold its answer into the registry. Never throws.
+ *
+ * The clock is read BEFORE the lister is called, and that time travels with
+ * the answer as `observedAt` (#86). A listing describes the screen as it was
+ * around when it was asked, and `claude agents --json` is a child process
+ * that took ~0.5 s per poll and up to 3.6 s (n=3730). Dated on landing, an
+ * answer about the screen before a dialog was dismissed or answered could be
+ * read as being about the screen after it.
+ */
+export function pollInto(
+  lister: SessionLister,
+  registry: Pick<Registry, "reconcile">,
+  provider: Provider,
+  now: () => number = Date.now,
+): Promise<void> {
+  const observedAt = now();
+  return lister()
+    .then((found) => {
+      registry.reconcile(found?.sessions ?? null, {
+        complete: found?.complete ?? false,
+        provider,
+        observedAt,
+      });
+    })
+    .catch(() => undefined);
+}
+
 interface RawAgent {
   sessionId?: unknown;
   cwd?: unknown;
   pid?: unknown;
   status?: unknown;
   state?: unknown;
+  waitingFor?: unknown;
   name?: unknown;
   startedAt?: unknown;
 }
@@ -79,14 +179,19 @@ export function parseAgentsJson(stdout: string): DiscoveredSession[] | null {
   const out: DiscoveredSession[] = [];
   for (const item of parsed as RawAgent[]) {
     if (typeof item?.sessionId !== "string") continue; // a session with no id is useless to us
+    const status =
+      typeof item.status === "string" ? item.status : typeof item.state === "string" ? item.state : null;
+    // #86 — `waitingFor` is read here and goes no further: the row carries
+    // astir's word for it (`screen`), never Claude's.
+    const screen = claudeScreen(status, typeof item.waitingFor === "string" ? item.waitingFor : null);
     out.push({
       sessionId: item.sessionId,
       cwd: typeof item.cwd === "string" ? item.cwd : "",
       pid: typeof item.pid === "number" ? item.pid : null,
-      status:
-        typeof item.status === "string" ? item.status : typeof item.state === "string" ? item.state : null,
+      status,
       name: typeof item.name === "string" ? item.name : null,
       startedAt: typeof item.startedAt === "number" ? item.startedAt : null,
+      ...(screen === undefined ? {} : { screen }),
     });
   }
   return out;
