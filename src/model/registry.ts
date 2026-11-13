@@ -118,6 +118,13 @@ interface ListingMemory {
    * next. The outcome only, never the event.
    */
   heldOutcome: { state: AgentState; at: number; block: number } | null;
+  /**
+   * The state main's permission block began from, and the block (its
+   * `stateSince`). Main's own dialog always follows its PreToolUse, so a block
+   * that begins with main at its prompt is a background agent's dialog, and
+   * main's turn is over whatever the listing reads once it is answered.
+   */
+  blockedFrom: { state: AgentState; block: number } | null;
 }
 
 export interface AgentRecord {
@@ -630,6 +637,7 @@ export class Registry {
     }
 
     const next = this.nextState(event, agent.state);
+    const from = agent.state;
     const becameBlocked =
       next !== agent.state && HUMAN_BLOCKING.has(next)
         ? { sessionId: session.sessionId, agentId: agent.id, kind: event.notificationKind ?? "blocked" }
@@ -659,6 +667,14 @@ export class Registry {
         ? this.nowMs() - caps.promptNoticeAgeMs
         : undefined;
     this.transition(agent, next, since);
+    if (
+      becameBlocked !== undefined &&
+      caps.listingEndsPermissionBlocks &&
+      agent.id === session.sessionId &&
+      event.notificationKind === "permission_prompt"
+    ) {
+      this.memoryOf(session).blockedFrom = { state: from, block: agent.stateSince };
+    }
 
     return becameBlocked ? { applied: true, becameBlocked } : { applied: true };
   }
@@ -698,7 +714,14 @@ export class Registry {
   private memoryOf(session: SessionRecord): ListingMemory {
     let m = this.listing.get(session);
     if (m === undefined) {
-      m = { dialogSeenAt: null, informativeAt: null, screen: null, screenAt: null, heldOutcome: null };
+      m = {
+        dialogSeenAt: null,
+        informativeAt: null,
+        screen: null,
+        screenAt: null,
+        heldOutcome: null,
+        blockedFrom: null,
+      };
       this.listing.set(session, m);
     }
     return m;
@@ -1140,7 +1163,8 @@ export class Registry {
    *   step had taken it. Main's turn may well be over: a held Stop leaves it
    *   `waiting`, and what the listing sees working is then a background agent
    *   (which its own hooks report), or the screen before the Stop, from a poll
-   *   begun before it and landing after.
+   *   begun before it and landing after. With nothing held, a block that began
+   *   with main at its prompt (`blockedFrom`) returns it there.
    *
    * A block with no sighting at all was restored (DMN-06), which does not save
    * sightings. Its own Notification stands in for one: the latest it can have
@@ -1175,8 +1199,10 @@ export class Registry {
       if (screen === "at-prompt" && observedAt - a.stateSince >= ESC_SETTLE_MS) {
         next = "waiting";
       } else if (screen === "working" && seen >= a.stateSince && observedAt - seen >= ANSWER_SETTLE_MS) {
-        const held = a.id === s.sessionId ? this.takeHeld(m, a) : null;
-        next = held?.state ?? "tool-running";
+        const main = a.id === s.sessionId;
+        const held = main ? this.takeHeld(m, a) : null;
+        const from = main && m.blockedFrom?.block === a.stateSince ? m.blockedFrom.state : null;
+        next = held?.state ?? (from !== null && TURN_END.has(from) ? from : "tool-running");
       }
       if (next === null) continue;
       debug("reconcile", "listing ended a permission block", { session: s.sessionId, agent: a.id, screen });

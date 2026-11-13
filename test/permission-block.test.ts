@@ -846,6 +846,69 @@ describe("rules 5 and 7 — a step the hold kept off the block is not forgotten"
     expect(r.main()?.state).toBe("waiting");
   });
 
+  it("Q2-sub-slow's opening: main had Stopped before the block began; its agent's dialog answered, main is back at its prompt", async () => {
+    // Main launched two background agents and Stopped at 3650, before the
+    // Notification at 9229, so the block began from `waiting`, with no Stop of
+    // main's to hold. Main's own dialog always follows its PreToolUse; one that
+    // comes while main is at its prompt is a background agent's. The capture's
+    // hooks and readings (phase 2) up to the poll begun at 12429, which read
+    // sub2's queued dialog; here it reads busy instead, as it would had sub1's
+    // been the only dialog. That one reading is not from the capture.
+    const tl = timeline("Q2-sub-slow");
+    const stop = eventAt(tl, "Stop", "main", 0);
+    expect(stop.t).toBeLessThan(firstNotice(tl));
+    const next = tl.polls[12];
+    expect(next).toMatchObject({ start: 12_429, end: 13_008, waitingFor: "permission prompt" });
+    if (next === undefined) return;
+    const { r } = await replay(tl, { phase: 2, until: next.end - 1 });
+    expect(r.main()?.state).toBe("blocked");
+    r.at(next.end).poll(next.start, "busy");
+    expect(r.blocked()).toEqual([]);
+    expect(r.main()?.state).toBe("waiting");
+  });
+
+  it("…while a block that began with main mid-tool ends with the tool running, as before (B4)", () => {
+    const tl = timeline("B4-bash-slow-approve");
+    const r = rig();
+    r.at(eventAt(tl, "PreToolUse", "main").t).hook("PreToolUse", { tool: "Bash" });
+    r.at(firstNotice(tl)).hook("Notification", { notificationType: "permission_prompt" });
+    const busy = tl.polls.find((p) => p.start > firstNotice(tl) + 2_000 && p.status === "busy");
+    if (busy === undefined) throw new Error("no busy poll");
+    r.at(busy.end).poll(busy.start, busy.status, busy.waitingFor);
+    expect(r.main()?.state).toBe("tool-running");
+  });
+
+  it("Q2c-mixed: a block that began with main thinking between parallel calls ends with the tool running", () => {
+    // Main's Read awaits its answer while the parallel Bash's PostToolUse, 496
+    // ms before the Notification, left main `thinking`: only a turn that is
+    // over says main has nothing running. The busy reading is the one thing
+    // not captured: there, the Read's PostToolUse came 42 ms after the key.
+    const tl = timeline("Q2c-mixed");
+    const n = firstNotice(tl);
+    const r = rig();
+    for (const e of tl.events.filter((e) => e.t <= n && SUBSCRIBED.has(e.hook))) r.at(e.t).hook(e.hook, e);
+    expect(r.main()?.state).toBe("blocked");
+    r.at(n + 6_500).poll(n + 6_000, "busy");
+    expect(r.main()?.state).toBe("tool-running");
+  });
+
+  it("the state a block began from is that block's: one that became a permission block by a later Notification ends with the tool running", () => {
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { tool: "Agent" });
+    r.at(1_100).hook("PostToolUse", { tool: "Agent" });
+    r.at(1_200).hook("Stop");
+    r.at(7_000).hook("Notification", { notificationType: "permission_prompt" }); // from `waiting`
+    r.at(8_500).poll(8_000, "idle");
+    expect(r.main()?.state).toBe("waiting");
+    r.at(10_000).hook("PreToolUse", { tool: "Bash" });
+    r.at(16_000).hook("Notification", { notificationType: "agent_needs_input" }); // from `tool-running`
+    r.at(16_500).hook("Notification", { notificationType: "permission_prompt" });
+    expect(r.main()?.blockedReason).toBe("permission_prompt");
+    r.at(17_500).poll(17_000, "waiting", "permission prompt");
+    r.at(20_000).poll(19_500, "busy");
+    expect(r.main()?.state).toBe("tool-running");
+  });
+
   it("B2: the listing fails just before the approval — main's held PostToolUse and Stop take effect 12 s after its last reading", async () => {
     // B2's own hooks and readings up to the last poll before the approval,
     // then a listing that answers nothing (a failed spawn: `reconcile(null)`).
@@ -910,6 +973,18 @@ describe("rules 5 and 7 — a step the hold kept off the block is not forgotten"
     expect(r.main()?.state).toBe("thinking");
     expect(r.main()?.stateSince).toBe(BASE + 9_000);
     expect(r.main()?.blockedReason).toBeNull();
+  });
+
+  it("a held step does not end the block once a later Notification has made it an agent_needs_input block (rule 8)", () => {
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { tool: "Bash" });
+    r.at(7_000).hook("Notification", { notificationType: "permission_prompt" });
+    r.at(8_000).poll(7_500, "waiting", "permission prompt");
+    r.at(9_000).hook("Stop"); // held
+    r.at(9_500).hook("Notification", { notificationType: "agent_needs_input" });
+    r.at(30_000).registry.tick();
+    expect(r.main()?.state).toBe("blocked");
+    expect(r.main()?.blockedReason).toBe("agent_needs_input");
   });
 
   it("a step held in one block says nothing about the next", () => {
@@ -990,6 +1065,30 @@ describe("DMN-06 — a restored permission block", () => {
     const post = eventAt(tl, "PostToolUse", "main");
     after.at(post.t).hook("PostToolUse", post);
     expect(after.main()?.state).toBe("thinking");
+  });
+
+  it("the stand-in sighting is the latest the Notification can have come: the block's date + promptNoticeAgeMs", () => {
+    // The rule's boundary, not a captured restart: a restarted daemon's
+    // settling poll comes a full poll after its adopting one.
+    const n = firstNotice(tl);
+    const before = rig();
+    before.at(eventAt(tl, "PreToolUse", "main").t).hook("PreToolUse", { tool: "Bash" });
+    const listed = tl.polls.filter((p) => p.end < n).at(-1); // the pid and start the restore matches on
+    if (listed === undefined) throw new Error("no poll");
+    before.at(listed.end).poll(listed.start, listed.status, listed.waitingFor);
+    before.at(n).hook("Notification", { notificationType: "permission_prompt" });
+    expect(before.main()?.stateSince).toBe(BASE + n - 5_000);
+    const snap = before.registry.snapshot();
+    for (const [start, state] of [
+      [n + 1_999, "blocked"],
+      [n + 2_000, "tool-running"],
+    ] as const) {
+      const after = rig();
+      after.registry.stageRestore(snap);
+      after.at(n + 100).poll(n, "busy"); // adopts
+      after.at(start + 500).poll(start, "busy");
+      expect(after.main()?.state, `begun ${start - n} ms after the Notification`).toBe(state);
+    }
   });
 
   it("still up after the restart: a reading of the dialog is a sighting, and the answer ends it as usual", () => {
@@ -1211,6 +1310,7 @@ describe("what the listing tells the registry stays in memory, on no surface", (
     "dialogSeenAt",
     "informativeAt",
     "heldOutcome",
+    "blockedFrom",
     "waitingFor",
     "permission-dialog",
     "input needed",
