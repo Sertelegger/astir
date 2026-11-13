@@ -179,7 +179,8 @@ release is cut, named and published is in
   listing stops answering while a prompt is up, the agent's steps since its
   last answer count 12 s after that answer: an approved prompt clears then
   rather than at once. So does a background agent's prompt that is still up,
-  if the main agent's turn has ended: astir sends `resolved` for it.
+  if the main agent's turn ended while it was up: astir sends `resolved` for
+  it.
 - **A Codex permission alert waits 30 seconds, not 5.** Codex's automatic
   reviewer answers many requests itself, and the one captured took ~12s; a
   shorter wait would alert you about decisions that were never yours. The

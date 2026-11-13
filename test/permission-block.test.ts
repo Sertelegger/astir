@@ -892,6 +892,19 @@ describe("rules 5 and 7 — a step the hold kept off the block is not forgotten"
     expect(r.main()?.state).toBe("tool-running");
   });
 
+  it("a block that began with main idle ends with the tool running: decay is not a Stop", () => {
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { tool: "Agent" });
+    r.at(1_100).hook("PostToolUse", { tool: "Agent" });
+    r.at(2_000).poll(1_500, "idle");
+    r.at(40_000).registry.tick();
+    expect(r.main()?.state).toBe("idle");
+    r.at(46_000).hook("Notification", { notificationType: "permission_prompt" });
+    r.at(47_000).poll(46_500, "waiting", "permission prompt");
+    r.at(49_500).poll(49_000, "busy");
+    expect(r.main()?.state).toBe("tool-running");
+  });
+
   it("the state a block began from is that block's: one that became a permission block by a later Notification ends with the tool running", () => {
     const r = rig();
     r.at(1_000).hook("PreToolUse", { tool: "Agent" });

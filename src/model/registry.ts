@@ -121,8 +121,9 @@ interface ListingMemory {
   /**
    * The state main's permission block began from, and the block (its
    * `stateSince`). Main's own dialog always follows its PreToolUse, so a block
-   * that begins with main at its prompt is a background agent's dialog, and
-   * main's turn is over whatever the listing reads once it is answered.
+   * that begins with main `waiting` after its Stop is a background agent's
+   * dialog, and main's turn is over whatever the listing reads once it is
+   * answered. `idle` is not that: it is decay, with no Stop seen.
    */
   blockedFrom: { state: AgentState; block: number } | null;
 }
@@ -1164,7 +1165,7 @@ export class Registry {
    *   `waiting`, and what the listing sees working is then a background agent
    *   (which its own hooks report), or the screen before the Stop, from a poll
    *   begun before it and landing after. With nothing held, a block that began
-   *   with main at its prompt (`blockedFrom`) returns it there.
+   *   with main `waiting` after its Stop (`blockedFrom`) returns it there.
    *
    * A block with no sighting at all was restored (DMN-06), which does not save
    * sightings. Its own Notification stands in for one: the latest it can have
@@ -1202,7 +1203,7 @@ export class Registry {
         const main = a.id === s.sessionId;
         const held = main ? this.takeHeld(m, a) : null;
         const from = main && m.blockedFrom?.block === a.stateSince ? m.blockedFrom.state : null;
-        next = held?.state ?? (from !== null && TURN_END.has(from) ? from : "tool-running");
+        next = held?.state ?? (from === "waiting" ? "waiting" : "tool-running");
       }
       if (next === null) continue;
       debug("reconcile", "listing ended a permission block", { session: s.sessionId, agent: a.id, screen });
