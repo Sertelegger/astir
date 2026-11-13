@@ -149,10 +149,10 @@ release is cut, named and published is in
     something else.
   - Approving a prompt clears it within one poll too, so an approved command
     that runs for a while no longer keeps reminding you.
-  - A Claude notification that asks nothing of you (an idle or finished
-    agent, or a kind astir does not know, such as an MCP elicitation's)
-    arriving while a prompt is up leaves that prompt's alert as it was, so
-    Esc and approvals still clear it.
+  - A Claude notification of another kind (an idle or finished agent, or one
+    astir does not recognise, such as an MCP elicitation's) arriving while a
+    prompt is up leaves that prompt's alert as it was, so Esc and approvals
+    still clear it.
   - Back-to-back dialogs, where approving one brings up the next, are one
     block: one alert, then reminders, and dismissing it covers both.
   - A Claude permission block is shown on the session's main agent, whichever
