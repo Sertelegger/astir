@@ -154,7 +154,10 @@ release is cut, named and published is in
   - A Claude permission block is shown on the session's main agent, whichever
     agent's dialog it is: Claude's notification does not say. "Take me there"
     still lands on the right pane. When the main agent's turn ends while a
-    background agent's dialog is still up, the alert stands.
+    background agent's dialog is still up, the alert stands, and once that
+    dialog is answered the main agent shows as at its prompt, not working.
+  - A prompt answered while the astir daemon was down clears on the second
+    poll after it restarts (the first only picks the session back up).
   - No new hook and nothing new on disk. Codex is unchanged.
 - The release checklist now includes updating the installed plugin. Bumping
   `marketplace.json` lets an install see that a new version exists; it does not
@@ -172,7 +175,11 @@ release is cut, named and published is in
   keep typing in that terminal the whole time, astir is never told, as before.
 - **Without a working session listing, Esc is not seen.** Where
   `claude agents --json` cannot run, or does not list the session, a dismissed
-  Claude prompt stays blocked until the agent's next step, as before.
+  Claude prompt stays blocked until the agent's next step, as before. If the
+  listing stops answering while a prompt is up, the agent's steps since its
+  last answer count 12 s after that answer: an approved prompt clears then
+  rather than at once. So does a background agent's prompt that is still up,
+  if the main agent's turn has ended: astir sends `resolved` for it.
 - **A Codex permission alert waits 30 seconds, not 5.** Codex's automatic
   reviewer answers many requests itself, and the one captured took ~12s; a
   shorter wait would alert you about decisions that were never yours. The

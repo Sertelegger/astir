@@ -213,14 +213,8 @@ interface Sent {
   kind: string;
 }
 
-/**
- * Replay a captured step: its hooks (those astir subscribes to) through the
- * real normalizer, every DAEMON_POLL_EVERY-th captured poll landing at its end
- * and dated from its start (`pollInto`), and the daemon's 1 s tick + pulse.
- */
-async function replay(tl: Timeline, opts: { phase?: number; polls?: boolean; until?: number } = {}) {
-  const phase = opts.phase ?? 0;
-  const r = rig();
+/** The daemon's notify loop over `r`, recording what it sends and when (ms into the step). */
+function notifier(r: ReturnType<typeof rig>) {
   const sent: Sent[] = [];
   const target: DeliveryTarget = {
     name: "test",
@@ -236,10 +230,49 @@ async function replay(tl: Timeline, opts: { phase?: number; polls?: boolean; unt
     dispatcher: new Dispatcher([target]),
     now: r.now,
   });
+  return { loop, sent };
+}
+
+/** Main's state after each replayed step, and main's own last step (hook) by then. */
+interface Traced {
+  t: number;
+  state: string | undefined;
+  lastMainHook: string | null;
+}
+
+/**
+ * Replay a captured step: its hooks (those astir subscribes to) through the
+ * real normalizer, every DAEMON_POLL_EVERY-th captured poll landing at its end
+ * and dated from its start (`pollInto`), and the daemon's 1 s tick + pulse.
+ */
+async function replay(
+  tl: Timeline,
+  opts: {
+    phase?: number;
+    polls?: boolean;
+    until?: number;
+    /** Something the person does, at a time in the step (after that ms's hooks, polls and pulse). */
+    also?: Array<{ at: number; run: (r: ReturnType<typeof rig>) => unknown }>;
+  } = {},
+) {
+  const phase = opts.phase ?? 0;
+  const r = rig();
+  const { loop, sent } = notifier(r);
+  const trace: Traced[] = [];
+  let lastMainHook: string | null = null;
   const steps: Array<{ at: number; order: number; run: () => unknown }> = [];
   for (const e of tl.events) {
     if (!SUBSCRIBED.has(e.hook)) continue;
-    steps.push({ at: e.t, order: 0, run: () => r.hook(e.hook, e) });
+    steps.push({
+      at: e.t,
+      order: 0,
+      run: () => {
+        r.hook(e.hook, e);
+        // Main's own steps. Its Notification is about a dialog, not a step:
+        // it names no agent (0/69), and may be a background agent's.
+        if (e.agent === "main" && e.hook !== "Notification") lastMainHook = e.hook;
+      },
+    });
   }
   const polls = opts.polls === false ? [] : tl.polls.filter((_, i) => i % DAEMON_POLL_EVERY === phase);
   for (const p of polls)
@@ -256,13 +289,15 @@ async function replay(tl: Timeline, opts: { phase?: number; polls?: boolean; unt
       },
     });
   }
+  for (const a of opts.also ?? []) steps.push({ at: a.at, order: 3, run: () => a.run(r) });
   steps.sort((a, b) => a.at - b.at || a.order - b.order);
   for (const s of steps) {
     if (s.at > until) break;
     r.at(s.at);
     await s.run();
+    trace.push({ t: s.at, state: r.main()?.state, lastMainHook });
   }
-  return { r, sent, polls };
+  return { r, sent, polls, trace };
 }
 
 const PHASES = [0, 1, 2, 3, 4];
@@ -375,6 +410,19 @@ describe("rule 2 — the Notification's block is dated promptNoticeAgeMs back", 
     expect(r.main()?.stateSince).toBe(since);
   });
 
+  it("only a permission_prompt is dated back: agent_needs_input and worker_permission_prompt begin when they arrive", () => {
+    // promptNoticeAgeMs is measured for permission_prompt alone (n=53). What
+    // delays Claude's other "come look" Notifications was not measured.
+    for (const kind of ["agent_needs_input", "worker_permission_prompt"]) {
+      const r = rig();
+      r.at(1_000).hook("PreToolUse", { tool: "Bash" });
+      r.at(8_000).hook("Notification", { notificationType: kind });
+      expect(r.main()?.state, kind).toBe("blocked");
+      expect(r.main()?.blockedReason, kind).toBe(kind);
+      expect(r.main()?.stateSince, kind).toBe(BASE + 8_000);
+    }
+  });
+
   it("Codex: no notice age, so its block is dated from the event, and its own next event ends it, as before", () => {
     let t = 50_000;
     const registry = new Registry({ nowMs: () => t });
@@ -445,6 +493,18 @@ describe("rule 4 — Esc: the listing reads at-prompt", () => {
     expect(r.main()?.state).toBe("blocked");
     expect(r.main()?.blockedReason).toBe("agent_needs_input");
   });
+
+  it("rule 8: nor is a worker_permission_prompt block, by at-prompt or by working", () => {
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { tool: "Bash" });
+    r.at(8_000).hook("Notification", { notificationType: "worker_permission_prompt" });
+    r.at(9_000).poll(8_500, "waiting", "permission prompt");
+    r.at(15_000).poll(14_000, "busy");
+    expect(r.main()?.state).toBe("blocked");
+    r.at(20_000).poll(19_000, "idle");
+    expect(r.main()?.state).toBe("blocked");
+    expect(r.main()?.blockedReason).toBe("worker_permission_prompt");
+  });
 });
 
 describe("rules 3 and 5 — answered: working after the dialog was seen", () => {
@@ -489,6 +549,23 @@ describe("rules 3 and 5 — answered: working after the dialog was seen", () => 
     r.at(n + 4_500).poll(n + 4_000, "waiting", "permission prompt");
     r.at(n + 6_500).poll(n + 5_999, "busy");
     expect(r.main()?.state).toBe("blocked");
+    r.at(n + 6_600).poll(n + 6_000, "busy");
+    expect(r.main()?.state).toBe("tool-running");
+  });
+
+  it("a sighting only moves forward: an older poll's answer landing late does not move it back", () => {
+    // A poll took up to 3.5 s in the capture (n=3730), and the daemon starts
+    // the next one on its 5 s timer whether or not the last has answered, so
+    // answers can land out of order.
+    const tl = timeline("B4-bash-slow-approve");
+    const n = firstNotice(tl);
+    const r = rig();
+    r.at(eventAt(tl, "PreToolUse", "main").t).hook("PreToolUse", { tool: "Bash" });
+    r.at(n).hook("Notification", { notificationType: "permission_prompt" });
+    r.at(n + 4_500).poll(n + 4_000, "waiting", "permission prompt");
+    r.at(n + 4_600).poll(n + 3_000, "waiting", "permission prompt");
+    r.at(n + 6_500).poll(n + 5_999, "busy");
+    expect(r.main()?.state, "under 2 s after the newer sighting").toBe("blocked");
     r.at(n + 6_600).poll(n + 6_000, "busy");
     expect(r.main()?.state).toBe("tool-running");
   });
@@ -575,6 +652,26 @@ describe("rule 6 — while the listing can see, main's own progress is not an an
     expect(degraded.main()?.state).toBe("thinking");
   });
 
+  it("each of main's tool hooks is held: PreToolUse, PostToolUse, PostToolUseFailure", () => {
+    for (const hook of ["PreToolUse", "PostToolUse", "PostToolUseFailure"]) {
+      const r = rig();
+      r.at(1_000).hook("PreToolUse", { tool: "Bash" });
+      r.at(7_000).hook("Notification", { notificationType: "permission_prompt" });
+      r.at(8_000).poll(7_500, "waiting", "permission prompt");
+      r.at(9_000).hook(hook, { tool: "Bash" });
+      expect(r.main()?.state, hook).toBe("blocked");
+    }
+  });
+
+  it("rule 8: the hold is a permission block's alone — main's next step ends an agent_needs_input block whatever the listing reads", () => {
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { tool: "Bash" });
+    r.at(8_000).hook("Notification", { notificationType: "agent_needs_input" });
+    r.at(9_000).poll(8_500, "waiting", "permission prompt");
+    r.at(9_500).hook("PostToolUse", { tool: "Bash" });
+    expect(r.main()?.state).toBe("thinking");
+  });
+
   it("rule 7: with no listing at all (discovery down, an unlisted session), main's progress ends it as on main", () => {
     const r = rig();
     r.at(1_000).hook("PreToolUse", { tool: "Bash" });
@@ -621,6 +718,9 @@ describe("rule 6 — while the listing can see, main's own progress is not an an
     r.at(1_000).hook("PreToolUse", { tool: "Bash" });
     r.at(7_000).hook("Notification", { notificationType: "permission_prompt" });
     r.at(8_000).hook("FileChanged");
+    expect(r.main()?.state).toBe("blocked");
+    // Nor later, as a step kept for when the listing stops watching (rule 7).
+    r.at(30_000).registry.tick();
     expect(r.main()?.state).toBe("blocked");
   });
 
@@ -683,6 +783,257 @@ describe("rule 9 — an agent mid-tool is not idled while a permission dialog is
     r.registry.tick();
     expect(r.agent("sub1")?.state).toBe("idle");
   });
+
+  it("not while the screen reads only 'input needed': a question is not a permission dialog", () => {
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { agent: "sub1", agentType: "general-purpose", tool: "Bash" });
+    r.at(2_000).poll(1_500, "waiting", "input needed");
+    r.at(40_000).registry.tick();
+    expect(r.agent("sub1")?.state).toBe("idle");
+  });
+
+  it("and only for an agent mid-tool: one between tools decays as before", () => {
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { agent: "sub1", agentType: "general-purpose", tool: "Bash" });
+    r.at(1_500).hook("PostToolUse", { agent: "sub1", agentType: "general-purpose", tool: "Bash" });
+    expect(r.agent("sub1")?.state).toBe("thinking");
+    r.at(2_000).poll(1_500, "waiting", "permission prompt");
+    r.at(40_000).registry.tick();
+    expect(r.agent("sub1")?.state).toBe("idle");
+  });
+});
+
+describe("rules 5 and 7 — a step the hold kept off the block is not forgotten", () => {
+  it("Q1-ask-answer: a busy poll begun before main's Stop and landing after it leaves main at its prompt, not working", async () => {
+    // At the daemon's cadence (phase 0) the poll begun at 20420 read busy — the
+    // question was answered at 19953 — and landed at 21114, 42 ms after main's
+    // Stop. That Stop was held: the latest reading then was 'input needed'.
+    // Ending the block as `tool-running` there left main working, with nothing
+    // to move it on, until the idle timeout ~30 s later. On ec3ac3a main was
+    // `waiting` from its Stop.
+    const tl = timeline("Q1-ask-answer");
+    const stop = eventAt(tl, "Stop", "main");
+    const straddler = tl.polls.find((p) => p.start < stop.t && p.end > stop.t);
+    expect(straddler).toMatchObject({ start: 20_420, end: 21_114, status: "busy" });
+    expect(tl.polls.indexOf(straddler as CapPoll) % DAEMON_POLL_EVERY).toBe(0);
+    if (straddler === undefined) return;
+    const { r } = await replay(tl, { phase: 0, until: stop.t });
+    expect(r.main()?.state, "the Stop is held").toBe("blocked");
+    r.at(straddler.end).poll(straddler.start, straddler.status, straddler.waitingFor);
+    expect(r.main()?.state).toBe("waiting");
+    expect(r.blocked()).toEqual([]);
+    // Nothing banked as work after the block began (dated 5 s before the
+    // Notification): the time before it, and no more.
+    expect(r.main()?.activeMs).toBe(firstNotice(tl) - 5_000 - eventAt(tl, "PreToolUse", "main").t);
+    r.at(straddler.end + 60_000).registry.tick();
+    expect(r.main()?.state).toBe("waiting");
+  });
+
+  it("Q2-sub-slow: main Stopped under a background agent's dialog; once it is approved and the agent works on, main stays at its prompt", async () => {
+    // The listing reads busy while the approved agent runs. That is the
+    // agent's work, which its own hooks report; main's turn ended at its Stop.
+    const tl = timeline("Q2-sub-slow");
+    const stop = eventAt(tl, "Stop", "main", 1);
+    const approve = tl.actions.filter((a) => a.action === "key Enter").at(-1);
+    if (approve === undefined) throw new Error("no approval");
+    const busyIndex = tl.polls.findIndex((p) => p.end > approve.t && p.status === "busy");
+    const busy = tl.polls[busyIndex];
+    if (busy === undefined) throw new Error("no busy poll after the approval");
+    const phase = busyIndex % DAEMON_POLL_EVERY;
+    const { r } = await replay(tl, { phase, until: busy.end });
+    expect(stop.t).toBeLessThan(approve.t);
+    expect(r.blocked()).toEqual([]);
+    expect(r.main()?.state).toBe("waiting");
+  });
+
+  it("B2: the listing fails just before the approval — main's held PostToolUse and Stop take effect 12 s after its last reading", async () => {
+    // B2's own hooks and readings up to the last poll before the approval,
+    // then a listing that answers nothing (a failed spawn: `reconcile(null)`).
+    // The failure is the one thing not captured. With the hooks dropped, as C+
+    // first had it, nothing ever ended the block: still blocked, and
+    // reminding every minute, 15 minutes on. On ec3ac3a, `waiting` at the Stop.
+    const tl = timeline("B2-bash-approve");
+    const approve = tl.actions.find((a) => a.action.startsWith("approve"));
+    if (approve === undefined) throw new Error("no approval");
+    const last = tl.polls.filter((p) => p.end < approve.t).at(-1);
+    if (last === undefined) throw new Error("no poll");
+    expect(last.waitingFor).toBe("permission prompt");
+    const post = eventAt(tl, "PostToolUse", "main");
+    const stop = eventAt(tl, "Stop", "main");
+    const stale = last.start + 12_000;
+    expect(stop.t).toBeLessThan(stale);
+
+    const r = rig();
+    const { loop, sent } = notifier(r);
+    const steps: Array<{ at: number; order: number; run: () => unknown }> = [];
+    for (const e of tl.events.filter((e) => SUBSCRIBED.has(e.hook)))
+      steps.push({ at: e.t, order: 0, run: () => r.hook(e.hook, e) });
+    for (const p of tl.polls.filter((p) => p.end <= last.end))
+      steps.push({ at: p.end, order: 1, run: () => r.poll(p.start, p.status, p.waitingFor) });
+    for (let ms = Math.ceil(last.end / 5_000) * 5_000; ms <= 15 * 60_000; ms += 5_000)
+      steps.push({ at: ms, order: 1, run: () => r.registry.reconcile(null, { provider: "claude" }) });
+    for (let ms = 0; ms <= 15 * 60_000; ms += 1_000)
+      steps.push({
+        at: ms,
+        order: 2,
+        run: async () => {
+          r.registry.tick();
+          await loop.pulse();
+        },
+      });
+    steps.sort((a, b) => a.at - b.at || a.order - b.order);
+    let waitingAt: number | null = null;
+    for (const s of steps) {
+      r.at(s.at);
+      await s.run();
+      if (s.at >= post.t && s.at <= stale) expect(r.main()?.state, `held at ${s.at}`).toBe("blocked");
+      if (waitingAt === null && r.main()?.state === "waiting") waitingAt = s.at;
+    }
+    expect(waitingAt).not.toBeNull();
+    expect((waitingAt ?? 0) - stale).toBeGreaterThan(0);
+    expect((waitingAt ?? 0) - stale).toBeLessThanOrEqual(1_000);
+    // Dated at the Stop that was held, as ec3ac3a would have had it.
+    expect(r.main()?.stateSince).toBe(BASE + stop.t);
+    expect(r.main()?.state).toBe("waiting");
+    expect(sent.map((s) => s.kind)).toEqual(["blocked", "resolved"]);
+  });
+
+  it("a held PostToolUse alone puts main back to thinking once the listing has said nothing for 12 s", () => {
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { tool: "Bash" });
+    r.at(7_000).hook("Notification", { notificationType: "permission_prompt" });
+    r.at(8_000).poll(7_500, "waiting", "permission prompt");
+    r.at(9_000).hook("PostToolUse", { tool: "Bash" });
+    r.at(19_500).registry.tick();
+    expect(r.main()?.state, "12 s after the reading, not more").toBe("blocked");
+    r.at(19_501).registry.tick();
+    expect(r.main()?.state).toBe("thinking");
+    expect(r.main()?.stateSince).toBe(BASE + 9_000);
+    expect(r.main()?.blockedReason).toBeNull();
+  });
+
+  it("a step held in one block says nothing about the next", () => {
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { tool: "Bash" });
+    r.at(7_000).hook("Notification", { notificationType: "permission_prompt" });
+    r.at(8_000).poll(7_500, "waiting", "permission prompt");
+    r.at(8_200).hook("PostToolUse", { tool: "Bash" }); // held
+    // Busy, but under 2 s after the sighting: not an answer, though the
+    // screen now reads working, so the Stop is not held and ends the block.
+    r.at(9_000).poll(8_500, "busy");
+    r.at(9_200).hook("Stop");
+    expect(r.main()?.state).toBe("waiting");
+    r.at(10_000).registry.tick();
+    r.at(15_000).hook("PreToolUse", { tool: "Bash" });
+    r.at(21_000).hook("Notification", { notificationType: "permission_prompt" });
+    r.at(23_500).poll(23_000, "busy");
+    expect(
+      r.main()?.state,
+      "answered: the asked tool runs; the first block's PostToolUse is long spent",
+    ).toBe("tool-running");
+  });
+
+  it("…but never while the listing keeps answering: a background agent's dialog outlives main's turn", () => {
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { tool: "Agent" });
+    r.at(1_100).hook("PostToolUse", { tool: "Agent" });
+    r.at(7_000).hook("Notification", { notificationType: "permission_prompt" });
+    r.at(8_000).poll(7_500, "waiting", "permission prompt");
+    r.at(9_000).hook("Stop");
+    for (let ms = 10_000; ms <= 120_000; ms += 1_000) {
+      if (ms % 5_000 === 0) r.at(ms + 500).poll(ms, "waiting", "permission prompt");
+      r.at(ms + 600).registry.tick();
+    }
+    expect(r.main()?.state).toBe("blocked");
+  });
+});
+
+describe("DMN-06 — a restored permission block", () => {
+  // A restart cannot be captured. These are B4's hooks and readings, with the
+  // daemon down from just after one reading to just before another; what the
+  // listing read after the restart is what it read then. The first poll after
+  // a restart only adopts the saved session.
+  const tl = timeline("B4-bash-slow-approve");
+  const approve = tl.actions.find((a) => a.action.startsWith("approve"));
+  if (approve === undefined) throw new Error("no approval");
+
+  /** The registry the daemon restarts with, the last poll before it went down being `last`. */
+  function restoredAfter(last: CapPoll) {
+    const before = rig();
+    before.at(eventAt(tl, "PreToolUse", "main").t).hook("PreToolUse", { tool: "Bash" });
+    before.at(firstNotice(tl)).hook("Notification", { notificationType: "permission_prompt" });
+    for (const p of tl.polls.filter((p) => p.end <= last.end && p.end > firstNotice(tl)))
+      before.at(p.end).poll(p.start, p.status, p.waitingFor);
+    expect(before.main()?.state).toBe("blocked");
+    const after = rig();
+    after.registry.stageRestore(before.registry.snapshot());
+    return after;
+  }
+
+  it("answered while the daemon was down: the first busy reading after the restore ends it, and main's next steps count", () => {
+    // Sightings are not saved, so the restored block has none. It counts its
+    // own Notification (its date + promptNoticeAgeMs) as one. Without that a
+    // busy listing never ended it, and rule 6 held every step main took, so
+    // it stood, and reminded, until main's Stop; on ec3ac3a main's next step
+    // ended it, as notify/loop.ts's DMN-06 note relies on.
+    const seen = tl.polls.find((p) => p.start > firstNotice(tl) && p.status === "waiting");
+    if (seen === undefined) throw new Error("no sighting");
+    const after = restoredAfter(seen);
+    const [adopting, settling] = tl.polls.filter((p) => p.start > approve.t);
+    if (adopting === undefined || settling === undefined) throw new Error("no polls");
+    expect([adopting.status, settling.status]).toEqual(["busy", "busy"]);
+    after.at(adopting.end).poll(adopting.start, adopting.status, adopting.waitingFor);
+    expect(after.main()?.state, "adopted as saved").toBe("blocked");
+    after.at(settling.end).poll(settling.start, settling.status, settling.waitingFor);
+    expect(after.main()?.state).toBe("tool-running");
+    expect(after.blocked()).toEqual([]);
+    const post = eventAt(tl, "PostToolUse", "main");
+    after.at(post.t).hook("PostToolUse", post);
+    expect(after.main()?.state).toBe("thinking");
+  });
+
+  it("still up after the restart: a reading of the dialog is a sighting, and the answer ends it as usual", () => {
+    const beforeKey = tl.polls.filter((p) => p.end < approve.t);
+    const [last, adopting, sighting] = beforeKey.slice(-3);
+    const [early, late] = tl.polls.filter((p) => p.start > approve.t);
+    if (!last || !adopting || !sighting || !early || !late) throw new Error("no polls");
+    expect(sighting.waitingFor).toBe("permission prompt");
+    const after = restoredAfter(last);
+    after.at(adopting.end).poll(adopting.start, adopting.status, adopting.waitingFor);
+    after.at(sighting.end).poll(sighting.start, sighting.status, sighting.waitingFor);
+    expect(after.main()?.state).toBe("blocked");
+    expect(early.start - sighting.start).toBeLessThan(2_000);
+    after.at(early.end).poll(early.start, early.status, early.waitingFor);
+    expect(after.main()?.state, "busy under 2 s after the sighting").toBe("blocked");
+    expect(late.start - sighting.start).toBeGreaterThanOrEqual(2_000);
+    after.at(late.end).poll(late.start, late.status, late.waitingFor);
+    expect(after.main()?.state).toBe("tool-running");
+  });
+});
+
+describe("PSH-10 — an acknowledgement carries across back-to-back dialogs", () => {
+  it.each(PHASES)(
+    "Q1-slow: acknowledged during the first dialog, still acknowledged and not re-alerted through the second, phase %i",
+    async (phase) => {
+      const tl = timeline("Q1-slow");
+      const [n1, n2] = tl.events.filter((e) => e.notificationType === "permission_prompt");
+      if (n1 === undefined || n2 === undefined) throw new Error("expected two Notifications");
+      const ackAt = n1.t + 2_000;
+      const { r, sent } = await replay(tl, {
+        phase,
+        until: n2.t + 2_000,
+        also: [{ at: ackAt, run: (r) => r.registry.acknowledge(SID) }],
+      });
+      // The acknowledgement clears the alert wherever it went (the loop's
+      // `resolved` for an acknowledged block, as for any other); nothing after
+      // it, though approving the first dialog brought up the second.
+      expect(sent.map((s) => s.kind)).toEqual(["blocked", "resolved"]);
+      expect(sent[1]?.t).toBeLessThanOrEqual(ackAt + 1_000);
+      expect(r.main()?.state).toBe("blocked");
+      expect(r.main()?.acknowledgedAt).toBe(BASE + ackAt);
+      expect(r.registry.blockedCount(), "nothing unacknowledged").toBe(0);
+    },
+  );
 });
 
 describe("captured timelines, replayed at the daemon's 5 s poll, in all five phases", () => {
@@ -711,7 +1062,7 @@ describe("captured timelines, replayed at the daemon's 5 s poll, in all five pha
   for (const { name, why } of cases) {
     it.each(PHASES)(`${name} (${why}), phase %i`, async (phase) => {
       const tl = timeline(name);
-      const { sent, polls } = await replay(tl, { phase });
+      const { sent, polls, r, trace } = await replay(tl, { phase });
       const last = Math.max(...tl.events.map((e) => e.t), ...tl.polls.map((p) => p.end));
       const dialogs = dialogIntervals(tl, last + 1);
       const up = (t: number) => dialogs.some(([on, off]) => t >= on && t < off);
@@ -723,6 +1074,19 @@ describe("captured timelines, replayed at the daemon's 5 s poll, in all five pha
         resolved.filter((s) => up(s.t)),
         "no resolved while a dialog is on screen",
       ).toEqual([]);
+
+      // Main's Stop ends its turn. Until main's next hook it is blocked or has
+      // handed the floor back, never shown working: a Stop the hold kept off
+      // the block is not forgotten when the listing later ends it (rule 5), so
+      // a `busy` reading — a background agent at work, or a poll begun before
+      // the Stop and landing after it — does not undo it. Every step's last
+      // main step is a Stop or (B3, C1a) the PreToolUse before an Esc, and
+      // main ended `waiting` on ec3ac3a too.
+      const workingAfterStop = trace.filter(
+        (s) => s.lastMainHook === "Stop" && s.state !== "blocked" && s.state !== "waiting",
+      );
+      expect(workingAfterStop, "never working after main's Stop").toEqual([]);
+      expect(r.main()?.state, "main ends at its prompt").toBe("waiting");
 
       const closed = dialogs.at(-1)?.[1];
       if (closed === undefined || closed > last) return; // still up when the step ended
@@ -846,6 +1210,7 @@ describe("what the listing tells the registry stays in memory, on no surface", (
     "screen",
     "dialogSeenAt",
     "informativeAt",
+    "heldOutcome",
     "waitingFor",
     "permission-dialog",
     "input needed",

@@ -109,6 +109,15 @@ interface ListingMemory {
   /** The reading of the latest poll to BEGIN, and when it began. */
   screen: SessionScreen | null;
   screenAt: number | null;
+  /**
+   * Where main's latest held step (rule 6) would have taken it, and when that
+   * step came. Kept, not dropped: a held step is still main's progress, so a
+   * block the listing ends after it ends there (rule 5), and one the listing
+   * stops watching takes it then (rule 7). `block` is the `stateSince` of the
+   * block it was held in; a step held in one block says nothing about the
+   * next. The outcome only, never the event.
+   */
+  heldOutcome: { state: AgentState; at: number; block: number } | null;
 }
 
 export interface AgentRecord {
@@ -608,7 +617,16 @@ export class Registry {
         const m = this.memoryOf(session);
         m.dialogSeenAt = Math.max(m.dialogSeenAt ?? this.nowMs(), this.nowMs());
       }
-      if (this.heldForListing(session, agent, event)) return { applied: true };
+      if (this.heldForListing(session, agent, event)) {
+        if (event.kind !== "file_changed") {
+          this.memoryOf(session).heldOutcome = {
+            state: this.nextState(event, agent.state),
+            at: this.nowMs(),
+            block: agent.stateSince,
+          };
+        }
+        return { applied: true };
+      }
     }
 
     const next = this.nextState(event, agent.state);
@@ -662,7 +680,9 @@ export class Registry {
    *   Notification had blocked main, the listing reading `waiting` throughout.
    *   Ending the block there sent `resolved` with a dialog on screen.
    *
-   * `session_end` and `session_start` are never held.
+   * `session_end` and `session_start` are never held. What a held step would
+   * have done is kept (`heldOutcome`), not dropped: see `settleFromListing`
+   * and `releaseHeld`.
    */
   private heldForListing(session: SessionRecord, agent: AgentRecord, event: AstirEvent): boolean {
     if (agent.id !== session.sessionId) return false;
@@ -678,10 +698,47 @@ export class Registry {
   private memoryOf(session: SessionRecord): ListingMemory {
     let m = this.listing.get(session);
     if (m === undefined) {
-      m = { dialogSeenAt: null, informativeAt: null, screen: null, screenAt: null };
+      m = { dialogSeenAt: null, informativeAt: null, screen: null, screenAt: null, heldOutcome: null };
       this.listing.set(session, m);
     }
     return m;
+  }
+
+  /**
+   * #86 — main's held step, if it was held in the block main is still in.
+   * Taken: it is used once, by whichever rule ends that block.
+   */
+  private takeHeld(m: ListingMemory, main: AgentRecord): ListingMemory["heldOutcome"] {
+    const held = m.heldOutcome;
+    m.heldOutcome = null;
+    if (held === null) return null;
+    const same = main.state === "blocked" && main.blockedReason === "permission_prompt";
+    return same && main.stateSince === held.block ? held : null;
+  }
+
+  /**
+   * #86 rule 7 — the listing has said nothing about the screen for
+   * LISTING_FRESH_MS, so it is no longer what ends main's permission block.
+   * Main's own steps do that again, and the latest one it held while the
+   * listing was still watching counts too, dated when it came. Otherwise a
+   * listing that fails just after reading the dialog would leave the block to
+   * stand on steps that had already been taken: the approved tool's
+   * PostToolUse and the turn's Stop, which arrive once and are not repeated.
+   */
+  private releaseHeld(s: SessionRecord, now: number): void {
+    const m = this.listing.get(s);
+    if (m?.heldOutcome == null) return;
+    if (m.informativeAt !== null && now - m.informativeAt <= LISTING_FRESH_MS) return;
+    const main = s.agents.get(s.sessionId);
+    if (main === undefined) return;
+    const held = this.takeHeld(m, main);
+    if (held === null) return;
+    debug("reconcile", "listing stale; main's held step ends its permission block", {
+      session: s.sessionId,
+      state: held.state,
+    });
+    main.blockedReason = null;
+    this.transition(main, held.state, held.at);
   }
 
   /** Advance wall-clock-derived transitions. Must be called periodically. */
@@ -720,6 +777,8 @@ export class Registry {
         this.sessions.delete(id);
         continue;
       }
+
+      this.releaseHeld(s, now);
 
       // The idle timer exists to catch a session that stopped without telling
       // us. It must not fire on one that is simply BUSY — and it did, constantly:
@@ -1077,7 +1136,17 @@ export class Registry {
    *   which fires no hook, or an approved tool that has already finished. The
    *   agent has handed the floor back (`waiting`).
    * - `working`, from a poll begun ANSWER_SETTLE_MS after the dialog was last
-   *   seen, ends it as answered (`tool-running`).
+   *   seen, ends it as answered (`tool-running`), or where main's latest held
+   *   step had taken it. Main's turn may well be over: a held Stop leaves it
+   *   `waiting`, and what the listing sees working is then a background agent
+   *   (which its own hooks report), or the screen before the Stop, from a poll
+   *   begun before it and landing after.
+   *
+   * A block with no sighting at all was restored (DMN-06), which does not save
+   * sightings. Its own Notification stands in for one: the latest it can have
+   * come is promptNoticeAgeMs after the block's date. Without that a busy
+   * listing never ended a block answered while the daemon was down, and rule
+   * 6 held every step main took after it.
    *
    * Other reasons (`agent_needs_input`, `worker_permission_prompt`) are left
    * alone: what the listing shows for them was not measured.
@@ -1085,6 +1154,7 @@ export class Registry {
   private settleFromListing(s: SessionRecord, screen: SessionScreen, observedAt: number): void {
     const m = this.memoryOf(s);
     const seenBefore = m.dialogSeenAt;
+    const noticeAge = CAPABILITIES[s.provider].promptNoticeAgeMs;
     const blocks = [...s.agents.values()].filter(
       (a) => a.state === "blocked" && a.blockedReason === "permission_prompt",
     );
@@ -1100,20 +1170,19 @@ export class Registry {
     }
 
     for (const a of blocks) {
+      const seen = seenBefore ?? a.stateSince + noticeAge;
+      let next: AgentState | null = null;
       if (screen === "at-prompt" && observedAt - a.stateSince >= ESC_SETTLE_MS) {
-        debug("reconcile", "listing ended a permission block", { session: s.sessionId, agent: a.id, screen });
-        a.blockedReason = null;
-        this.transition(a, "waiting");
-      } else if (
-        screen === "working" &&
-        seenBefore !== null &&
-        seenBefore >= a.stateSince &&
-        observedAt - seenBefore >= ANSWER_SETTLE_MS
-      ) {
-        debug("reconcile", "listing ended a permission block", { session: s.sessionId, agent: a.id, screen });
-        a.blockedReason = null;
-        this.transition(a, "tool-running");
+        next = "waiting";
+      } else if (screen === "working" && seen >= a.stateSince && observedAt - seen >= ANSWER_SETTLE_MS) {
+        const held = a.id === s.sessionId ? this.takeHeld(m, a) : null;
+        next = held?.state ?? "tool-running";
       }
+      if (next === null) continue;
+      debug("reconcile", "listing ended a permission block", { session: s.sessionId, agent: a.id, screen });
+      if (a.id === s.sessionId) m.heldOutcome = null;
+      a.blockedReason = null;
+      this.transition(a, next);
     }
   }
 
