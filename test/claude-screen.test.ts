@@ -4,8 +4,9 @@
  * `claude agents --json` says what is on a session's screen in Claude's own
  * vocabulary (`status`, and `waitingFor` beside `waiting`). The lister turns
  * that into `DiscoveredSession.screen`, and the registry reads only that word
- * (CAP-02). Every word tested here was read off a live listing
- * (test/fixtures/claude/permission-capture.json, Claude Code 2.1.322).
+ * (CAP-02). The table of words below was read off a live listing
+ * (test/fixtures/claude/permission-capture.json, Claude Code 2.1.322); the
+ * few others are labelled with where they come from.
  *
  * `pollInto` is the other half: a listing describes the screen when the poll
  * STARTED, and the answer can land a second later, so the start time travels
@@ -75,6 +76,17 @@ describe("claudeScreen: the listing's words, as astir's", () => {
   it("`waiting` for anything but a permission prompt is some other dialog", () => {
     expect(claudeScreen("waiting", null)).toBe("other-dialog");
     expect(claudeScreen("waiting", "dialog open")).toBe("other-dialog");
+  });
+
+  it("words the capture did not read, kept on purpose (not captured)", () => {
+    // `running` and `working` are the registry's PROVIDER_BUSY words (a remote
+    // session was seen reporting `running`; registry.test.ts "treats `running`
+    // as busy too"), so nothing read as working before reads as anything else.
+    expect(claudeScreen("running", null)).toBe("working");
+    expect(claudeScreen("working", null)).toBe("working");
+    // `shell` is Claude's session-file word for idle with a background shell
+    // running, read from the binary; `--json` folds it into `busy` today.
+    expect(claudeScreen("shell", null)).toBe("at-prompt");
   });
 
   it("a status it does not know says nothing rather than guessing", () => {

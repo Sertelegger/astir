@@ -454,6 +454,47 @@ describe("rule 2 — the Notification's block is dated promptNoticeAgeMs back", 
     registry.apply(cx("pre_tool"), "/r");
     expect(registry.get("cx")?.agents.get("cx")?.state).toBe("tool-running");
   });
+
+  it("CAP-02: a Claude listing that names a Codex session ends none of its blocks — the capability is the session's provider's", () => {
+    let t = 50_000;
+    const registry = new Registry({ nowMs: () => t });
+    const base = {
+      v: CONTRACT_VERSION,
+      provider: "codex" as const,
+      sessionId: "cx",
+      agentId: "cx",
+      agentType: null,
+      parentAgentId: null,
+      parentSource: null,
+      tool: null,
+      description: null,
+      paths: [],
+      op: null,
+      ok: null,
+    };
+    registry.apply({ ...base, eventId: "cx1", ts: t, kind: "pre_tool", notificationKind: null }, "/r");
+    t += 100;
+    registry.apply(
+      { ...base, eventId: "cx2", ts: t, kind: "notification", notificationKind: "permission_prompt" },
+      "/r",
+    );
+    t += 10_000;
+    registry.reconcile(
+      [
+        {
+          sessionId: "cx",
+          cwd: "/r",
+          pid: 7,
+          status: "idle",
+          name: null,
+          startedAt: null,
+          screen: "at-prompt",
+        },
+      ],
+      { complete: false, provider: "claude", observedAt: t - 500 },
+    );
+    expect(registry.get("cx")?.agents.get("cx")?.state).toBe("blocked");
+  });
 });
 
 describe("rule 4 — Esc: the listing reads at-prompt", () => {
@@ -505,6 +546,39 @@ describe("rule 4 — Esc: the listing reads at-prompt", () => {
     expect(r.main()?.state).toBe("blocked");
     expect(r.main()?.blockedReason).toBe("worker_permission_prompt");
   });
+
+  it.each(["idle_prompt", "agent_completed", "elicitation_dialog"])(
+    "rule 8: an %s Notification during a permission block is not a reason — Esc still ends it",
+    (kind) => {
+      // B3-bash-esc's own hooks and listing rows. The extra Notification is
+      // the one thing not from the capture: none of its 6 non-permission
+      // Notifications landed in a block. An MCP tool's dialog left alone for
+      // 6 s and then its elicitation is the natural way to get one;
+      // `elicitation_dialog` is a type astir does not know, so it arrives as
+      // `other`. Taken as the block's reason, it put the block outside rules
+      // 4 to 6: Esc was never seen, and it reminded every minute.
+      const tl = timeline("B3-bash-esc");
+      const n = firstNotice(tl);
+      const esc = tl.actions.find((a) => a.action.startsWith("esc"));
+      if (esc === undefined) throw new Error("no Esc");
+      const r = rig();
+      r.at(eventAt(tl, "PreToolUse", "main").t).hook("PreToolUse", { tool: "Bash" });
+      r.at(n).hook("Notification", { notificationType: "permission_prompt" });
+      const sighting = tl.polls.find((p) => p.start > n && p.end < esc.t);
+      expect(sighting?.waitingFor).toBe("permission prompt");
+      if (sighting === undefined) return;
+      r.at(sighting.end).poll(sighting.start, sighting.status, sighting.waitingFor);
+      r.at(sighting.end + 100).hook("Notification", { notificationType: kind });
+      expect(r.main()?.state).toBe("blocked");
+      expect(r.main()?.blockedReason).toBe("permission_prompt");
+      const after = tl.polls.find((p) => p.start > esc.t);
+      expect(after?.status).toBe("idle");
+      if (after === undefined) return;
+      r.at(after.end).poll(after.start, after.status, after.waitingFor);
+      expect(r.main()?.state).toBe("waiting");
+      expect(r.blocked()).toEqual([]);
+    },
+  );
 });
 
 describe("rules 3 and 5 — answered: working after the dialog was seen", () => {
@@ -581,6 +655,39 @@ describe("rules 3 and 5 — answered: working after the dialog was seen", () => 
     expect(r.main()?.state).toBe("blocked");
     r.at(n + 8_100).poll(n + 7_500, "busy");
     expect(r.main()?.state).toBe("tool-running");
+  });
+
+  it("Q2-sub-slow: a Notification for an agent already blocked is a sighting too (rule 3)", () => {
+    // Its third Notification, at 24309, is sub2's dialog's: revealed once
+    // sub1's was approved at 12275, and notified ~12 s later. Main has been
+    // blocked since the first. The daemon's last poll before it began at
+    // 20429. A busy reading within 2 s of that Notification is the boundary
+    // under test, as in the settle test above, not a captured one: the
+    // capture read the dialog until it was approved at 32341.
+    const tl = timeline("Q2-sub-slow");
+    const [, , n3] = tl.events.filter((e) => e.notificationType === "permission_prompt");
+    if (n3 === undefined) throw new Error("expected three Notifications");
+    const r = rig();
+    const polls = tl.polls.filter((_, i) => i % DAEMON_POLL_EVERY === 0).filter((p) => p.end < n3.t);
+    const steps = [
+      ...tl.events.filter((e) => e.t < n3.t && SUBSCRIBED.has(e.hook)).map((e) => ({ at: e.t, e })),
+      ...polls.map((p) => ({ at: p.end, p })),
+    ].sort((a, b) => a.at - b.at);
+    for (const s of steps) {
+      r.at(s.at);
+      if ("e" in s) r.hook(s.e.hook, s.e);
+      else r.poll(s.p.start, s.p.status, s.p.waitingFor);
+    }
+    expect(polls.at(-1)?.start).toBe(20_429);
+    expect(polls.at(-1)?.waitingFor).toBe("permission prompt");
+    expect(r.main()?.state).toBe("blocked");
+    const since = r.main()?.stateSince;
+    r.at(n3.t).hook("Notification", n3);
+    expect(r.main()?.stateSince).toBe(since);
+    r.at(n3.t + 2_500).poll(n3.t + 1_999, "busy");
+    expect(r.main()?.state, "under 2 s after the repeat Notification").toBe("blocked");
+    r.at(n3.t + 2_600).poll(n3.t + 2_000, "busy");
+    expect(r.blocked()).toEqual([]);
   });
 });
 
@@ -700,6 +807,19 @@ describe("rule 6 — while the listing can see, main's own progress is not an an
     expect(r.main()?.state).toBe("blocked");
     r.at(13_000).hook("Stop");
     expect(r.main()?.state, "the screen still reads the dialog").toBe("blocked");
+  });
+
+  it("the listing stays informative from the poll that BEGAN last, whatever order the answers land in", () => {
+    // Defence, as for the screen and the sighting: answers land out of order
+    // only when a poll runs past the lister's 5 s timeout into the next one's.
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { tool: "Bash" });
+    r.at(7_000).hook("Notification", { notificationType: "permission_prompt" });
+    r.at(12_500).poll(12_000, "waiting", "permission prompt");
+    r.at(12_600).poll(9_000, "waiting", "permission prompt");
+    // 11.5 s after the newer reading, 14.5 s after the older one.
+    r.at(23_500).hook("PostToolUse", { tool: "Bash" });
+    expect(r.main()?.state).toBe("blocked");
   });
 
   it("SessionEnd and SessionStart end it whatever the listing reads", () => {
@@ -1241,6 +1361,13 @@ describe("captured timelines, replayed at the daemon's 5 s poll, in all five pha
     const { sent } = await replay(tl);
     const alert = sent.find((s) => s.kind === "blocked");
     expect(alert?.t).toBe(Math.ceil((post.t + 5_000) / 1_000) * 1_000);
+    // The dialog on screen is main's own Read (the oldest ask, so on top; the
+    // screen showed it 21 ms after its PermissionRequest), not a subagent's:
+    // a clamp is not only a subagent's, and main's own dialog can alert ~11 s
+    // after it appeared rather than ~6 s (PSH-16).
+    const ask = eventAt(tl, "PermissionRequest", "main");
+    expect(ask.tool).toBe("Read");
+    expect((alert?.t ?? 0) - ask.t).toBeGreaterThan(10_000);
   });
 
   it.each(PHASES)(

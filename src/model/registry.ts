@@ -1,7 +1,7 @@
 /** MOD-04/05/06 — session + agent state, and the active-vs-blocked accounting. */
 
 import { CAPABILITIES } from "../contract/capabilities.js";
-import type { AstirEvent, Kind, ParentSource, Provider } from "../contract/event.js";
+import type { AstirEvent, Kind, NotificationKind, ParentSource, Provider } from "../contract/event.js";
 import type { DiscoveredSession, SessionScreen } from "../discovery/sessions.js";
 import { debug } from "../obs/debug.js";
 import { RepoMap } from "./map.js";
@@ -12,6 +12,16 @@ export type AgentState = "thinking" | "tool-running" | "waiting" | "blocked" | "
 /** States that mean "a human is the bottleneck" — the whole point of G1. */
 const HUMAN_BLOCKING = new Set<AgentState>(["blocked"]);
 const TERMINAL = new Set<AgentState>(["done", "error"]);
+
+/**
+ * The Notification kinds that mean "come look": the only ones that block, and
+ * so the only ones that can be a block's reason.
+ */
+const BLOCKING_NOTICES = new Set<NotificationKind | null>([
+  "permission_prompt",
+  "agent_needs_input",
+  "worker_permission_prompt",
+]);
 
 /**
  * The only states in which the agent is actually doing work.
@@ -644,8 +654,16 @@ export class Registry {
         ? { sessionId: session.sessionId, agentId: agent.id, kind: event.notificationKind ?? "blocked" }
         : undefined;
 
-    if (HUMAN_BLOCKING.has(next)) agent.blockedReason = event.notificationKind ?? "blocked";
-    else agent.blockedReason = null;
+    // A block's reason is the latest blocking Notification's. One that does
+    // not block (`idle_prompt`, `agent_completed`, or a type astir does not
+    // know, `other`) leaves a standing block's reason as it is: taken as the
+    // reason, it put a `permission_prompt` block outside the listing's rules
+    // (#86), so Esc went unseen and it reminded every minute until main's
+    // next step.
+    if (!HUMAN_BLOCKING.has(next)) agent.blockedReason = null;
+    else if (event.kind === "notification" && BLOCKING_NOTICES.has(event.notificationKind)) {
+      agent.blockedReason = event.notificationKind;
+    }
 
     // What it is doing, for as long as it is doing it. `pre_tool` opens the
     // action and anything else closes it — including `notification`, because an
@@ -855,11 +873,7 @@ export class Registry {
         return "done";
       case "notification":
         // Only the "come look" kinds are human-blocking.
-        return event.notificationKind === "permission_prompt" ||
-          event.notificationKind === "agent_needs_input" ||
-          event.notificationKind === "worker_permission_prompt"
-          ? "blocked"
-          : current;
+        return BLOCKING_NOTICES.has(event.notificationKind) ? "blocked" : current;
       default:
         return current;
     }
