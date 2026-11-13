@@ -134,7 +134,7 @@ export type SessionLister = () => Promise<DiscoveryResult | null>;
  * The clock is read BEFORE the lister is called, and that time travels with
  * the answer as `observedAt` (#86). A listing describes the screen as it was
  * around when it was asked, and `claude agents --json` is a child process
- * that took ~0.5 s per poll and up to 3.5 s (n=3730). Dated on landing, an
+ * that took ~0.5 s per poll and up to 3.6 s (n=3730). Dated on landing, an
  * answer about the screen before a dialog was dismissed or answered could be
  * read as being about the screen after it.
  */

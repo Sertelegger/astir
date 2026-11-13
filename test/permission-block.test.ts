@@ -770,6 +770,20 @@ describe("rule 6 — while the listing can see, main's own progress is not an an
     }
   });
 
+  it("rule 3: only a permission_prompt Notification is a sighting — another kind does not push back the answered settle", () => {
+    // Not captured: the times are chosen to straddle rule 5's 2 s settle. A
+    // Notification that does not block (here `elicitation_dialog`, which
+    // astir reads as `other`) says nothing about the permission dialog, so it
+    // must not count as seeing it: counted, it moved the sighting to 9.5 s
+    // and a `working` poll begun at 10 s no longer read as an answer.
+    const r = rig();
+    r.at(1_000).hook("PreToolUse", { tool: "Bash" });
+    r.at(7_000).hook("Notification", { notificationType: "permission_prompt" });
+    r.at(9_500).hook("Notification", { notificationType: "elicitation_dialog" });
+    r.at(10_400).poll(10_000, "busy");
+    expect(r.main()?.state).toBe("tool-running");
+  });
+
   it("rule 8: the hold is a permission block's alone — main's next step ends an agent_needs_input block whatever the listing reads", () => {
     const r = rig();
     r.at(1_000).hook("PreToolUse", { tool: "Bash" });
@@ -810,8 +824,9 @@ describe("rule 6 — while the listing can see, main's own progress is not an an
   });
 
   it("the listing stays informative from the poll that BEGAN last, whatever order the answers land in", () => {
-    // Defence, as for the screen and the sighting: answers land out of order
-    // only when a poll runs past the lister's 5 s timeout into the next one's.
+    // Not captured; defence, as for the screen and the sighting: answers land
+    // out of order only when a poll runs past the lister's 5 s timeout into
+    // the next one's.
     const r = rig();
     r.at(1_000).hook("PreToolUse", { tool: "Bash" });
     r.at(7_000).hook("Notification", { notificationType: "permission_prompt" });

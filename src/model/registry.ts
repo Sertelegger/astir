@@ -69,7 +69,7 @@ const PROVIDER_BUSY = new Set(["busy", "running", "working"]);
 /**
  * #86 — how long a listing reading keeps vouching for the screen.
  *
- * The daemon polls every 5 s and a poll took ~0.5 s (p99 0.8 s, max 3.5 s), so
+ * The daemon polls every 5 s and a poll took ~0.5 s (p99 0.8 s, max 3.6 s), so
  * the latest reading is normally under 6 s old; 12 s survives one poll that
  * failed or ran long. Past it the listing is not watching (discovery down, a
  * session it does not list) and main's own progress ends a block, as before.

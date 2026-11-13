@@ -159,7 +159,9 @@ release is cut, named and published is in
     agent's dialog it is: Claude's notification does not say. "Take me there"
     still lands on the right pane. When the main agent's turn has ended and
     a background agent's dialog is up, the alert stands, and once that dialog
-    is answered the main agent shows as at its prompt, not working.
+    is answered the main agent shows as at its prompt, not working (unless
+    the daemon restarted during that block: then it shows as working until
+    its next step).
   - A prompt answered while the astir daemon was down clears on the second
     poll after it restarts (the first only picks the session back up).
   - No new hook and nothing new on disk. Codex is unchanged.
