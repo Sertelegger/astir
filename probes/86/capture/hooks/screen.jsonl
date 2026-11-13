@@ -1,0 +1,32 @@
+{"dialog": false, "t": 1794371005634}
+{"dialog": true, "kind": "permission", "label": "cap-BBB", "labels": ["cap-BBB"], "t": 1794371046344}
+{"dialog": false, "t": 1794371054494}
+{"dialog": true, "kind": "permission", "label": "cap-CCC", "labels": ["cap-CCC"], "t": 1794371075616}
+{"dialog": false, "t": 1794371084271}
+{"dialog": true, "kind": "permission", "label": "cap-DDD", "labels": ["cap-DDD"], "t": 1794371109192}
+{"dialog": false, "t": 1794371111982}
+{"dialog": true, "kind": "permission", "label": "cap-EEE", "labels": ["cap-EEE"], "t": 1794371128550}
+{"dialog": false, "t": 1794371138060}
+{"dialog": true, "kind": "permission", "label": "cap-GGG", "labels": ["cap-FFF", "cap-GGG", "cap-HHH"], "t": 1794371154205}
+{"dialog": false, "t": 1794371163377}
+{"dialog": true, "kind": "permission", "label": "cap-HHH", "labels": ["cap-FFF", "cap-GGG", "cap-HHH"], "t": 1794371163631}
+{"dialog": false, "t": 1794371172538}
+{"dialog": true, "kind": "permission", "label": "cap-III", "labels": ["cap-III"], "t": 1794371195005}
+{"dialog": false, "t": 1794371206471}
+{"dialog": true, "kind": "permission", "label": "cap-JJJ", "labels": ["cap-JJJ"], "t": 1794371237104}
+{"dialog": false, "t": 1794371249087}
+{"dialog": true, "kind": "permission", "label": "cap-KKK", "labels": ["cap-KKK", "cap-LLL"], "t": 1794371273751}
+{"dialog": true, "kind": "permission", "label": "cap-LLL", "labels": ["cap-KKK", "cap-LLL"], "t": 1794371284697}
+{"dialog": false, "t": 1794371293841}
+{"dialog": true, "kind": "permission", "label": "cap-MMM", "labels": ["cap-MMM", "cap-NNN"], "t": 1794371316002}
+{"dialog": false, "t": 1794371328466}
+{"dialog": true, "kind": "permission", "label": "cap-PPP", "labels": ["cap-OOO", "cap-PPP"], "t": 1794371352385}
+{"dialog": true, "kind": "permission", "label": "cap-OOO", "labels": ["cap-OOO", "cap-PPP"], "t": 1794371372466}
+{"dialog": true, "kind": "permission", "label": "cap-OOO", "labels": ["cap-OOO"], "t": 1794371373239}
+{"dialog": true, "kind": "permission", "label": "cap-OOO", "labels": ["cap-OOO", "cap-PPP"], "t": 1794371373499}
+{"dialog": false, "t": 1794371375791}
+{"dialog": true, "kind": "permission", "label": "cap-TTT", "labels": ["cap-TTT"], "t": 1794371731095}
+{"dialog": false, "t": 1794371742549}
+{"dialog": true, "kind": "permission", "label": "cap-VVV", "labels": ["cap-UUU", "cap-VVV"], "t": 1794371766479}
+{"dialog": true, "kind": "permission", "label": "cap-UUU", "labels": ["cap-UUU"], "t": 1794371775625}
+{"dialog": false, "t": 1794371806128}

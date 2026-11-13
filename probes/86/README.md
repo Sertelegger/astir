@@ -102,3 +102,8 @@ FIX: Decrement this.blocks in retractYoungerBlocks, or document that the counter
 REPRO: Run python3 probes/86/hunt/mutate.py test/claude-permission.test.ts in a 96d3367 worktree. Each survivor passes 115/115. Not equivalent: B5 retract uses stateSince (this is F1). B9 retract any blockedReason (would retract a re-claimed agent_needs_input block). D2 skip only for permission blocks, and D3 skip only for unacknowledged blocks (F4). B8 noticeOwner tie-break removed (a same-ms open claim can double-block one dialog). B7 retract boundary >= to > and C2 standing filter >= to > (inconsistent at exactly 5000 ms or at dialogStart; 1 ms boundary). E3 and E4 R4 sub-conditions (edge only, reason label). Equivalent: A6, because a new claim keeping its old dialogHeldAt changes nothing (holds always come before the new claim, so max() picks the claim). E2, because dropping 'blocked &&' changes nothing (blockedReason is null whenever the agent is not blocked).
 FIX: Add the S1 and S2c timelines, an acknowledged-block plus decay case, a non-permission block plus decay case, and exact-5000 ms boundary cases for retract and noticeOwner.
 
+- `capture/`: the live capture on Claude Code 2.1.322 that the C+ build is
+  measured against: four lanes (`listing`, `hooks`, `queue`, `survey`) of
+  content-free hook and listing records (times, event and key names, ids,
+  sha256 digests, byte counts, status words, synthetic `cap-*` labels), and
+  `REPORT.md`. Fixtures for the C+ build come from here.

@@ -1,0 +1,62 @@
+{"t": 1794371154442, "step": "B1-bash-approve", "action": "prompt_submit"}
+{"t": 1794371195707, "step": "B2-bash-approve", "action": "prompt_submit"}
+{"t": 1794371210398, "step": "B2-bash-approve", "action": "approve", "keys": ["Enter"]}
+{"t": 1794371239763, "step": "B3-bash-esc", "action": "prompt_submit"}
+{"t": 1794371252504, "step": "B3-bash-esc", "action": "esc", "keys": ["Escape"]}
+{"t": 1794371272107, "step": "C1a-bash-inert-right", "action": "prompt_submit"}
+{"t": 1794371277001, "step": "C1a-bash-inert-right", "action": "inert_key", "key": "Right"}
+{"t": 1794371288934, "step": "C1a-bash-inert-right", "action": "esc", "keys": ["Escape"]}
+{"t": 1794371308586, "step": "C1b-bash-inert-right-5s", "action": "prompt_submit"}
+{"t": 1794371315853, "step": "C1b-bash-inert-right-5s", "action": "inert_key", "key": "Right"}
+{"t": 1794371325777, "step": "C1b-bash-inert-right-5s", "action": "esc", "keys": ["Escape"]}
+{"t": 1794371342093, "step": "E1-edit-approve", "action": "prompt_submit"}
+{"t": 1794371355786, "step": "E1-edit-approve", "action": "approve", "keys": ["Enter"]}
+{"t": 1794371372621, "step": "E2-edit-esc", "action": "prompt_submit"}
+{"t": 1794371385909, "step": "E2-edit-esc", "action": "esc", "keys": ["Escape"]}
+{"t": 1794371405369, "step": "W1-write-approve", "action": "prompt_submit"}
+{"t": 1794371418572, "step": "W1-write-approve", "action": "approve", "keys": ["Enter"]}
+{"t": 1794371429209, "step": "W2-write-esc", "action": "prompt_submit"}
+{"t": 1794371442131, "step": "W2-write-esc", "action": "esc", "keys": ["Escape"]}
+{"t": 1794371461604, "step": "F1-webfetch-approve", "action": "prompt_submit"}
+{"t": 1794371478052, "step": "F1-webfetch-approve", "action": "approve", "keys": ["Enter"]}
+{"t": 1794371506416, "step": "F2-webfetch-esc", "action": "prompt_submit"}
+{"t": 1794371555589, "step": "F3-webfetch-sub-esc", "action": "prompt_submit"}
+{"t": 1794371569824, "step": "F3-webfetch-sub-esc", "action": "esc", "keys": ["Escape"]}
+{"t": 1794371594164, "step": "Q1-ask-answer", "action": "prompt_submit"}
+{"t": 1794371614117, "step": "Q1-ask-answer", "action": "approve", "keys": ["Enter"]}
+{"t": 1794371633247, "step": "Q2-ask-esc", "action": "prompt_submit"}
+{"t": 1794371651034, "step": "Q2-ask-esc", "action": "esc", "keys": ["Escape"]}
+{"t": 1794371671835, "step": "M1-mcp-approve", "action": "prompt_submit"}
+{"t": 1794371685745, "step": "M1-mcp-approve", "action": "approve", "keys": ["Enter"]}
+{"t": 1794371702416, "step": "M2-mcp-esc", "action": "prompt_submit"}
+{"t": 1794371714837, "step": "M2-mcp-esc", "action": "esc", "keys": ["Escape"]}
+{"t": 1794371741099, "step": "X1-elicit-toolperm", "action": "prompt_submit"}
+{"t": 1794371743963, "step": "X1-elicit-toolperm", "action": "approve", "keys": ["Enter"]}
+{"t": 1794371760073, "step": "X1-elicit-dialog", "action": "approve", "keys": []}
+{"t": 1794371783047, "step": "X1-elicit-dialog", "action": "approve", "keys": ["Enter"]}
+{"t": 1794371801932, "step": "X2-elicit-toolperm", "action": "prompt_submit"}
+{"t": 1794371804171, "step": "X2-elicit-toolperm", "action": "approve", "keys": ["Enter"]}
+{"t": 1794371815381, "step": "X2-elicit-dialog", "action": "esc", "keys": ["Escape"]}
+{"t": 1794371846262, "step": "P1-plan-esc", "action": "prompt_submit"}
+{"t": 1794371865512, "step": "P1-plan-esc", "action": "esc", "keys": ["Escape"]}
+{"t": 1794371890655, "step": "P2-plan-approve", "action": "prompt_submit"}
+{"t": 1794371914935, "step": "P2-plan-approve", "action": "approve", "keys": ["2"]}
+{"t": 1794371940819, "step": "B4-bash-slow-approve", "action": "prompt_submit"}
+{"t": 1794371951509, "step": "B4-bash-slow-approve", "action": "approve", "keys": ["Enter"]}
+{"t": 1794371975310, "step": "B5-bash-longhold-esc", "action": "prompt_submit"}
+{"t": 1794372047723, "step": "B5-bash-longhold-esc", "action": "esc", "keys": ["Escape"]}
+{"t": 1794372338099, "step": "F4-webfetch-main-esc", "action": "prompt_submit"}
+{"t": 1794372415649, "step": "S2-Q3-ask-answer", "action": "prompt_submit"}
+{"t": 1794372433660, "step": "S2-Q3-ask-answer", "action": "approve", "keys": ["Enter"]}
+{"t": 1794372451616, "step": "S2-Q4-ask-esc", "action": "prompt_submit"}
+{"t": 1794372469472, "step": "S2-Q4-ask-esc", "action": "esc", "keys": ["Escape"]}
+{"t": 1794372482190, "step": "S2-B6-bash-approve", "action": "prompt_submit"}
+{"t": 1794372499892, "step": "S2-B6-bash-approve", "action": "approve", "keys": ["Enter"]}
+{"t": 1794372519155, "step": "S2-B7-bash-esc", "action": "prompt_submit"}
+{"t": 1794372536708, "step": "S2-B7-bash-esc", "action": "esc", "keys": ["Escape"]}
+{"t": 1794372555708, "step": "S2-P3-plan-esc", "action": "prompt_submit"}
+{"t": 1794372575086, "step": "S2-P3-plan-esc", "action": "esc", "keys": ["Escape"]}
+{"t": 1794372608819, "step": "S2-C1c-bash-inert-3s-9s", "action": "prompt_submit"}
+{"t": 1794372613074, "step": "S2-C1c-bash-inert-3s-9s", "action": "inert_key", "key": "Right"}
+{"t": 1794372619115, "step": "S2-C1c-bash-inert-3s-9s", "action": "inert_key", "key": "Right"}
+{"t": 1794372631136, "step": "S2-C1c-bash-inert-3s-9s", "action": "esc", "keys": ["Escape"]}

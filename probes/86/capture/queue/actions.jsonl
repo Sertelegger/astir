@@ -1,0 +1,53 @@
+{"t": 1794370849657, "action": "launch session 1"}
+{"t": 1794370870796, "action": "trust folder"}
+{"t": 1794370996940, "action": "submit calibration prompt (one bash echo cap-CAL)"}
+{"t": 1794371030763, "action": "submit calibration prompt 2 (touch cap-CAL)"}
+{"t": 1794371040391, "t_sent": 1794371040393, "action": "key", "key": "Enter", "note": "approve calibration after Notification", "want": "cap-CAL", "t_seen_by_driver": 1794371039878, "label_on_screen": "cap-CAL", "dialog": "bash"}
+{"t": 1794371074104, "action": "submit Q1-slow prompt"}
+{"t": 1794371084919, "t_sent": 1794371084922, "action": "key", "key": "Enter", "note": "Q1-slow", "step": 0, "t_seen_by_driver": 1794371075909, "label_seen": "cap-AAA", "label_on_screen_at_send": "cap-AAA", "dialog": "bash"}
+{"t": 1794371105150, "t_sent": 1794371105153, "action": "key", "key": "Enter", "note": "Q1-slow", "step": 1, "t_seen_by_driver": 1794371085140, "label_seen": "cap-BBB", "label_on_screen_at_send": "cap-BBB", "dialog": "bash"}
+{"t": 1794371159424, "action": "submit Q1-quick prompt"}
+{"t": 1794371162516, "t_sent": 1794371162519, "action": "key", "key": "Enter", "note": "Q1-quick", "step": 0, "t_seen_by_driver": 1794371161005, "label_seen": "cap-CCC", "label_on_screen_at_send": "cap-CCC", "dialog": "bash"}
+{"t": 1794371182812, "t_sent": 1794371182816, "action": "key", "key": "Enter", "note": "Q1-quick", "step": 1, "t_seen_by_driver": 1794371162805, "label_seen": "cap-DDD", "label_on_screen_at_send": "cap-DDD", "dialog": "bash"}
+{"t": 1794371207895, "action": "submit Q1-read-parallel prompt"}
+{"t": 1794371218716, "t_sent": 1794371218722, "action": "key", "key": "Enter", "note": "Q1-read-parallel", "step": 0, "t_seen_by_driver": 1794371209701, "label_seen": "cap-R1", "label_on_screen_at_send": "cap-R1", "dialog": "other"}
+{"t": 1794371238798, "t_sent": 1794371238800, "action": "key", "key": "Enter", "note": "Q1-read-parallel", "step": 1, "t_seen_by_driver": 1794371218787, "label_seen": "cap-R2", "label_on_screen_at_send": "cap-R2", "dialog": "other"}
+{"t": 1794371277779, "action": "submit Q1-read-quick prompt"}
+{"t": 1794371280907, "t_sent": 1794371280910, "action": "key", "key": "Enter", "note": "Q1-read-quick", "step": 0, "t_seen_by_driver": 1794371279396, "label_seen": "cap-R3", "label_on_screen_at_send": "cap-R3", "dialog": "other"}
+{"t": 1794371300981, "t_sent": 1794371300984, "action": "key", "key": "Enter", "note": "Q1-read-quick", "step": 1, "t_seen_by_driver": 1794371280968, "label_seen": "cap-R4", "label_on_screen_at_send": "cap-R4", "dialog": "other"}
+{"t": 1794371336858, "action": "submit Q1-read-slow2 prompt"}
+{"t": 1794371347420, "t_sent": 1794371347423, "action": "key", "key": "Enter", "note": "Q1-read-slow2", "step": 0, "t_seen_by_driver": 1794371338416, "label_seen": "cap-R5", "label_on_screen_at_send": "cap-R5", "dialog": "other"}
+{"t": 1794371367491, "t_sent": 1794371367494, "action": "key", "key": "Enter", "note": "Q1-read-slow2", "step": 1, "t_seen_by_driver": 1794371347479, "label_seen": "cap-R6", "label_on_screen_at_send": "cap-R6", "dialog": "other"}
+{"t": 1794371382505, "action": "submit Q3-read-esc-late prompt"}
+{"t": 1794371392645, "t_sent": 1794371392653, "action": "key", "key": "Escape", "note": "Q3-read-esc-late", "step": 0, "t_seen_by_driver": 1794371384135, "label_seen": "cap-R7", "label_on_screen_at_send": "cap-R7", "dialog": "other"}
+{"t": 1794371421502, "action": "submit Q3-read-esc-early prompt"}
+{"t": 1794371426434, "t_sent": 1794371426438, "action": "key", "key": "Escape", "note": "Q3-read-esc-early", "step": 0, "t_seen_by_driver": 1794371423425, "label_seen": "cap-R9", "label_on_screen_at_send": "cap-R9", "dialog": "other"}
+{"t": 1794371450446, "action": "submit Q3-bash-esc prompt"}
+{"t": 1794371455001, "t_sent": 1794371455004, "action": "key", "key": "Escape", "note": "Q3-bash-esc", "step": 0, "t_seen_by_driver": 1794371451996, "label_seen": "cap-EEE", "label_on_screen_at_send": "cap-EEE", "dialog": "bash"}
+{"t": 1794371479688, "action": "submit Q2-sub-slow prompt"}
+{"t": 1794371491961, "t_sent": 1794371491963, "action": "key", "key": "Enter", "note": "Q2-sub-slow", "step": 0, "t_seen_by_driver": 1794371482956, "label_seen": "cap-SUB1", "label_on_screen_at_send": "cap-SUB1", "dialog": "bash"}
+{"t": 1794371512026, "t_sent": 1794371512029, "action": "key", "key": "Enter", "note": "Q2-sub-slow", "step": 1, "t_seen_by_driver": 1794371492020, "label_seen": "cap-SUB2", "label_on_screen_at_send": "cap-SUB2", "dialog": "bash"}
+{"t": 1794371542747, "action": "submit Q2-sub-fg-quick prompt"}
+{"t": 1794371547853, "t_sent": 1794371547856, "action": "key", "key": "Enter", "note": "Q2-sub-fg-quick", "step": 0, "t_seen_by_driver": 1794371546343, "label_seen": "cap-SUB3", "label_on_screen_at_send": "cap-SUB3", "dialog": "bash"}
+{"t": 1794371567921, "t_sent": 1794371567924, "action": "key", "key": "Enter", "note": "Q2-sub-fg-quick", "step": 1, "t_seen_by_driver": 1794371547914, "label_seen": "cap-SUB4", "label_on_screen_at_send": "cap-SUB4", "dialog": "bash"}
+{"t": 1794371611654, "action": "submit Q3-sub-esc prompt"}
+{"t": 1794371623133, "t_sent": 1794371623141, "action": "key", "key": "Escape", "note": "Q3-sub-esc", "step": 0, "t_seen_by_driver": 1794371614620, "label_seen": "cap-SUB5", "label_on_screen_at_send": "cap-SUB5", "dialog": "bash"}
+{"t": 1794371652783, "t_sent": 1794371652787, "action": "key", "key": "Escape", "note": "Q3-sub-esc second dialog Esc", "want": "cap-SUB6", "t_seen_by_driver": 1794371652778, "label_on_screen": "cap-SUB6", "dialog": "bash"}
+{"t": 1794371678045, "action": "submit Q2b-mixed prompt"}
+{"t": 1794371692868, "t_sent": 1794371692871, "action": "key", "key": "Enter", "note": "Q2b-mixed-sub-then-main", "step": 0, "t_seen_by_driver": 1794371680856, "label_seen": "cap-SUB7", "label_on_screen_at_send": "cap-SUB7", "dialog": "bash"}
+{"t": 1794371704124, "t_sent": 1794371704126, "action": "key", "key": "Enter", "note": "Q2b-mixed-sub-then-main", "step": 1, "t_seen_by_driver": 1794371696114, "label_seen": "cap-R11", "label_on_screen_at_send": "cap-R11", "dialog": "other"}
+{"t": 1794371730990, "action": "submit Q2c-mixed prompt"}
+{"t": 1794371747446, "t_sent": 1794371747448, "action": "key", "key": "Enter", "note": "Q2c-mixed", "step": 0, "t_seen_by_driver": 1794371733435, "label_seen": "cap-R12", "label_on_screen_at_send": "cap-R12", "dialog": "other"}
+{"t": 1794371755508, "t_sent": 1794371755511, "action": "key", "key": "Enter", "note": "Q2c-mixed", "step": 1, "t_seen_by_driver": 1794371747505, "label_seen": "cap-SUB8", "label_on_screen_at_send": "cap-SUB8", "dialog": "bash"}
+{"t": 1794371783674, "action": "submit Q2d-mixed prompt"}
+{"t": 1794371794499, "t_sent": 1794371794501, "action": "key", "key": "Enter", "note": "Q2c-mixed", "step": 2, "t_seen_by_driver": 1794371786489, "label_seen": "cap-SUB9", "label_on_screen_at_send": "cap-SUB9", "dialog": "bash"}
+{"t": 1794371800477, "t_sent": 1794371800479, "action": "key", "key": "Enter", "note": "Q2d-mixed-sub-first", "step": 0, "t_seen_by_driver": 1794371786473, "label_seen": "cap-SUB9", "label_on_screen_at_send": "cap-MAIN", "dialog": "bash"}
+{"t": 1794371808490, "t_sent": 1794371808493, "action": "key", "key": "Enter", "note": "Q2d-mixed-sub-first", "step": 1, "t_seen_by_driver": 1794371800483, "label_seen": "cap-MAIN", "label_on_screen_at_send": null, "dialog": null}
+{"t": 1794371794499, "action": "NOTE: the +10825 Enter (note Q2c-mixed step=2) was a stale Q2c sequencer step that matched cap-SUB9 during Q2d; Q2d's own step0 then hit cap-MAIN at +16803 and step1 sent Enter to an empty prompt at +24816"}
+{"t": 1794371889108, "action": "submit Q3-mixed-esc prompt"}
+{"t": 1794371899756, "t_sent": 1794371899759, "action": "key", "key": "Escape", "note": "Q3-mixed-main-top-esc", "step": 0, "t_seen_by_driver": 1794371891249, "label_seen": "cap-R13", "label_on_screen_at_send": "cap-R13", "dialog": "other"}
+{"t": 1794371924109, "t_sent": 1794371924112, "action": "key", "key": "Enter", "note": "approve surviving SUB10 dialog after main Esc", "want": "cap-SUB10", "t_seen_by_driver": 1794371924106, "label_on_screen": "cap-SUB10", "dialog": "bash"}
+{"t": 1794371941193, "action": "submit Q2e-mixed prompt"}
+{"t": 1794371959761, "t_sent": 1794371959764, "action": "key", "key": "Enter", "note": "Q2e-mixed-sub-first", "step": 0, "t_seen_by_driver": 1794371943756, "label_seen": "cap-SUB11", "label_on_screen_at_send": "cap-SUB11", "dialog": "bash"}
+{"t": 1794371968828, "t_sent": 1794371968830, "action": "key", "key": "Enter", "note": "Q2e-mixed-sub-first", "step": 1, "t_seen_by_driver": 1794371959821, "label_seen": "cap-MAIN2", "label_on_screen_at_send": "cap-MAIN2", "dialog": "bash"}
+{"t": 1794372051203, "action": "/exit session 1"}

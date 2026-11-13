@@ -1,0 +1,71 @@
+{"t": 1794370910949, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371032697, "dialog": "bash", "label": "cap-CAL", "labels_in_dialog": ["cap-CAL"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371040435, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371075898, "dialog": "bash", "label": "cap-AAA", "labels_in_dialog": ["cap-AAA"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371084960, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371085168, "dialog": "bash", "label": "cap-BBB", "labels_in_dialog": ["cap-BBB"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371105286, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371161012, "dialog": "bash", "label": "cap-CCC", "labels_in_dialog": ["cap-CCC"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371162579, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371162799, "dialog": "bash", "label": "cap-DDD", "labels_in_dialog": ["cap-DDD"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371182939, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371209732, "dialog": "other", "label": "cap-R1", "labels_in_dialog": ["cap-R1"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371218758, "dialog": "other", "label": "cap-R2", "labels_in_dialog": ["cap-R2"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371238892, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371266789, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371279405, "dialog": "other", "label": "cap-R3", "labels_in_dialog": ["cap-R3"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371279718, "dialog": "other", "label": "cap-R3", "labels_in_dialog": ["cap-R3"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "1 of 2"}
+{"t": 1794371280966, "dialog": "other", "label": "cap-R4", "labels_in_dialog": ["cap-R4"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "2 of 2"}
+{"t": 1794371301006, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371338448, "dialog": "other", "label": "cap-R5", "labels_in_dialog": ["cap-R5"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371338765, "dialog": "other", "label": "cap-R5", "labels_in_dialog": ["cap-R5"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "1 of 2"}
+{"t": 1794371347436, "dialog": "other", "label": "cap-R6", "labels_in_dialog": ["cap-R6"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "2 of 2"}
+{"t": 1794371367592, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371384148, "dialog": "other", "label": "cap-R7", "labels_in_dialog": ["cap-R7"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371384460, "dialog": "other", "label": "cap-R7", "labels_in_dialog": ["cap-R7"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "1 of 2"}
+{"t": 1794371392825, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371423432, "dialog": "other", "label": "cap-R9", "labels_in_dialog": ["cap-R9"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371423763, "dialog": "other", "label": "cap-R9", "labels_in_dialog": ["cap-R9"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "1 of 2"}
+{"t": 1794371426568, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371452017, "dialog": "bash", "label": "cap-EEE", "labels_in_dialog": ["cap-EEE"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371455157, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371482274, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371482925, "dialog": "bash", "label": "cap-SUB1", "labels_in_dialog": ["cap-SUB1"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371483135, "dialog": "bash", "label": "cap-SUB1", "labels_in_dialog": ["cap-SUB1"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "1 of 2"}
+{"t": 1794371492042, "dialog": "bash", "label": "cap-SUB2", "labels_in_dialog": ["cap-SUB2"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "2 of 2"}
+{"t": 1794371512111, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371545412, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371546368, "dialog": "bash", "label": "cap-SUB3", "labels_in_dialog": ["cap-SUB3"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371546686, "dialog": "bash", "label": "cap-SUB3", "labels_in_dialog": ["cap-SUB3"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "1 of 2"}
+{"t": 1794371547887, "dialog": "bash", "label": "cap-SUB4", "labels_in_dialog": ["cap-SUB4"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "2 of 2"}
+{"t": 1794371567988, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371613754, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371614615, "dialog": "bash", "label": "cap-SUB5", "labels_in_dialog": ["cap-SUB5"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371615471, "dialog": "bash", "label": "cap-SUB5", "labels_in_dialog": ["cap-SUB5"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "1 of 2"}
+{"t": 1794371623274, "dialog": "bash", "label": "cap-SUB6", "labels_in_dialog": ["cap-SUB6"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "2 of 2"}
+{"t": 1794371652956, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371680292, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371680839, "dialog": "bash", "label": "cap-SUB7", "labels_in_dialog": ["cap-SUB7"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371692959, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371694000, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371696088, "dialog": "other", "label": "cap-R11", "labels_in_dialog": ["cap-R11"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371704162, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371733417, "dialog": "other", "label": "cap-R12", "labels_in_dialog": ["cap-R12"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371733732, "dialog": "other", "label": "cap-R12", "labels_in_dialog": ["cap-R12"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "1 of 2"}
+{"t": 1794371747479, "dialog": "bash", "label": "cap-SUB8", "labels_in_dialog": ["cap-SUB8"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "2 of 2"}
+{"t": 1794371755528, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371786441, "dialog": "bash", "label": "cap-SUB9", "labels_in_dialog": ["cap-SUB9"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371789773, "dialog": "bash", "label": "cap-SUB9", "labels_in_dialog": ["cap-SUB9"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "1 of 2"}
+{"t": 1794371794577, "dialog": "bash", "label": "cap-MAIN", "labels_in_dialog": ["cap-MAIN"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "2 of 2"}
+{"t": 1794371800511, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371891230, "dialog": "other", "label": "cap-R13", "labels_in_dialog": ["cap-R13"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371891961, "dialog": "other", "label": "cap-R13", "labels_in_dialog": ["cap-R13"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "1 of 2"}
+{"t": 1794371899941, "dialog": "bash", "label": "cap-SUB10", "labels_in_dialog": ["cap-SUB10"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "2 of 2"}
+{"t": 1794371924195, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371924407, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371925027, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794371943811, "dialog": "bash", "label": "cap-SUB11", "labels_in_dialog": ["cap-SUB11"], "idle_prompt": false, "esc_interrupt": false}
+{"t": 1794371947016, "dialog": "bash", "label": "cap-SUB11", "labels_in_dialog": ["cap-SUB11"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "1 of 2"}
+{"t": 1794371959864, "dialog": "bash", "label": "cap-MAIN2", "labels_in_dialog": ["cap-MAIN2"], "idle_prompt": false, "esc_interrupt": false, "queue_pos": "2 of 2"}
+{"t": 1794371968877, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": true, "esc_interrupt": false}
+{"t": 1794372051282, "dialog": null, "label": null, "labels_in_dialog": [], "idle_prompt": false, "esc_interrupt": false}

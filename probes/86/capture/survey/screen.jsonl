@@ -1,0 +1,8 @@
+{"t": 1794371392134, "kind": "other", "labels": []}
+{"t": 1794371393655, "kind": "trust-dialog", "labels": []}
+{"t": 1794371401782, "kind": "other", "labels": []}
+{"t": 1794371421555, "kind": "other", "labels": ["cap-AAA"]}
+{"t": 1794371493749, "kind": "other", "labels": ["cap-AAA", "cap-BBB"]}
+{"t": 1794371495764, "kind": "ask-dialog", "labels": ["cap-AAA", "cap-BBB"]}
+{"t": 1794371514486, "kind": "other", "labels": ["cap-AAA", "cap-BBB"]}
+{"t": 1794371642410, "kind": "other", "labels": []}

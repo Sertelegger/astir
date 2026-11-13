@@ -1,0 +1,102 @@
+{"t": 1794371137098, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371136624}
+{"t": 1794371154557, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371154518}
+{"t": 1794371157586, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371157577}
+{"t": 1794371195777, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371195757}
+{"t": 1794371199153, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371199129}
+{"t": 1794371210497, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371210453}
+{"t": 1794371211504, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371211487}
+{"t": 1794371239800, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371239796}
+{"t": 1794371241358, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371241337}
+{"t": 1794371252633, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371252601}
+{"t": 1794371272170, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371272140}
+{"t": 1794371273837, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371273827}
+{"t": 1794371289091, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371289039}
+{"t": 1794371308676, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371308625}
+{"t": 1794371310638, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371310603}
+{"t": 1794371325896, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371325865}
+{"t": 1794371342154, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371342122}
+{"t": 1794371344622, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371344605}
+{"t": 1794371355860, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371355808}
+{"t": 1794371357875, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371357860}
+{"t": 1794371372727, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371372682}
+{"t": 1794371374794, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371374788}
+{"t": 1794371386035, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371386013}
+{"t": 1794371405481, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371405413}
+{"t": 1794371407354, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371407324}
+{"t": 1794371418695, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371418636}
+{"t": 1794371420417, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371420365}
+{"t": 1794371429247, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371429233}
+{"t": 1794371431014, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371430959}
+{"t": 1794371442254, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371442232}
+{"t": 1794371461707, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371461656}
+{"t": 1794371466906, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371466872}
+{"t": 1794371478100, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371478081}
+{"t": 1794371480873, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371480858}
+{"t": 1794371506489, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371506450}
+{"t": 1794371509365, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371509327}
+{"t": 1794371555660, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371555627}
+{"t": 1794371558734, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371558695}
+{"t": 1794371569979, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371569914}
+{"t": 1794371571187, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371571126}
+{"t": 1794371594264, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371594211}
+{"t": 1794371595979, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "input needed", "statusUpdatedAt": 1794371595932}
+{"t": 1794371614325, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371614229}
+{"t": 1794371615539, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371615492}
+{"t": 1794371633281, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371633275}
+{"t": 1794371634890, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "input needed", "statusUpdatedAt": 1794371634862}
+{"t": 1794371651136, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371651117}
+{"t": 1794371671894, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371671861}
+{"t": 1794371674518, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371674477}
+{"t": 1794371685809, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371685770}
+{"t": 1794371686566, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371686531}
+{"t": 1794371702470, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371702436}
+{"t": 1794371703680, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371703653}
+{"t": 1794371714954, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371714924}
+{"t": 1794371741155, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371741130}
+{"t": 1794371743418, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371743376}
+{"t": 1794371744022, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "input needed", "statusUpdatedAt": 1794371744009}
+{"t": 1794371783093, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371783067}
+{"t": 1794371783957, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371783917}
+{"t": 1794371802017, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371801966}
+{"t": 1794371803629, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371803579}
+{"t": 1794371804282, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "input needed", "statusUpdatedAt": 1794371804250}
+{"t": 1794371815502, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371815450}
+{"t": 1794371816459, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371816406}
+{"t": 1794371846333, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371846302}
+{"t": 1794371849350, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371849333}
+{"t": 1794371865596, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371865587}
+{"t": 1794371890747, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371890692}
+{"t": 1794371893818, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371893776}
+{"t": 1794371914987, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371914964}
+{"t": 1794371916094, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371916068}
+{"t": 1794371940895, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371940843}
+{"t": 1794371942405, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371942345}
+{"t": 1794371951560, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371951526}
+{"t": 1794371957547, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794371957520}
+{"t": 1794371975348, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794371975331}
+{"t": 1794371976605, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794371976563}
+{"t": 1794372047868, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794372047838}
+{"t": 1794372338149, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794372338141}
+{"t": 1794372340814, "sessionId": "1562313e-4841-4afd-8aea-21c11ea10b5f", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794372340779}
+{"t": 1794372400722, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": null, "waitingFor": null, "statusUpdatedAt": null}
+{"t": 1794372400773, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794372400615}
+{"t": 1794372415712, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794372415686}
+{"t": 1794372417521, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "waiting", "waitingFor": "input needed", "statusUpdatedAt": 1794372417481}
+{"t": 1794372433767, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794372433698}
+{"t": 1794372434522, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794372434469}
+{"t": 1794372451672, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794372451641}
+{"t": 1794372453280, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "waiting", "waitingFor": "input needed", "statusUpdatedAt": 1794372453261}
+{"t": 1794372469631, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794372469570}
+{"t": 1794372482254, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794372482223}
+{"t": 1794372483712, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794372483676}
+{"t": 1794372499960, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794372499911}
+{"t": 1794372503833, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794372503812}
+{"t": 1794372519225, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794372519176}
+{"t": 1794372520532, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794372520485}
+{"t": 1794372536828, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794372536792}
+{"t": 1794372555737, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794372555729}
+{"t": 1794372558905, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794372558862}
+{"t": 1794372575199, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794372575163}
+{"t": 1794372608893, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "busy", "waitingFor": null, "statusUpdatedAt": 1794372608843}
+{"t": 1794372610050, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "waiting", "waitingFor": "permission prompt", "statusUpdatedAt": 1794372610009}
+{"t": 1794372631220, "sessionId": "66d7f2dc-d690-4985-9227-d2eb4f85c35d", "status": "idle", "waitingFor": null, "statusUpdatedAt": 1794372631211}
