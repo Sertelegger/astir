@@ -191,18 +191,24 @@ describe("blocked accounting", () => {
     const r = new Registry({ nowMs: c.now });
 
     r.apply(ev("session_start"), "/repo");
-    c.advance(5_000); // 5s working
+    // #86 — 6s working, then a dialog. Claude notifies only once a dialog has
+    // been left alone for 6s (never sooner than 5983ms after its
+    // PermissionRequest, n=53, test/fixtures/claude/permission-capture.json),
+    // so the Notification lands ~6s after the dialog and the block is dated
+    // 5s (promptNoticeAgeMs) before it. This used to model a Notification 5s
+    // into the session, which Claude never sends that early.
+    c.advance(11_000);
 
     const res = r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
     expect(res.becameBlocked?.kind).toBe("permission_prompt");
     expect(r.blockedCount()).toBe(1);
 
-    c.advance(30_000); // 30s waiting on a human
+    c.advance(30_000); // 30s more waiting on a human
     r.apply(ev("post_tool", { tool: "Bash", op: "other" }), "/repo");
 
     const agent = r.get("s1")?.agents.get("s1");
-    expect(agent?.activeMs).toBe(5_000);
-    expect(agent?.blockedMs).toBe(30_000);
+    expect(agent?.activeMs).toBe(6_000);
+    expect(agent?.blockedMs).toBe(35_000);
     expect(r.blockedCount()).toBe(0);
   });
 
@@ -382,35 +388,48 @@ describe("time spent working this turn (G4)", () => {
 
   it("EXCLUDES time the agent spent blocked on the human", () => {
     // This is the answer to "is it just wall clock?" — no. Wall clock here is
-    // 65s; 60 of them were spent waiting on a person, and time waiting on you is
+    // 71s; 65 of them were spent waiting on a person, and time waiting on you is
     // not time spent doing something.
+    //
+    // #86 — the Notification comes ~6s after the dialog (never sooner than
+    // 5983ms after its PermissionRequest, n=53, test/fixtures/claude/
+    // permission-capture.json) and the block is dated 5s before it, so 4s of
+    // work, then 65s blocked. This used to model a Notification 3s into the
+    // turn, which Claude never sends that early.
     const c = clock();
     const r = new Registry({ nowMs: c.now });
     r.apply(ev("session_start"), "/repo");
-    c.advance(3_000);
+    c.advance(9_000);
     r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
     c.advance(60_000);
     r.apply(ev("pre_tool"), "/repo");
     c.advance(2_000);
     r.apply(ev("post_tool"), "/repo");
 
-    expect(turnOf(r)).toBe(5_000);
+    expect(turnOf(r)).toBe(6_000);
+    expect(r.get("s1")?.agents.get("s1")?.blockedMs).toBe(65_000);
   });
 
   it("does not end the turn just because the agent asked a question", () => {
     // A permission prompt is mid-turn: the turn resumes on approval, so the
     // total must carry across it rather than restarting.
+    //
+    // #86 — 5s of work, then a dialog Claude reports ~6s later (never sooner
+    // than 5983ms after its PermissionRequest, n=53, test/fixtures/claude/
+    // permission-capture.json); the block is dated 5s before the Notification.
+    // This used to model a Notification 4s into the turn, which Claude never
+    // sends that early.
     const c = clock();
     const r = new Registry({ nowMs: c.now });
     r.apply(ev("session_start"), "/repo");
-    c.advance(4_000);
+    c.advance(10_000);
     r.apply(ev("notification", { notificationKind: "permission_prompt" }), "/repo");
     c.advance(1_000);
     r.apply(ev("pre_tool"), "/repo");
     c.advance(1_000);
     r.apply(ev("post_tool"), "/repo");
 
-    expect(turnOf(r)).toBe(5_000);
+    expect(turnOf(r)).toBe(6_000);
   });
 
   it("resets when the agent hands the floor back", () => {

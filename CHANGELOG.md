@@ -135,12 +135,44 @@ release is cut, named and published is in
 
 ### Changed
 
+- **A Claude permission prompt alerts about 6 s after it appears, and Esc
+  clears it** ([#86](https://github.com/Sertelegger/astir/issues/86)).
+  - The alert comes about 6 s after the dialog appears, where it took about
+    11 s. Claude says a dialog is waiting only once it has been left alone for
+    6 s, and astir used to start its own 5 s wait from then. It now counts
+    that wait from about when the dialog appeared, though never from before
+    the agent's last step. If you press a key in that terminal while the
+    dialog is up, Claude says so later (at 12 or 18 s), and so does astir.
+  - Pressing Esc at a prompt, or choosing No, clears the alert within one
+    poll of `claude agents --json` (every 5 s). Before, Esc fired nothing
+    astir could see, and it reminded you every minute until the agent did
+    something else.
+  - Approving a prompt clears it within one poll too, so an approved command
+    that runs for a while no longer keeps reminding you.
+  - Back-to-back dialogs, where approving one brings up the next, are one
+    block: one alert, then reminders, and dismissing it covers both.
+  - A Claude permission block is shown on the session's main agent, whichever
+    agent's dialog it is: Claude's notification does not say. "Take me there"
+    still lands on the right pane. When the main agent's turn ends while a
+    background agent's dialog is still up, the alert stands.
+  - No new hook and nothing new on disk. Codex is unchanged.
 - The release checklist now includes updating the installed plugin. Bumping
   `marketplace.json` lets an install see that a new version exists; it does not
   fetch it, and CONTRIBUTING previously implied otherwise.
 
 ### Known limitations
 
+- **Two Claude permission dialogs in a row can alert twice.** When approving
+  one command brings up the next, the screen is empty for about 0.2 s
+  (179-281 ms measured). A poll that lands in that gap, about 4-6% of such
+  pairs, reads as the prompt answered: astir sends `resolved`, and the next
+  dialog alerts again about 6 s after it appears.
+- **A Claude dialog that never gets Claude's notification never alerts.**
+  Claude notifies only once a dialog has been left alone for 6 s, so if you
+  keep typing in that terminal the whole time, astir is never told, as before.
+- **Without a working session listing, Esc is not seen.** Where
+  `claude agents --json` cannot run, or does not list the session, a dismissed
+  Claude prompt stays blocked until the agent's next step, as before.
 - **A Codex permission alert waits 30 seconds, not 5.** Codex's automatic
   reviewer answers many requests itself, and the one captured took ~12s; a
   shorter wait would alert you about decisions that were never yours. The

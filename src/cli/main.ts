@@ -41,7 +41,7 @@ import { probeDaemon } from "../daemon/detect.js";
 import { BUILD_STAMP, Daemon } from "../daemon/server.js";
 import { createPidLister, createProcessTable } from "../discovery/pids.js";
 import { createSshLister, RemoteDiscovery } from "../discovery/remote.js";
-import { createClaudeLister } from "../discovery/sessions.js";
+import { createClaudeLister, pollInto } from "../discovery/sessions.js";
 import { Registry } from "../model/registry.js";
 import { parseSnapshot } from "../model/snapshot.js";
 import { detectNotifier } from "../notify/detect.js";
@@ -471,16 +471,9 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   // a record exists here only once a hook has arrived under that id, so this is
   // "the id the running session identifies itself as".
   const lister = createClaudeLister({ known: (id) => registry.get(id) !== undefined });
-  const reconcile = (): void => {
-    void lister()
-      .then((found) =>
-        registry.reconcile(found?.sessions ?? null, {
-          complete: found?.complete ?? false,
-          provider: "claude",
-        }),
-      )
-      .catch(() => undefined);
-  };
+  // #86 — the listing now also ENDS permission blocks (Esc fires no hook), so
+  // its answer is dated from when the poll began, not when it landed.
+  const reconcile = (): void => void pollInto(lister, registry, "claude");
   // Codex has no session listing, so its sessions are vouched for by the pid
   // their hook relay reported — see discovery/pids.ts. Without this nothing
   // reaps a Codex session that dies without SessionEnd.

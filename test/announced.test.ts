@@ -376,18 +376,24 @@ describe("the mark and the doorbell agree", () => {
     // a1's doorbell is in flight. a2 is answered, works, and blocks again.
     t += 1_000;
     registry.apply(ev("pre_tool", { agentId: "a2" }), "/repo");
-    t += 2_100;
+    // #86 — Claude reports a dialog ~6s after it appears (never sooner than
+    // 5983ms after its PermissionRequest, n=53, test/fixtures/claude/
+    // permission-capture.json), and the block is dated promptNoticeAgeMs (5s)
+    // before the Notification. This used to re-block 2.1s after the pre_tool,
+    // which Claude never notifies that early.
+    t += 6_000;
     block("a2");
-    const reblockedAt = t;
+    const blockedFrom = t - 5_000;
     release();
     await pulse;
 
     expect(at("a1")?.announcedAt).toBe(pulseNow);
-    expect(at("a2")?.stateSince).toBe(reblockedAt);
+    expect(at("a2")?.stateSince).toBe(blockedFrom);
+    expect(blockedFrom, "the block still began after the pulse that read it").toBeGreaterThan(pulseNow);
     expect(at("a2")?.announcedAt, "a new block is not announced by an older pulse").toBeNull();
 
     // And it is announced once it has proved itself, like any other.
-    t = reblockedAt + DWELL;
+    t = blockedFrom + DWELL;
     await loop.pulse();
     expect(at("a2")?.announcedAt).toBe(t);
   });
