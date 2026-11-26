@@ -30,6 +30,7 @@ import {
   describeReminders,
   hooksLookUnwired,
   installedPlugins,
+  installReminderLines,
   notifierGreeting,
 } from "../config/plugin.js";
 import { CLAUDE_CLI, CODEX_CLI, registerPlugin } from "../config/register.js";
@@ -67,7 +68,7 @@ import { buildEnvelope } from "../notify/envelope.js";
 import { NotifyLoop } from "../notify/loop.js";
 import { createNotifierBackend } from "../notify/notify.js";
 import { NotifyPolicy } from "../notify/policy.js";
-import { dropSelfSessions, pushRoster, rosterUrlFrom } from "../notify/roster.js";
+import { dropSelfSessions, pushRoster, rosterOf, rosterUrlFrom } from "../notify/roster.js";
 import { NotifierServer } from "../notify/server.js";
 import { fetchRemote, fetchStatus } from "../status/fetch.js";
 import { runStatusLine } from "../status/line.js";
@@ -212,12 +213,8 @@ function runInstall(flags: Args["flags"]): void {
       "",
       "How you will be told an agent is waiting:",
       "",
-      "  Desktop notification   always on. This is the floor and needs no setup.",
-      "                         A blocked agent is re-reminded every minute for ten",
-      "                         minutes, then every two, then every five, then",
-      "                         quarter-hourly — so a missed alert is never lost.",
-      "                         `astir dismiss` stops the reminders without pretending",
-      "                         the agent is unblocked.",
+      // #98 — the default schedule in doctor's words, from one place.
+      ...installReminderLines(configPath()),
       "",
       "  Menu bar (macOS)       optional, and the only always-visible surface.",
       "                         Requires SwiftBar:",
@@ -543,28 +540,12 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
 
   // DMN-10 — announce what THIS machine is running to whichever notifier we can
   // reach, so the far end sees ordinary sessions and not only doorbells.
+  // #98 — it names the agents blocked here too, which keeps them reachable on
+  // the far side between reminders that may now be an hour apart, or none.
   const rosterTick = setInterval(() => {
     const url = rosterTarget();
     if (url === null) return;
-    const sessions = [
-      ...registry.list().map((r) => ({
-        sessionId: r.sessionId,
-        cwd: r.cwd,
-        name: r.name,
-        status: r.status,
-        ...(r.attended === undefined ? {} : { attended: r.attended }),
-      })),
-      // Sessions we cannot hear are still running here, and the far end has no
-      // other way to learn they exist.
-      ...registry.silent().map((d) => ({
-        sessionId: d.sessionId,
-        cwd: d.cwd,
-        name: d.name,
-        status: d.status,
-        ...(d.attended === undefined ? {} : { attended: d.attended }),
-      })),
-    ];
-    void pushRoster(url, remoteToken, { host: hostname(), sessions });
+    void pushRoster(url, remoteToken, rosterOf(registry, hostname()));
   }, 10_000);
   rosterTick.unref();
 
@@ -811,6 +792,8 @@ async function runNotifier(flags: Args["flags"]): Promise<void> {
     // #78 — the backend answers with what its run did, so a notify-send that
     // exits 1 here is refused to the sender rather than counted as shown.
     notify: backend.notify,
+    // #98 — and withdraws one when its block ends, as the Alerts tip says.
+    remove: backend.remove,
     ...(backend.available ? {} : { cannotShow: backend.unavailableReason ?? "no notifier" }),
     onEvent: (line) => process.stdout.write(`delivered: ${line}\n`),
   });

@@ -166,6 +166,23 @@ export function notificationText(
   return { title: envelope.title, body: `${where} ${reasonText(envelope.reason)}` };
 }
 
+/**
+ * The replace-and-remove key for an envelope's notification, given the machine
+ * showing it: a reminder about the same agent replaces the alert it follows,
+ * and its `resolved` withdraws it (PSH-13).
+ *
+ * The bare `session:agent` for an alert from this machine, which is what the
+ * local delivery path has always used; `host/session:agent` for one from
+ * somewhere else, so two machines can never share a banner. A doorbell this
+ * machine's own daemon also sends to its notifier therefore lands on the local
+ * alert rather than beside it. #98: the notifier did not group at all, so a
+ * remote reminder stacked a new alert and `resolved` withdrew none of them.
+ */
+export function notificationGroup(envelope: NotifyEnvelope, localHost: string = hostname()): string {
+  const key = `${envelope.session.sessionId}:${envelope.session.agentId}`;
+  return sameHost(envelope.origin.host, localHost) ? key : `${shortHost(envelope.origin.host)}/${key}`;
+}
+
 function safeUser(): string {
   try {
     return userInfo().username;

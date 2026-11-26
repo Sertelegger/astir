@@ -10,7 +10,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { hostname } from "node:os";
-import { notificationText, validateEnvelope } from "./envelope.js";
+import { notificationGroup, notificationText, validateEnvelope } from "./envelope.js";
 import type { Notification, NotifyOutcome } from "./notify.js";
 import { RemoteView } from "./remote.js";
 import { RosterStore, validateRoster } from "./roster.js";
@@ -34,6 +34,13 @@ export interface NotifierServerOpts {
    */
   // biome-ignore lint/suspicious/noConfusingVoidType: `undefined` would refuse a block-bodied notifier; `void` alone accepts anything
   notify: (n: Notification) => void | Promise<NotifyOutcome>;
+  /**
+   * Withdraw what `notify` showed under a group, as `NotifierBackend.remove`
+   * does (PSH-13). Called for a `resolved`, so another machine's alert goes
+   * when its block ends, as a local one does (#98). Absent, nothing is
+   * withdrawn.
+   */
+  remove?: (group: string) => void;
   onEvent?: (line: string) => void;
   /** Injectable per §9 so expiry is testable without waiting half an hour. */
   view?: RemoteView;
@@ -184,6 +191,9 @@ export class NotifierServer {
       }
 
       this.roster.apply(parsed.roster);
+      // #98 — and the agents it names as still blocked are heard from again,
+      // which a quiet reminder schedule no longer does often enough.
+      this.view.confirm(parsed.roster, this.now());
       this.counters.rosters++;
       return this.json(res, 200, { ok: true, sessions: parsed.roster.sessions.length });
     }
@@ -238,7 +248,14 @@ export class NotifierServer {
     const now = this.now();
     const { notify } = this.view.apply(envelope, now);
     this.view.prune(now);
-    if (envelope.kind === "resolved") this.counters.resolved++;
+    // #98 — one group per agent, so a reminder replaces the alert before it
+    // and a `resolved` withdraws it. Before, every reminder from another
+    // machine was a new notification and none was ever taken down.
+    const group = notificationGroup(envelope, this.host);
+    if (envelope.kind === "resolved") {
+      this.counters.resolved++;
+      this.withdraw(group);
+    }
 
     // The remote view above is updated either way — a menu here can still
     // list and clear the block — but nobody was interrupted, so the sender
@@ -247,7 +264,7 @@ export class NotifierServer {
       return this.refuse(res, `cannot show notifications here: ${this.opts.cannotShow}`);
     }
     if (notify) {
-      const outcome = await this.show(notificationText(envelope));
+      const outcome = await this.show({ ...notificationText(envelope, this.host), group });
       if (!outcome.ok) {
         this.showFailure = outcome.reason;
         return this.refuse(res, `could not show it here: ${outcome.reason}`);
@@ -283,6 +300,15 @@ export class NotifierServer {
       // A failing notifier must never take down the receiver — nor be counted
       // as showing anything.
       return { ok: false, reason: "the notifier failed to run" };
+    }
+  }
+
+  /** Take down what was shown under `group`. Never throws: it shows nothing, so it proves nothing. */
+  private withdraw(group: string): void {
+    try {
+      this.opts.remove?.(group);
+    } catch {
+      // A backend that cannot withdraw leaves the alert for the user to clear.
     }
   }
 

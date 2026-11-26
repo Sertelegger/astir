@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { configPath } from "../src/config/paths.js";
-import { daemonReminders, describeReminders } from "../src/config/plugin.js";
+import { daemonReminders, describeReminders, installReminderLines } from "../src/config/plugin.js";
 import { readReminders, remindersSource, reportReminders } from "../src/config/reminders.js";
 import { type AstirEvent, CONTRACT_VERSION, type Kind } from "../src/contract/event.js";
 import { Daemon } from "../src/daemon/server.js";
@@ -361,6 +361,24 @@ describe("PSH-02 — the setting: notify.reminders in ~/.astir/config.json", () 
     expect(got.problem).toMatch(/not valid JSON/);
   });
 
+  it("PSH-02 — a file that is there and cannot be read runs calm, and says why", () => {
+    // Not the same as no file: doctor names it, so the reason is kept. A
+    // directory where the file should be fails the same way for root.
+    const h = home();
+    mkdirSync(configPath(h), { recursive: true });
+    const r = readReminders({ home: h, env: {} });
+    expect(r).toEqual({
+      schedule: "calm",
+      source: "default",
+      problem: `${configPath(h)} cannot be read (EISDIR)`,
+    });
+    const get = remindersSource({ home: h, env: {}, now: () => 0 });
+    expect(get().problem).toBe(`${configPath(h)} cannot be read (EISDIR)`);
+    expect(describeReminders(r, null, configPath(h)).join("\n")).toContain(
+      `${configPath(h)} cannot be read (EISDIR), so no setting was read from it`,
+    );
+  });
+
   it("PSH-02 — any other shape of file is read without complaint", () => {
     for (const body of ["[]", '"calm"', "null", '{"notify": "calm"}', '{"notify": ["calm"]}']) {
       expect(readReminders({ home: home(body), env: {} }), body).toEqual({
@@ -449,6 +467,22 @@ describe("PSH-02 — a running daemon picks up an edited file without a restart"
     same("insistent");
     t = 5_000;
     expect(get()).toEqual({ schedule: "insistent", source: "config" });
+  });
+
+  it("PSH-02 — an edit that leaves the size as it was is seen by its mtime", () => {
+    // The common edit: one schedule for another of the same length. The size
+    // alone cannot tell them apart.
+    const h = freshHome();
+    writeFileSync(configPath(h), '{"notify":{"reminders":"off" }}');
+    utimesSync(configPath(h), 1_600_000_000, 1_600_000_000);
+    let t = 0;
+    const get = remindersSource({ home: h, env: {}, now: () => t });
+    expect(get()).toEqual({ schedule: "off", source: "config" });
+
+    writeFileSync(configPath(h), '{"notify":{"reminders":"calm"}}');
+    utimesSync(configPath(h), 1_600_000_060, 1_600_000_060);
+    t = 5_000;
+    expect(get()).toEqual({ schedule: "calm", source: "config" });
   });
 
   it("PSH-02 — ASTIR_REMINDERS still wins over an edited file", () => {
@@ -551,6 +585,45 @@ describe("PSH-02 — doctor shows the schedule in force and where it came from",
     expect(out).toContain("the daemon's ASTIR_REMINDERS is not a schedule");
   });
 
+  it("does not pin a typo in the file on the daemon's ASTIR_REMINDERS", () => {
+    // The daemon fell back from its environment; this terminal has no
+    // ASTIR_REMINDERS and a typo in the file. The value doctor holds is the
+    // file's, so naming it as the variable's would send someone to the wrong
+    // place.
+    const lines = describeReminders(
+      { schedule: "calm", source: "config", rejected: "loud" },
+      { schedule: "calm", source: "env", fellBack: true },
+      PATH,
+    );
+    expect(lines[0]).toBe("  reminders       calm — the daemon's ASTIR_REMINDERS is not a schedule");
+    expect(lines.join("\n")).not.toContain('ASTIR_REMINDERS="loud"');
+    // ...and the file's own typo is still named, as this terminal's reading.
+    expect(lines.join("\n")).toContain(`this terminal reads calm, from ${PATH} — "loud" is not a schedule`);
+  });
+
+  it("says how to choose when the file's value is not a schedule", () => {
+    // The setting has been found, and got wrong: what the right shape is, is
+    // the most useful line there is.
+    const hint = '"notify": { "reminders": "off" | "calm" | "insistent" }';
+    const file = text(
+      describeReminders(
+        { schedule: "calm", source: "config", rejected: "loud" },
+        { schedule: "calm", source: "config", fellBack: true },
+        PATH,
+      ),
+    );
+    expect(file).toContain(hint);
+    // Not for one in ASTIR_REMINDERS, where the file is not what went wrong.
+    const env = text(
+      describeReminders(
+        { schedule: "calm", source: "env", rejected: "loud" },
+        { schedule: "calm", source: "env", fellBack: true },
+        PATH,
+      ),
+    );
+    expect(env).not.toContain(hint);
+  });
+
   it("the daemon's answer wins over this terminal's, and the difference is named", () => {
     // A daemon started by launchd does not see the ASTIR_REMINDERS exported
     // in the terminal doctor runs in.
@@ -630,6 +703,34 @@ describe("PSH-02 — doctor shows the schedule in force and where it came from",
       ),
     );
     expect(out).toContain(`${PATH} is not valid JSON`);
+  });
+});
+
+describe("PSH-02 — astir install says what the default is", () => {
+  // It used to describe insistent as the only schedule, a day after calm
+  // became the default.
+  const PATH = "/home/u/.astir/config.json";
+  const out = installReminderLines(PATH).join("\n");
+
+  it("names calm as the default, in doctor's words for it", () => {
+    expect(out).toContain("calm");
+    expect(out).toContain("the first alert, then +10 and +30 min, then hourly");
+    expect(out).not.toContain("every minute for ten");
+    expect(out).not.toContain("quarter-hourly");
+  });
+
+  it("says where to choose another, and that dismiss stops them", () => {
+    expect(out).toContain('"notify": { "reminders": "insistent" }');
+    expect(out).toContain('"off"');
+    expect(out).toContain(PATH);
+    expect(out).toContain("astir doctor");
+    expect(out).toContain("astir dismiss");
+  });
+
+  it("sits in install's two columns, under its own heading", () => {
+    const lines = installReminderLines(PATH);
+    expect(lines[0]).toMatch(/^ {2}Desktop notification {3}\S/);
+    for (const line of lines.slice(1)) expect(line).toMatch(/^ {25}\S/);
   });
 });
 

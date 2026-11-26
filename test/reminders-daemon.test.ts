@@ -12,20 +12,32 @@
  * minute after the first alert, which is the only way to tell insistent from
  * calm (calm waits ten). That makes one test here a minute long, on purpose.
  *
+ * The rest of `main.ts`'s #98 wiring is run here too, each piece where a unit
+ * test cannot reach it: the daemon re-reads an edited file and says so (last,
+ * since every test before it assumes insistent); its roster names the agents
+ * still blocked, which keeps them reachable on the far side under a quiet
+ * schedule; `astir install` says what the default is; and on macOS — faked
+ * with a preload that sets `process.platform`, since CI runs on Linux —
+ * `astir notifier` and `astir doctor` carry the Alerts tip, and the notifier
+ * groups and withdraws another machine's alerts through terminal-notifier
+ * (a stub that logs its arguments).
+ *
  * Built to a throwaway directory, as delivery-live.test.ts does, rather than
  * `dist/`, which artifact.test.ts rebuilds alongside. The environment is
  * scrubbed of display and bus variables and of ASTIR_REMINDERS, and the
  * doorbells go to a capture server through `--notify-url`, so nothing reaches
- * a screen and no notifier port is probed.
+ * a screen and no notifier port is probed. Every spawned command gets a HOME
+ * of its own under the throwaway directory and port 0.
  */
 
 import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { configPath } from "../src/config/paths.js";
+import { buildEnvelope } from "../src/notify/envelope.js";
 import { createNotifierBackend } from "../src/notify/notify.js";
 import { type Far, httpOn } from "./fixtures/sockets.js";
 
@@ -52,6 +64,7 @@ describe.skipIf(process.platform === "win32")("PSH-02 — the built daemon runs 
   let base = "";
   let stdout = "";
   const doorbells: { kind: string; at: number }[] = [];
+  const rosters: { sessions?: { sessionId?: string; blocked?: unknown }[] }[] = [];
 
   beforeAll(async () => {
     // Made here, not at collection, so a skipped run leaves nothing behind.
@@ -84,6 +97,7 @@ describe.skipIf(process.platform === "win32")("PSH-02 — the built daemon runs 
           const envelope = JSON.parse(body) as { kind?: unknown };
           doorbells.push({ kind: String(envelope.kind), at: Date.now() });
         }
+        if (req.method === "POST" && req.url === "/roster") rosters.push(JSON.parse(body));
         res.writeHead(200, { "content-type": "application/json" });
         res.end(req.url === "/state" ? JSON.stringify({ sessions: [] }) : "{}");
       });
@@ -190,7 +204,125 @@ describe.skipIf(process.platform === "win32")("PSH-02 — the built daemon runs 
       const gap = (second?.at ?? 0) - (first?.at ?? 0);
       expect(gap).toBeGreaterThanOrEqual(55_000);
       expect(gap).toBeLessThanOrEqual(70_000);
+
+      // #98 — and the roster, pushed every 10 s, names the agent still
+      // blocked: under a quiet schedule it is what keeps the far side from
+      // reading the agent as out of contact between reminders.
+      const named = rosters
+        .flatMap((r) => r.sessions ?? [])
+        .filter((s) => s.sessionId === "astir-98-blocked");
+      expect(named.length, "no roster listed the blocked session").toBeGreaterThan(0);
+      expect(named.at(-1)?.blocked).toEqual(["astir-98-blocked"]);
     },
     120_000,
   );
+
+  it("astir install says what the default reminders are", async () => {
+    // Its own HOME, and no CLAUDE_CONFIG_DIR in the environment: the token and
+    // settings it writes land in the throwaway directory.
+    const home = join(root, "home-install");
+    mkdirSync(home, { recursive: true });
+    const out = await new Promise<string>((resolve, reject) => {
+      execFile(
+        process.execPath,
+        [entry, "install", "--no-plugin"],
+        { cwd: root, env: { ...scrubbed, HOME: home }, encoding: "utf8", timeout: 30_000 },
+        (err, stdout) => (err ? reject(err) : resolve(stdout)),
+      );
+    });
+    expect(out).toContain("the first alert, then +10 and +30 min, then hourly");
+    expect(out).toContain(configPath(home));
+    expect(out).not.toContain("every minute for ten");
+  });
+
+  describe("on macOS (process.platform faked), with terminal-notifier", () => {
+    let darwin: Record<string, string> = {};
+    let preload = "";
+    let shown = "";
+    let notifier: ChildProcess | undefined;
+    let notifierOut = "";
+
+    beforeAll(() => {
+      preload = join(root, "fake-darwin.mjs");
+      writeFileSync(preload, 'Object.defineProperty(process, "platform", { value: "darwin" });\n');
+      // A terminal-notifier that shows nothing and logs what it was asked.
+      const bin = join(root, "stub-bin");
+      shown = join(root, "terminal-notifier.log");
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(join(bin, "terminal-notifier"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${shown}'\n`);
+      chmodSync(join(bin, "terminal-notifier"), 0o755);
+      const home = join(root, "home-darwin");
+      mkdirSync(home, { recursive: true });
+      darwin = { ...scrubbed, PATH: `${bin}:${scrubbed.PATH}`, HOME: home };
+    });
+
+    afterAll(() => {
+      notifier?.kill("SIGTERM");
+    });
+
+    const asDarwin = (args: string[]): string[] => ["--import", pathToFileURL(preload).href, entry, ...args];
+
+    it("astir notifier greets with the Alerts tip, and groups and withdraws another machine's alerts", async () => {
+      notifier = spawn(process.execPath, asDarwin(["notifier", "--port", "0", "--token", "tok"]), {
+        cwd: root,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: darwin,
+      });
+      notifier.stdout?.on("data", (c: Buffer) => {
+        notifierOut += c.toString();
+      });
+      await until(
+        () => /listening on 127\.0\.0\.1:\d+/.test(notifierOut) && /dismiss it;/.test(notifierOut),
+        15_000,
+      );
+      expect(notifierOut).toContain("Set terminal-notifier's notification style to Alerts");
+      expect(notifierOut).not.toContain("brew install terminal-notifier");
+
+      const port = /listening on 127\.0\.0\.1:(\d+)/.exec(notifierOut)?.[1];
+      const post = (kind: "blocked" | "resolved") =>
+        fetch(`http://127.0.0.1:${port}/notify`, {
+          method: "POST",
+          headers: { Authorization: "Bearer tok", "content-type": "application/json" },
+          body: JSON.stringify(
+            buildEnvelope({
+              kind,
+              reason: "permission_prompt",
+              sessionId: "far-session",
+              agentId: "far-agent",
+              cwd: "/srv/astir",
+              host: "megabrain",
+            }),
+          ),
+        });
+      expect((await post("blocked")).status).toBe(200);
+      expect((await post("resolved")).status).toBe(200);
+      await until(() => existsSync(shown) && readFileSync(shown, "utf8").includes("-remove"), 5_000);
+      const calls = existsSync(shown) ? readFileSync(shown, "utf8").trim().split("\n") : [];
+      expect(calls[0]).toContain("-group megabrain/far-session:far-agent");
+      expect(calls[1]).toBe("-remove megabrain/far-session:far-agent");
+    });
+
+    it("astir doctor carries the Alerts tip under its own label", async () => {
+      const out = await new Promise<string>((resolve, reject) => {
+        execFile(
+          process.execPath,
+          asDarwin(["doctor", "--port", new URL(base).port]),
+          { cwd: root, env: darwin, encoding: "utf8", timeout: 30_000 },
+          (err, stdout) => (err ? reject(err) : resolve(stdout)),
+        );
+      });
+      expect(out).toMatch(/^ {2}alert style {5}Set terminal-notifier's notification style to Alerts/m);
+    });
+  });
+
+  // Last: every test above assumes the file still says insistent.
+  it("re-reads an edited file while it runs, and says so with the value it refused", async () => {
+    writeFileSync(path, JSON.stringify({ notify: { reminders: "loud" } }));
+    const line = `reminders: calm (${path}) — "loud" is not a schedule`;
+    // Stat at most every 5 s, announced on the next 1 s tick.
+    await until(() => stdout.includes(line), 15_000);
+    expect(stdout).toContain(line);
+    const body = (await (await fetch(`${base}/healthz`)).json()) as { reminders?: unknown };
+    expect(body.reminders).toEqual({ schedule: "calm", source: "config", fellBack: true });
+  }, 30_000);
 });

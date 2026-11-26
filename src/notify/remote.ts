@@ -19,14 +19,19 @@
  * that admits it does not know.
  */
 
-import type { NotifyEnvelope } from "./envelope.js";
+import { type NotifyEnvelope, sameHost } from "./envelope.js";
+import type { RosterPayload } from "./roster.js";
 
 /**
  * How long a remote entry survives without being reconfirmed.
  *
- * Comfortably longer than the slowest reminder cadence (quarter-hourly), so a
- * still-blocked agent on a healthy tunnel is always re-heard well before it
- * would expire. Anything past this really has gone quiet.
+ * An entry is reconfirmed by its machine's roster, which names the agents
+ * still blocked there and crosses the tunnel every 10 s (`confirm`), and by
+ * each reminder. Not by reminders alone (#98): they were once at least
+ * quarter-hourly, but `calm` now waits an hour between them and `off` sends
+ * none, so a still-blocked agent on a healthy tunnel read as lost contact for
+ * most of each hour and, under `off`, expired here. Anything past this really
+ * has gone quiet.
  */
 const DEFAULT_TTL_MS = 2 * 60 * 60_000;
 
@@ -112,6 +117,32 @@ export class RemoteView {
       acknowledged: false,
     });
     return { notify: true };
+  }
+
+  /**
+   * #98 — a roster names the agents still blocked on its machine, and each
+   * one held here is heard from again. Returns how many.
+   *
+   * Refresh only. A roster never adds an entry, since a doorbell is what
+   * announces a block, and never removes one, since a roster and a `resolved`
+   * travel separately and can cross. A roster without `blocked`, from a
+   * daemon older than #98, says nothing either way. Hosts are compared as
+   * `sameHost` does: an envelope carries the short name, a roster whatever
+   * `hostname()` said.
+   */
+  confirm(roster: RosterPayload, now: number): number {
+    let n = 0;
+    for (const session of roster.sessions) {
+      const blocked = session.blocked;
+      if (blocked === undefined || blocked.length === 0) continue;
+      for (const entry of this.entries.values()) {
+        if (entry.sessionId !== session.sessionId || !blocked.includes(entry.agentId)) continue;
+        if (!sameHost(entry.host, roster.host)) continue;
+        entry.lastSeen = now;
+        n++;
+      }
+    }
+    return n;
   }
 
   /** PSH-10, for remote agents — silence without pretending they are unblocked. */

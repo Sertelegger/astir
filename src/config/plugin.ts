@@ -27,7 +27,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { candidateConfigDirs } from "../discovery/profiles.js";
 import { PROBE_REASON, type ProbeFailure } from "../notify/detect.js";
-import { isReminderSchedule, type ReminderSchedule } from "../notify/policy.js";
+import { DEFAULT_REMINDERS, isReminderSchedule, type ReminderSchedule } from "../notify/policy.js";
 import { REMINDERS_ENV, type RemindersReport, type RemindersSetting, reportReminders } from "./reminders.js";
 import { autostartSupported } from "./service.js";
 
@@ -567,6 +567,27 @@ export function describeReminders(
     }
   }
   return lines;
+}
+
+/**
+ * #98 — what `astir install` says about reminders, in its two columns.
+ *
+ * It described insistent as the only schedule after calm became the default:
+ * the text was written out by hand, so nothing tied it to the setting. The
+ * default and its meaning now come from where doctor reads them.
+ */
+export function installReminderLines(path: string): string[] {
+  const pad = " ".repeat(25);
+  return [
+    "  Desktop notification   always on. This is the floor and needs no setup.",
+    `${pad}A blocked agent gets ${DEFAULT_REMINDERS} reminders by default:`,
+    `${pad}${REMINDERS_MEAN[DEFAULT_REMINDERS]},`,
+    `${pad}for up to a day. For more, or none, set`,
+    `${pad}"notify": { "reminders": "insistent" } (or "off") in`,
+    `${pad}${path}; \`astir doctor\` says which runs.`,
+    `${pad}\`astir dismiss\` stops the reminders without pretending`,
+    `${pad}the agent is unblocked.`,
+  ];
 }
 
 /**

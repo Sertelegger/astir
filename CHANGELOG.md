@@ -157,6 +157,18 @@ release is cut, named and published is in
   - An agent still blocked a day later is no longer announced again as new,
     with the whole schedule starting over. Every schedule now ends at 24
     hours.
+  - An agent blocked on another machine stays listed as waiting between
+    reminders, which may now be an hour apart, or none. The notifier used to
+    hear it only from a reminder, so after 20 quiet minutes the menu bar and
+    `astir status --line` called that machine out of contact and stopped
+    counting the agent, and after two hours forgot it. The daemon's roster,
+    sent every 10 s, now names the agents still blocked. A notifier older
+    than this does not read it, so update both ends.
+  - `astir notifier` now replaces another machine's alert with its next
+    reminder and takes it down when the agent stops waiting, as alerts from
+    this machine already were. Before, each reminder from another machine was
+    a new notification and none was ever removed. This needs
+    terminal-notifier, as on this machine.
 - **A Claude permission prompt alerts about 6 s after it appears, and Esc
   clears it** ([#86](https://github.com/Sertelegger/astir/issues/86)).
   - The alert comes about 6 s after the dialog appears, where it took about
