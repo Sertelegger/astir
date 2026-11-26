@@ -27,8 +27,8 @@ describe("PSH-02 — per-state notification lifetimes", () => {
     expect(p.shouldNotify("s:a", "blocked", 0)).toBe(true);
   });
 
-  it("nags every minute for the first 10 minutes", () => {
-    const p = new NotifyPolicy();
+  it("insistent nags every minute for the first 10 minutes", () => {
+    const p = new NotifyPolicy({ reminders: "insistent" });
     expect(p.shouldNotify("s:a", "blocked", 0)).toBe(true); // initial
 
     expect(p.shouldNotify("s:a", "blocked", 30 * SEC)).toBe(false); // too soon
@@ -37,11 +37,11 @@ describe("PSH-02 — per-state notification lifetimes", () => {
     }
   });
 
-  it("relaxes to 2-minute, then 5-minute, then quarter-hourly cadence", () => {
+  it("insistent relaxes to 2-minute, then 5-minute, then quarter-hourly cadence", () => {
     // Drive it the way the daemon does — a steady poll — and assert the gaps
     // between the reminders that actually fire. Sampling the schedule at
     // hand-picked instants would let a stale `lastAt` fake a passing result.
-    const p = new NotifyPolicy();
+    const p = new NotifyPolicy({ reminders: "insistent" });
     const firedAt: number[] = [];
     for (let t = 0; t <= 3 * HOUR; t += SEC) {
       if (p.shouldNotify("s:a", "blocked", t)) firedAt.push(t);
@@ -58,8 +58,8 @@ describe("PSH-02 — per-state notification lifetimes", () => {
     expect(gapAfter(120)).toBe(15 * MIN);
   });
 
-  it("delivers ~32 reminders in the first 90 minutes — insistent, not a single alert", () => {
-    const p = new NotifyPolicy();
+  it("insistent delivers 32 alerts in the first 90 minutes, the first included", () => {
+    const p = new NotifyPolicy({ reminders: "insistent" });
     let count = 0;
     // Poll once a second, exactly as the daemon heartbeat does.
     for (let t = 0; t <= 90 * MIN; t += SEC) {
@@ -69,8 +69,8 @@ describe("PSH-02 — per-state notification lifetimes", () => {
     expect(count).toBe(32);
   });
 
-  it("a late poll fires once, not a burst of catch-up reminders", () => {
-    const p = new NotifyPolicy();
+  it("insistent: a late poll fires once, not a burst of catch-up reminders", () => {
+    const p = new NotifyPolicy({ reminders: "insistent" });
     p.shouldNotify("s:a", "blocked", 0);
     // The machine slept for 8 minutes; cadence is 1/min but only one fires.
     expect(p.shouldNotify("s:a", "blocked", 8 * MIN)).toBe(true);

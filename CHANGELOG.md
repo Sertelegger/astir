@@ -135,6 +135,28 @@ release is cut, named and published is in
 
 ### Changed
 
+- **A blocked agent reminds you less often, and how often is up to you**
+  ([#98](https://github.com/Sertelegger/astir/issues/98)).
+  - After the first alert, astir now reminds you at +10 and +30 minutes, then
+    hourly, for up to a day. Before, it reminded you every minute for the
+    first ten minutes: 32 alerts in the first 90.
+  - The old schedule is still there, as `insistent`, and `off` sends the first
+    alert only. Set `{ "notify": { "reminders": "insistent" } }` in
+    `~/.astir/config.json`, or `ASTIR_REMINDERS` for a daemon you start by
+    hand. A running daemon picks up an edit within 5 seconds, without a
+    restart.
+  - `astir doctor` shows the schedule in force and where it came from: the
+    default, the file or `ASTIR_REMINDERS`. A value that is not one of the
+    three runs `calm`, and doctor says so. `/healthz` carries the schedule
+    and its source too, names only.
+  - On macOS, `astir doctor` and `astir notifier` suggest terminal-notifier
+    with its notification style set to Alerts, so each alert stays on screen
+    until you dismiss it. They also say why not without terminal-notifier:
+    Script Editor's notifications cannot be replaced or removed, so Alerts
+    would pile them up.
+  - An agent still blocked a day later is no longer announced again as new,
+    with the whole schedule starting over. Every schedule now ends at 24
+    hours.
 - **A Claude permission prompt alerts about 6 s after it appears, and Esc
   clears it** ([#86](https://github.com/Sertelegger/astir/issues/86)).
   - The alert comes about 6 s after the dialog appears, where it took about

@@ -5,21 +5,40 @@
  * Badge persistence is per-state, not uniform. Terminal states ("completed",
  * "failed") are self-explanatory: say it once and let it go. "Blocked" is the
  * opposite — an agent waiting on a human stays blocked until that human acts,
- * so a single fire-and-forget alert is not enough. Miss it once and the signal
- * is gone forever, which is the exact failure this project exists to prevent.
+ * so a single fire-and-forget alert is not always enough.
  *
- * The blocked cadence is therefore a *piecewise schedule*, not a widening
- * backoff from a fixed offset list. The distinction matters: a backoff assumes
- * the value of a reminder decays with age, but here the cost of a missed
- * reminder is constant — the agent is idle the entire time, burning wall-clock
- * that the user is paying for. So the early cadence is deliberately aggressive
- * (once a minute for ten minutes, when an interruption is cheapest and the
- * context is freshest) and only relaxes once repetition has clearly failed to
- * reach anyone, at which point the reminder's job changes from "interrupt" to
- * "do not let this be forgotten".
+ * How often a blocked agent is reminded is a setting (#98), because how much
+ * interruption is right depends on the person, not on the agent:
+ *
+ * - `calm`, the default: reminders at +10 and +30 minutes after the first
+ *   alert, then hourly. Enough that a missed alert comes back, few enough to
+ *   leave on all day.
+ * - `insistent`: the only schedule before #98, unchanged. Its reasoning still
+ *   holds for whoever wants it: the cost of a missed reminder does not decay
+ *   with age, since the agent is idle the whole time, so it is aggressive
+ *   early (once a minute for ten minutes, when an interruption is cheapest
+ *   and the context freshest) and settles at quarter-hourly rather than
+ *   relaxing further. In use, its 32 alerts in the first 90 minutes were too
+ *   many to be the default.
+ * - `off`: the first alert only. A block that ends still sends its
+ *   `resolved` doorbell, which is the loop's business, not this file's.
+ *
+ * Every schedule ends at 24 hours, and every one measures a reminder from the
+ * last one sent, so a poll that runs late fires once rather than a burst.
  */
 
 export type NotifyKind = "blocked" | "completed" | "failed";
+
+/** PSH-02 — how often a blocked agent is reminded (#98). */
+export type ReminderSchedule = "off" | "calm" | "insistent";
+
+export const REMINDER_SCHEDULES: readonly ReminderSchedule[] = ["off", "calm", "insistent"];
+
+export const DEFAULT_REMINDERS: ReminderSchedule = "calm";
+
+export function isReminderSchedule(value: unknown): value is ReminderSchedule {
+  return typeof value === "string" && (REMINDER_SCHEDULES as readonly string[]).includes(value);
+}
 
 const SEC = 1000;
 const MIN = 60 * SEC;
@@ -32,19 +51,39 @@ export interface CadencePhase {
 }
 
 export interface Lifetime {
+  /**
+   * Reminders at fixed offsets from the first alert, ascending, before the
+   * cadence below takes over. One a late poll finds overdue fires once, and
+   * every offset it passed goes with it. Absent means none.
+   */
+  atMs?: readonly number[];
   /** Ascending by `untilMs`. Empty means "notify once, never repeat". */
   phases: CadencePhase[];
   /** Cadence after the last phase, or null to stop repeating. */
   tailEveryMs: number | null;
-  /** Stop notifying entirely once this old, and forget the entry. */
+  /** Stop notifying entirely once this old. */
   maxAgeMs: number;
 }
 
-export const DEFAULT_LIFETIMES: Record<NotifyKind, Lifetime> = {
+/** The blocked-agent lifetime for each reminder schedule. */
+export const BLOCKED_LIFETIMES: Record<ReminderSchedule, Lifetime> = {
+  // +10 and +30 counted from the first alert, then an hour after whichever
+  // reminder went last: 26 alerts in a day, the first included.
+  //
+  // Offsets rather than phases, because a phase is chosen by the age NOW and
+  // measured from the last reminder: at exactly +10 a "10 minutes until +10"
+  // phase has already ended, and the next phase's 20-minute gap, counted from
+  // the first alert, would move the reminder to +20.
+  calm: {
+    atMs: [10 * MIN, 30 * MIN],
+    phases: [],
+    tailEveryMs: 60 * MIN,
+    maxAgeMs: 24 * HOUR,
+  },
   // Aggressive early, then progressively calmer — but never silent inside the
-  // first day. 10 reminders in the first 10 minutes, 10 more over the next 20,
+  // first day. 10 alerts in the first 10 minutes, 10 more over the next 20,
   // 12 more over the following hour, then a steady quarter-hourly nudge.
-  blocked: {
+  insistent: {
     phases: [
       { untilMs: 10 * MIN, everyMs: 1 * MIN },
       { untilMs: 30 * MIN, everyMs: 2 * MIN },
@@ -53,6 +92,13 @@ export const DEFAULT_LIFETIMES: Record<NotifyKind, Lifetime> = {
     tailEveryMs: 15 * MIN,
     maxAgeMs: 24 * HOUR,
   },
+  // The first alert and nothing after it. Still a day long, so an agent
+  // blocked all along is not announced again as new.
+  off: { phases: [], tailEveryMs: null, maxAgeMs: 24 * HOUR },
+};
+
+export const DEFAULT_LIFETIMES: Record<NotifyKind, Lifetime> = {
+  blocked: BLOCKED_LIFETIMES[DEFAULT_REMINDERS],
   // Terminal and self-explanatory: once is enough.
   completed: { phases: [], tailEveryMs: null, maxAgeMs: 5 * MIN },
   // Worth a slightly longer memory than success, but still not repeated.
@@ -75,15 +121,48 @@ interface Entry {
 }
 
 /**
+ * Whether a reminder is due at `now`, for an entry first notified at
+ * `firstAt` and last at `lastAt`.
+ *
+ * A fixed offset still ahead of the last reminder comes first, counted from
+ * the first alert. After the last one, the cadence for the current age,
+ * measured from the last reminder sent.
+ */
+function reminderDue(life: Lifetime, firstAt: number, lastAt: number, now: number): boolean {
+  const at = life.atMs?.find((offset) => firstAt + offset > lastAt);
+  if (at !== undefined) return now >= firstAt + at;
+  const every = cadenceAt(life, now - firstAt);
+  // Measured from the last reminder, not from first contact: a poll that runs
+  // late must not fire a burst of back-to-back catch-up notifications.
+  return every !== null && now - lastAt >= every;
+}
+
+export interface NotifyPolicyOpts {
+  /**
+   * PSH-02 — the blocked-agent schedule, or a getter for it. A getter is read
+   * at every decision, so a changed setting applies to a block already in
+   * progress from the next pulse on, counted from that block's first alert.
+   * Defaults to `calm`.
+   */
+  reminders?: ReminderSchedule | (() => ReminderSchedule);
+}
+
+/**
  * Pure decision logic — no I/O, no timers. The caller supplies `now`, so the
- * whole escalation schedule is testable without waiting a day.
+ * whole escalation schedule is testable without waiting a day. The schedule
+ * is handed in, never read here: where it comes from is the daemon's business.
  */
 export class NotifyPolicy {
   private entries = new Map<string, Entry>();
-  private lifetimes: Record<NotifyKind, Lifetime>;
+  private readonly reminders: () => ReminderSchedule;
 
-  constructor(overrides?: Partial<Record<NotifyKind, Lifetime>>) {
-    this.lifetimes = { ...DEFAULT_LIFETIMES, ...overrides };
+  constructor(opts: NotifyPolicyOpts = {}) {
+    const reminders = opts.reminders ?? DEFAULT_REMINDERS;
+    this.reminders = typeof reminders === "function" ? reminders : () => reminders;
+  }
+
+  private lifetime(kind: NotifyKind): Lifetime {
+    return kind === "blocked" ? BLOCKED_LIFETIMES[this.reminders()] : DEFAULT_LIFETIMES[kind];
   }
 
   /** True if a notification for `key` should be emitted at `now`. */
@@ -96,16 +175,9 @@ export class NotifyPolicy {
       return true;
     }
 
-    const life = this.lifetimes[kind];
-    const age = now - existing.firstAt;
-    if (age >= life.maxAgeMs) return false;
-
-    const every = cadenceAt(life, age);
-    if (every === null) return false;
-
-    // Measured from the last reminder, not from first contact: a poll that runs
-    // late must not fire a burst of back-to-back catch-up notifications.
-    if (now - existing.lastAt < every) return false;
+    const life = this.lifetime(kind);
+    if (now - existing.firstAt >= life.maxAgeMs) return false;
+    if (!reminderDue(life, existing.firstAt, existing.lastAt, now)) return false;
 
     existing.lastAt = now;
     existing.sent++;
@@ -127,10 +199,19 @@ export class NotifyPolicy {
     this.entries.delete(key);
   }
 
-  /** Drop entries past their maximum age so this cannot grow unbounded. */
-  prune(now: number): void {
+  /**
+   * Drop entries past their maximum age so this cannot grow unbounded — all
+   * but those in `keep`, whose condition still stands.
+   *
+   * A day-old entry for an agent still blocked has to stay. Forgotten, the
+   * next pulse read the same block as new: a fresh first alert, and the
+   * whole schedule over again, so no schedule ever ended at 24 hours and
+   * `off` alerted once a day. It goes when the block does, through `resolve`.
+   */
+  prune(now: number, keep: ReadonlySet<string> = new Set()): void {
     for (const [key, entry] of [...this.entries]) {
-      if (now - entry.firstAt >= this.lifetimes[entry.kind].maxAgeMs) this.entries.delete(key);
+      if (keep.has(key)) continue;
+      if (now - entry.firstAt >= this.lifetime(entry.kind).maxAgeMs) this.entries.delete(key);
     }
   }
 
