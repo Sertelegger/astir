@@ -52,9 +52,12 @@ export interface CadencePhase {
 
 export interface Lifetime {
   /**
-   * Reminders at fixed offsets from the first alert, ascending, before the
-   * cadence below takes over. One a late poll finds overdue fires once, and
-   * every offset it passed goes with it. Absent means none.
+   * Reminders at offsets from the first alert, ascending, before the cadence
+   * below takes over. Each is due one step after the reminder sent before it,
+   * the step being its distance from the offset before it, so on time they
+   * land on the offsets. A late one moves the rest along rather than letting
+   * the next follow it at once, and any offset a late poll passed goes with
+   * it. Absent means none.
    */
   atMs?: readonly number[];
   /** Ascending by `untilMs`. Empty means "notify once, never repeat". */
@@ -67,13 +70,15 @@ export interface Lifetime {
 
 /** The blocked-agent lifetime for each reminder schedule. */
 export const BLOCKED_LIFETIMES: Record<ReminderSchedule, Lifetime> = {
-  // +10 and +30 counted from the first alert, then an hour after whichever
-  // reminder went last: 26 alerts in a day, the first included.
+  // +10 and +30 after the first alert, then an hour after whichever reminder
+  // went last: 26 alerts in a day, the first included. Each step is measured
+  // from the reminder before it (10 minutes, then 20, then 60), so a +10 that
+  // a late poll sent at 29:59 is not followed by +30 a second later.
   //
-  // Offsets rather than phases, because a phase is chosen by the age NOW and
-  // measured from the last reminder: at exactly +10 a "10 minutes until +10"
-  // phase has already ended, and the next phase's 20-minute gap, counted from
-  // the first alert, would move the reminder to +20.
+  // Offsets rather than phases, because a phase is chosen by the age NOW: at
+  // exactly +10 a "10 minutes until +10" phase has already ended, and the
+  // next phase's 20-minute gap, from a first alert only 10 minutes back,
+  // would move the reminder to +20.
   calm: {
     atMs: [10 * MIN, 30 * MIN],
     phases: [],
@@ -124,16 +129,20 @@ interface Entry {
  * Whether a reminder is due at `now`, for an entry first notified at
  * `firstAt` and last at `lastAt`.
  *
- * A fixed offset still ahead of the last reminder comes first, counted from
- * the first alert. After the last one, the cadence for the current age,
- * measured from the last reminder sent.
+ * The first offset still ahead of the last reminder comes first, one step
+ * after it. After the last offset, the cadence for the current age. Either
+ * way measured from the last reminder sent, not from first contact: a poll
+ * that runs late must not fire a burst of back-to-back catch-up
+ * notifications.
  */
 function reminderDue(life: Lifetime, firstAt: number, lastAt: number, now: number): boolean {
-  const at = life.atMs?.find((offset) => firstAt + offset > lastAt);
-  if (at !== undefined) return now >= firstAt + at;
+  const offsets = life.atMs ?? [];
+  const next = offsets.findIndex((offset) => firstAt + offset > lastAt);
+  if (next !== -1) {
+    const step = (offsets[next] ?? 0) - (next > 0 ? (offsets[next - 1] ?? 0) : 0);
+    return now - lastAt >= step;
+  }
   const every = cadenceAt(life, now - firstAt);
-  // Measured from the last reminder, not from first contact: a poll that runs
-  // late must not fire a burst of back-to-back catch-up notifications.
   return every !== null && now - lastAt >= every;
 }
 
@@ -141,7 +150,8 @@ export interface NotifyPolicyOpts {
   /**
    * PSH-02 — the blocked-agent schedule, or a getter for it. A getter is read
    * at every decision, so a changed setting applies to a block already in
-   * progress from the next pulse on, counted from that block's first alert.
+   * progress from the next pulse on: its next step measured from the last
+   * reminder sent, its day still counted from the block's first alert.
    * Defaults to `calm`.
    */
   reminders?: ReminderSchedule | (() => ReminderSchedule);

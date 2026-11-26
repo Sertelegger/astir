@@ -164,15 +164,24 @@ describe("PSH-02 — the reminder schedules, through the real loop", () => {
     expect(r.alertMinutes()).toEqual([0, 45, 105, 165]);
   });
 
-  it("PSH-02 — under calm, a wake between +10 and +30 still keeps +30", async () => {
-    // +30 is counted from the first alert, like +10: a late +10 does not push
-    // it back.
+  it("PSH-02 — under calm, a late +10 moves +30 along rather than letting it follow at once", async () => {
+    // Every step is measured from the reminder sent before it: +10 is ten
+    // minutes after the first alert, +30 twenty after +10. Counted from the
+    // first alert instead, a +10 that a late poll sent at 29:59 was followed
+    // by +30 a second later.
     const r = rig();
     r.block();
     await r.pulseAt(0);
-    await r.pulseAt(15 * MIN);
-    await r.runTo(100 * MIN);
-    expect(r.alertMinutes()).toEqual([0, 15, 30, 90]);
+    await r.pulseAt(30 * MIN - SEC);
+    await r.runTo(2 * HOUR);
+    expect(r.alertsAt()).toEqual([0, 30 * MIN - SEC, 50 * MIN - SEC, 110 * MIN - SEC]);
+
+    const mid = rig();
+    mid.block();
+    await mid.pulseAt(0);
+    await mid.pulseAt(15 * MIN);
+    await mid.runTo(100 * MIN);
+    expect(mid.alertMinutes()).toEqual([0, 15, 35, 95]);
   });
 
   it("PSH-02 — under insistent, a late poll fires one reminder, not a burst", async () => {
@@ -218,7 +227,8 @@ describe("PSH-02 — the reminder schedules, through the real loop", () => {
 
   it("PSH-02 — the schedule is read at each decision, so a change applies to a block in progress", async () => {
     // Insistent for the first five minutes, then the setting changes to calm:
-    // the next reminder is calm's +10, counted from the block's first alert.
+    // the next reminder is calm's +10 step, measured from the last reminder
+    // sent, and +30's twenty minutes after that.
     let schedule: ReminderSchedule = "insistent";
     const r = rig(new NotifyPolicy({ reminders: () => schedule }));
     r.block();
@@ -228,7 +238,7 @@ describe("PSH-02 — the reminder schedules, through the real loop", () => {
     await r.runTo(40 * MIN);
     schedule = "off";
     await r.runTo(3 * HOUR);
-    expect(r.alertMinutes()).toEqual([0, 1, 2, 3, 4, 5, 10, 30]);
+    expect(r.alertMinutes()).toEqual([0, 1, 2, 3, 4, 5, 15, 35]);
   });
 
   it("PSH-02 — calm is the default", () => {
