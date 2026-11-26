@@ -13,9 +13,10 @@
  * calm (calm waits ten). That makes one test here a minute long, on purpose.
  *
  * The rest of `main.ts`'s #98 wiring is run here too, each piece where a unit
- * test cannot reach it: the daemon re-reads an edited file and says so (last,
- * since every test before it assumes insistent); its roster names the agents
- * still blocked, which keeps them reachable on the far side under a quiet
+ * test cannot reach it: the daemon re-reads an edited file and says so, and
+ * `/healthz` names the schedule it runs, not the file's until it has read it
+ * (last, since every test before it assumes insistent); its roster names the
+ * agents still blocked, which keeps them listed on the far side under a quiet
  * schedule; `astir install` says what the default is; and on macOS — faked
  * with a preload that sets `process.platform`, since CI runs on Linux —
  * `astir notifier` and `astir doctor` carry the Alerts tip, and the notifier
@@ -64,7 +65,10 @@ describe.skipIf(process.platform === "win32")("PSH-02 — the built daemon runs 
   let base = "";
   let stdout = "";
   const doorbells: { kind: string; at: number }[] = [];
-  const rosters: { sessions?: { sessionId?: string; blocked?: unknown }[] }[] = [];
+  const rosters: {
+    namesBlocked?: unknown;
+    sessions?: { sessionId?: string; blocked?: unknown; blockedForMs?: unknown }[];
+  }[] = [];
 
   beforeAll(async () => {
     // Made here, not at collection, so a skipped run leaves nothing behind.
@@ -213,6 +217,10 @@ describe.skipIf(process.platform === "win32")("PSH-02 — the built daemon runs 
         .filter((s) => s.sessionId === "astir-98-blocked");
       expect(named.length, "no roster listed the blocked session").toBeGreaterThan(0);
       expect(named.at(-1)?.blocked).toEqual(["astir-98-blocked"]);
+      // With how long it has waited, and saying it names every block, so the
+      // far side lists it if it missed the alert and retires it when it ends.
+      expect(named.at(-1)?.blockedForMs).toEqual([expect.any(Number)]);
+      expect(rosters.at(-1)?.namesBlocked).toBe(true);
     },
     120_000,
   );
@@ -322,7 +330,18 @@ describe.skipIf(process.platform === "win32")("PSH-02 — the built daemon runs 
     // Stat at most every 5 s, announced on the next 1 s tick.
     await until(() => stdout.includes(line), 15_000);
     expect(stdout).toContain(line);
-    const body = (await (await fetch(`${base}/healthz`)).json()) as { reminders?: unknown };
-    expect(body.reminders).toEqual({ schedule: "calm", source: "config", fellBack: true });
-  }, 30_000);
+    const health = async () =>
+      ((await (await fetch(`${base}/healthz`)).json()) as { reminders?: unknown }).reminders;
+    expect(await health()).toEqual({ schedule: "calm", source: "config", fellBack: true });
+
+    // /healthz says what the policy is running, which is what the daemon last
+    // read, not what the file says this instant. The line above is printed on
+    // the tick that re-read the file, so the next stat is about 4 s away: an
+    // edit now is not yet in force, and /healthz must not claim it is.
+    writeFileSync(path, JSON.stringify({ notify: { reminders: "off" } }));
+    expect(await health()).toEqual({ schedule: "calm", source: "config", fellBack: true });
+    // And once the daemon reads it, /healthz follows.
+    await until(() => stdout.includes(`reminders: off (${path})`), 15_000);
+    expect(await health()).toEqual({ schedule: "off", source: "config" });
+  }, 45_000);
 });

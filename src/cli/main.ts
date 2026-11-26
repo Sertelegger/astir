@@ -540,8 +540,10 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
 
   // DMN-10 — announce what THIS machine is running to whichever notifier we can
   // reach, so the far end sees ordinary sessions and not only doorbells.
-  // #98 — it names the agents blocked here too, which keeps them reachable on
-  // the far side between reminders that may now be an hour apart, or none.
+  // #98 — it names the agents blocked here too, and the far side lists what
+  // it names: so a block stays listed there between reminders that may now be
+  // an hour apart, or none, and a notifier that missed the first alert still
+  // lists it within 10 s. It is never a reason to alert.
   const rosterTick = setInterval(() => {
     const url = rosterTarget();
     if (url === null) return;

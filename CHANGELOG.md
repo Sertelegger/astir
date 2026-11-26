@@ -159,11 +159,16 @@ release is cut, named and published is in
     hours.
   - An agent blocked on another machine stays listed as waiting between
     reminders, which may now be an hour apart, or none. The notifier used to
-    hear it only from a reminder, so after 20 quiet minutes the menu bar and
+    hear of it only from an alert, so after 20 quiet minutes the menu bar and
     `astir status --line` called that machine out of contact and stopped
-    counting the agent, and after two hours forgot it. The daemon's roster,
-    sent every 10 s, now names the agents still blocked. A notifier older
-    than this does not read it, so update both ends.
+    counting the agent, and after two hours forgot it. A notifier that
+    restarted, or a tunnel that came up, after the first alert did not list
+    it at all until the next one. The daemon's roster, sent every 10 s, now
+    names the agents blocked there and how long each has waited, and the
+    notifier lists exactly those: one whose alert it missed appears within
+    10 s, without an alert of its own, and one no longer blocked goes even if
+    its "resolved" was lost on the way. A notifier older than this does not
+    read it, so update both ends.
   - `astir notifier` now replaces another machine's alert with its next
     reminder and takes it down when the agent stops waiting, as alerts from
     this machine already were. Before, each reminder from another machine was
