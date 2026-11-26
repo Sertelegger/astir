@@ -572,6 +572,11 @@ describe("#98 — what a roster may do to the view", () => {
     expect(view.list(t)).toMatchObject([{ sessionId: "s1", agentId: "a1", acknowledged: true, since: 0 }]);
     expect(view.blockedCount()).toBe(0);
     expect(view.apply(blocked(), t + SEC).notify).toBe(false);
+
+    // A roster without how long: waiting since the entry it retired said.
+    const unsure = dismissedThenRetired();
+    unsure.confirm(roster([session(["a1"])]), t);
+    expect(unsure.list(t)).toMatchObject([{ acknowledged: true, since: 0 }]);
   });
 
   it("a resolved ends a retired agent's dismissal with its block: the next block alerts", () => {

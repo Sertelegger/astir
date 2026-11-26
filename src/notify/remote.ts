@@ -207,7 +207,9 @@ export class RemoteView {
    * between, it is listed dismissed. A far daemon that restarts mid-block
    * names it again only once it has announced it again, and a roster in
    * between would otherwise cost the person their dismissal and restart
-   * every reminder for an agent they had silenced.
+   * every reminder for an agent they had silenced. The cost is the one a
+   * held dismissed entry always had: if a block's `resolved` was lost, the
+   * same agent's next block inside the TTL is taken for it, and stays quiet.
    */
   confirm(roster: RosterPayload, now: number): void {
     this.forgetResolved(now);
