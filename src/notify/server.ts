@@ -250,8 +250,9 @@ export class NotifierServer {
     this.view.prune(now);
     // #98 — one group per agent, so a reminder replaces the alert before it
     // and a `resolved` withdraws it. Before, every reminder from another
-    // machine was a new notification and none was ever taken down.
-    const group = notificationGroup(envelope, this.host);
+    // machine was a new notification and none was ever taken down. By host
+    // always, so this never replaces the local path's clickable alert.
+    const group = notificationGroup(envelope, { byHost: true });
     if (envelope.kind === "resolved") {
       this.counters.resolved++;
       this.withdraw(group);

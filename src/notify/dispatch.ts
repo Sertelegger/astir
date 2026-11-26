@@ -77,7 +77,6 @@ export function localTarget(backend: NotifierBackend, invocation?: string[]): De
         return { ok: false, reason: backend.unavailableReason ?? `${backend.name} unavailable` };
       }
       try {
-        // `session:agent`: a local envelope is from here by construction.
         const group = notificationGroup(envelope);
 
         // A resolution is not an announcement — it withdraws the banner that is

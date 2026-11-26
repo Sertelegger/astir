@@ -388,10 +388,28 @@ describe("#98 — the notifier's routes, end to end", () => {
     expect(removed).toEqual(["megabrain/s1:a1"]);
   });
 
-  it("DOC-2 — an alert from this machine's own daemon shares the local alert's group", () => {
-    // The local daemon's own target posts `s1:a1`; a doorbell it also sends to
-    // this notifier then replaces that banner rather than adding a second.
-    expect(notificationGroup(envelope("blocked", "the-mac"), "the-mac.local")).toBe("s1:a1");
-    expect(notificationGroup(envelope("blocked", "megabrain"), "the-mac")).toBe("megabrain/s1:a1");
+  it("DOC-2 — never takes the group of this machine's own alert, which carries the click action", async () => {
+    // A daemon attaches whatever notifier answers on its loopback port, so on
+    // a Mac running both, every local doorbell reaches the notifier too. The
+    // local path shows it as `s1:a1` with a click that focuses the session;
+    // the notifier's copy has no click, and under the same group it would
+    // replace the one that does.
+    const shown: Notification[] = [];
+    const server = new NotifierServer({
+      token: TOKEN,
+      notify: async (n) => {
+        shown.push(n);
+        return { ok: true };
+      },
+      host: "the-mac.local",
+    });
+    open.push(server);
+    const port = await server.listen(0);
+
+    const fromHere = envelope("blocked", "the-mac");
+    expect((await post(port, "/notify", fromHere)).status).toBe(200);
+    expect(notificationGroup(fromHere)).toBe("s1:a1");
+    expect(shown.map((n) => n.group)).toEqual(["the-mac/s1:a1"]);
+    expect(notificationGroup(fromHere, { byHost: true })).toBe("the-mac/s1:a1");
   });
 });
