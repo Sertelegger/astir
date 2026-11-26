@@ -23,6 +23,11 @@
  * same machine stops naming is retired. Doorbells remain the alert channel,
  * and `resolved` still retires at once.
  *
+ * A dismissal here (PSH-10) is about the person, not the agent, so it
+ * outlives the agent being retired by a roster: the far daemon restarting
+ * mid-block stops naming it until it has announced it again, and that
+ * announcement is the same block, already dismissed.
+ *
  * Entries also expire. If the tunnel drops after a `blocked` and before its
  * `resolved`, a stale entry would otherwise persist forever, and a menu bar
  * confidently reporting a machine it can no longer hear from is worse than one
@@ -108,10 +113,19 @@ interface Entry extends RemoteAgent {
   rungAt?: number;
 }
 
+/** A dismissed agent a roster retired: when, and what its entry said. */
+interface Dismissal {
+  sessionId: string;
+  since: number;
+  retiredAt: number;
+}
+
 export class RemoteView {
   private entries = new Map<string, Entry>();
   /** #98 — when each recently `resolved` agent was resolved, so a crossing roster cannot list it again. */
   private resolvedAt = new Map<string, number>();
+  /** #98 (R98-3) — agents dismissed here that a roster retired, so listed again they are still dismissed. */
+  private dismissed = new Map<string, Dismissal>();
   private readonly ttlMs: number;
   private readonly staleAfterMs: number;
 
@@ -131,6 +145,8 @@ export class RemoteView {
 
     if (envelope.kind === "resolved") {
       this.entries.delete(key);
+      // The block is over, so its dismissal is too: the next one alerts.
+      this.dismissed.delete(key);
       this.resolvedAt.set(key, now);
       return { notify: false };
     }
@@ -150,18 +166,21 @@ export class RemoteView {
       return { notify: !existing.acknowledged };
     }
 
+    // Announced again after a roster retired it, dismissed: the far daemon
+    // restarted, and this is the block it was dismissed in, not a new one.
+    const dismissed = this.takeDismissal(key, now);
     this.entries.set(key, {
       host: envelope.origin.host,
       repo: envelope.session.repo,
       sessionId: envelope.session.sessionId,
       agentId: envelope.session.agentId,
       reason: envelope.reason,
-      since: now,
+      since: dismissed?.since ?? now,
       lastSeen: now,
-      acknowledged: false,
+      acknowledged: dismissed !== undefined,
       rungAt: now,
     });
-    return { notify: true };
+    return { notify: dismissed === undefined };
   }
 
   /**
@@ -182,6 +201,13 @@ export class RemoteView {
    * daemon older than #98 names none, and its rosters say nothing either way.
    * A doorbell younger than `DOORBELL_WINS_MS` outranks a roster, which may
    * have been built before it. Hosts are compared as `sameHost` does.
+   *
+   * An agent dismissed here stays dismissed through being retired: listed
+   * again, by a roster or a doorbell, within the TTL and with no `resolved`
+   * between, it is listed dismissed. A far daemon that restarts mid-block
+   * names it again only once it has announced it again, and a roster in
+   * between would otherwise cost the person their dismissal and restart
+   * every reminder for an agent they had silenced.
    */
   confirm(roster: RosterPayload, now: number): void {
     this.forgetResolved(now);
@@ -201,15 +227,16 @@ export class RemoteView {
         }
         if (this.resolvedAt.has(key)) continue;
         const waited = forMs?.[i];
+        const dismissed = this.takeDismissal(key, now);
         this.entries.set(key, {
           host: shortHost(roster.host),
           repo: basename(session.cwd) || "unknown",
           sessionId: session.sessionId,
           agentId,
           reason: ROSTER_REASON,
-          since: waited === undefined ? now : now - waited,
+          since: waited !== undefined ? now - waited : (dismissed?.since ?? now),
           lastSeen: now,
-          acknowledged: false,
+          acknowledged: dismissed !== undefined,
         });
       }
     }
@@ -218,6 +245,9 @@ export class RemoteView {
       if (named.has(key) || !sameHost(entry.host, roster.host)) continue;
       if (entry.rungAt !== undefined && now - entry.rungAt < DOORBELL_WINS_MS) continue;
       this.entries.delete(key);
+      if (entry.acknowledged) {
+        this.dismissed.set(key, { sessionId: entry.sessionId, since: entry.since, retiredAt: now });
+      }
     }
   }
 
@@ -235,8 +265,9 @@ export class RemoteView {
   }
 
   /**
-   * Drop a session's agents. One still blocked comes back with the next
-   * roster from its machine (#98): it is still waiting there.
+   * Drop a session's agents, dismissals included. One still blocked comes
+   * back with the next roster from its machine (#98): it is still waiting
+   * there.
    */
   forget(sessionId: string): boolean {
     let removed = false;
@@ -246,6 +277,9 @@ export class RemoteView {
         removed = true;
       }
     }
+    for (const [key, d] of [...this.dismissed]) {
+      if (d.sessionId === sessionId) this.dismissed.delete(key);
+    }
     return removed;
   }
 
@@ -254,7 +288,22 @@ export class RemoteView {
     for (const [key, entry] of [...this.entries]) {
       if (now - entry.lastSeen >= this.ttlMs) this.entries.delete(key);
     }
+    for (const [key, d] of [...this.dismissed]) {
+      if (now - d.retiredAt >= this.ttlMs) this.dismissed.delete(key);
+    }
     this.forgetResolved(now);
+  }
+
+  /**
+   * The dismissal of a retired agent, if one is kept for it, and no longer
+   * kept: it moves to the entry listing the agent again. Kept as long as an
+   * entry not heard of is, the TTL, and whether or not `prune` has run.
+   */
+  private takeDismissal(key: string, now: number): Dismissal | undefined {
+    const d = this.dismissed.get(key);
+    if (d === undefined) return undefined;
+    this.dismissed.delete(key);
+    return now - d.retiredAt < this.ttlMs ? d : undefined;
   }
 
   /** Tombstones last only as long as a crossing roster could. */
