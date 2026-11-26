@@ -466,6 +466,16 @@ describe("#98 — what a roster may do to the view", () => {
     expect(view.list(40 * SEC)).toEqual([]);
   });
 
+  it("each reminder outranks a roster again, a block a roster listed included", () => {
+    const view = new RemoteView();
+    view.confirm(roster([session(["a1"])]), 0);
+    expect(view.apply(blocked(), HOUR).notify).toBe(true);
+    view.confirm(roster([session()]), HOUR + 2 * SEC);
+    expect(view.list(HOUR + 2 * SEC)).toHaveLength(1);
+    view.confirm(roster([session()]), HOUR + 40 * SEC);
+    expect(view.list(HOUR + 40 * SEC)).toEqual([]);
+  });
+
   it("does not bring back a block whose resolved overtook the roster", () => {
     const view = new RemoteView();
     view.apply(blocked(), 0);
@@ -495,14 +505,16 @@ describe("#98 — what a roster may do to the view", () => {
     expect(view.list(30 * MIN)[0]?.stale).toBe(true);
   });
 
-  it("an older daemon's roster neither lists nor retires", () => {
+  it("an older daemon's roster neither lists, nor hears, nor retires", () => {
     const view = new RemoteView();
     view.confirm(olderRoster([session(["a1"])]), 0);
     expect(view.list(0)).toEqual([]);
 
     view.apply(blocked(), 0);
-    view.confirm(olderRoster([]), 10 * MIN);
-    expect(view.list(10 * MIN)).toHaveLength(1);
+    view.confirm(olderRoster([session(["a1"])]), 30 * MIN);
+    expect(view.list(30 * MIN)[0]?.stale).toBe(true);
+    view.confirm(olderRoster([]), 31 * MIN);
+    expect(view.list(31 * MIN)).toHaveLength(1);
   });
 
   it("keeps a dismissed agent dismissed", () => {

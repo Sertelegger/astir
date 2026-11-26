@@ -185,6 +185,7 @@ export class RemoteView {
    */
   confirm(roster: RosterPayload, now: number): void {
     this.forgetResolved(now);
+    if (roster.namesBlocked !== true) return;
 
     const named = new Set<string>();
     for (const session of roster.sessions) {
@@ -198,7 +199,7 @@ export class RemoteView {
           existing.lastSeen = now;
           continue;
         }
-        if (roster.namesBlocked !== true || this.resolvedAt.has(key)) continue;
+        if (this.resolvedAt.has(key)) continue;
         const waited = forMs?.[i];
         this.entries.set(key, {
           host: shortHost(roster.host),
@@ -213,7 +214,6 @@ export class RemoteView {
       }
     }
 
-    if (roster.namesBlocked !== true) return;
     for (const [key, entry] of [...this.entries]) {
       if (named.has(key) || !sameHost(entry.host, roster.host)) continue;
       if (entry.rungAt !== undefined && now - entry.rungAt < DOORBELL_WINS_MS) continue;

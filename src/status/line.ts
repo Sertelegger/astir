@@ -371,6 +371,7 @@ export function statusLine(input: LineInput): LineResult {
     }
   }
   // A doorbell IS an announcement: the remote loop rang it after its own dwell.
+  // So is an agent a roster listed (#98), which names only announced blocks.
   for (const d of doorbells) if (ringing(d)) waits.push(Math.max(0, now - d.since));
 
   const summary =
