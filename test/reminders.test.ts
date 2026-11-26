@@ -138,17 +138,19 @@ describe("PSH-02 — the reminder schedules, through the real loop", () => {
     expect(r.alertMinutes().filter((m) => m <= 90)).toHaveLength(32);
   });
 
-  it("PSH-02 — off alerts once, and the block's end still sends its resolved doorbell", async () => {
+  it("PSH-02 — off alerts once in 24h, and the block's end still sends its resolved doorbell", async () => {
+    // The whole day, as the spec's test asks: an `off` that reminded every few
+    // hours would pass any shorter run.
     const r = rig(new NotifyPolicy({ reminders: "off" }));
     r.block();
     await r.pulseAt(0);
-    await r.runTo(3 * HOUR);
+    await r.runTo(24 * HOUR);
     expect(r.alertMinutes()).toEqual([0]);
 
     // Without it a receiver on another machine keeps the agent listed as
     // waiting for good: `off` turns off reminders, not the doorbell.
     r.work();
-    await r.runTo(3 * HOUR + SEC);
+    await r.runTo(24 * HOUR + SEC);
     expect(r.sent.map((s) => s.kind)).toEqual(["blocked", "resolved"]);
   });
 
@@ -211,6 +213,21 @@ describe("PSH-02 — the reminder schedules, through the real loop", () => {
       expect(r.alertMinutes().every((m) => m < 24 * 60)).toBe(true);
     },
   );
+
+  it("PSH-02 — the day ends at 24h exactly: a reminder due then is not sent", () => {
+    // No reminder lands on 24h:00.000 on time under any schedule, so a late
+    // poll puts one there: calm's +10 sent at 23h, and its hourly step due at
+    // 24h on the dot. One due a millisecond earlier still goes.
+    const ends = new NotifyPolicy();
+    expect(ends.shouldNotify("k", "blocked", 0)).toBe(true);
+    expect(ends.shouldNotify("k", "blocked", 23 * HOUR)).toBe(true);
+    expect(ends.shouldNotify("k", "blocked", 24 * HOUR)).toBe(false);
+
+    const last = new NotifyPolicy();
+    expect(last.shouldNotify("k", "blocked", 0)).toBe(true);
+    expect(last.shouldNotify("k", "blocked", 23 * HOUR - 1)).toBe(true);
+    expect(last.shouldNotify("k", "blocked", 24 * HOUR - 1)).toBe(true);
+  });
 
   it("PSH-02 — a new block after one has ended starts its schedule from the start", async () => {
     const r = rig();
@@ -415,6 +432,25 @@ describe("PSH-02 — a running daemon picks up an edited file without a restart"
     expect(get()).toEqual({ schedule: "calm", source: "default" });
   });
 
+  it("PSH-02 — an edit that leaves the mtime as it was is still seen, by its size", () => {
+    // A coarse clock (1 s on some filesystems, 2 s on FAT) can give an edit
+    // the mtime the file already had. Both writes here carry one stamp, and
+    // differ only in length.
+    const h = freshHome();
+    const same = (schedule: string): void => {
+      writeFileSync(configPath(h), JSON.stringify({ notify: { reminders: schedule } }));
+      utimesSync(configPath(h), 1_600_000_000, 1_600_000_000);
+    };
+    same("off");
+    let t = 0;
+    const get = remindersSource({ home: h, env: {}, now: () => t });
+    expect(get()).toEqual({ schedule: "off", source: "config" });
+
+    same("insistent");
+    t = 5_000;
+    expect(get()).toEqual({ schedule: "insistent", source: "config" });
+  });
+
   it("PSH-02 — ASTIR_REMINDERS still wins over an edited file", () => {
     const h = freshHome();
     write(h, "off");
@@ -527,6 +563,56 @@ describe("PSH-02 — doctor shows the schedule in force and where it came from",
     );
     expect(out).toMatch(/^ {2}reminders {7}calm, the default/);
     expect(out).toContain("this terminal reads insistent, from ASTIR_REMINDERS");
+    expect(out).not.toContain("is not a schedule");
+  });
+
+  it("names the difference when only where it came from differs", () => {
+    // Calm either way, but the terminal's comes from a variable the daemon
+    // never saw: change it, and the daemon will not follow.
+    const out = text(
+      describeReminders({ schedule: "calm", source: "env" }, { schedule: "calm", source: "default" }, PATH),
+    );
+    expect(out).toMatch(/^ {2}reminders {7}calm, the default/);
+    expect(out).toContain("this terminal reads calm, from ASTIR_REMINDERS");
+  });
+
+  it("names this terminal's unknown value when the daemon runs another schedule", () => {
+    // PSH-02: an unknown value falls back to calm, and doctor says so — here
+    // too, where the daemon's answer is the one in force and this terminal's
+    // reading is the aside. Shown only as "calm", the typo went unnoticed.
+    const env = text(
+      describeReminders(
+        { schedule: "calm", source: "env", rejected: "insistant" },
+        { schedule: "insistent", source: "config" },
+        "/h/.astir/config.json",
+      ),
+    );
+    expect(env).toMatch(/^ {2}reminders {7}insistent, from \/h\/\.astir\/config\.json/);
+    expect(env).toContain('this terminal reads calm, from ASTIR_REMINDERS — "insistant" is not a schedule');
+
+    const file = text(
+      describeReminders(
+        { schedule: "calm", source: "config", rejected: "Off" },
+        { schedule: "insistent", source: "config" },
+        PATH,
+      ),
+    );
+    expect(file).toContain(`this terminal reads calm, from ${PATH} — "Off" is not a schedule`);
+  });
+
+  it("names this terminal's unknown value even when the daemon runs calm from the same place", () => {
+    // The seconds after an edit that broke the setting: the daemon still runs
+    // the calm the file said before, this terminal reads the new value and
+    // falls back to calm. Same schedule, same place, and still a typo to name.
+    const out = text(
+      describeReminders(
+        { schedule: "calm", source: "config", rejected: "Calm" },
+        { schedule: "calm", source: "config" },
+        PATH,
+      ),
+    );
+    expect(out).toMatch(/^ {2}reminders {7}calm, from \/home\/u\/\.astir\/config\.json/);
+    expect(out).toContain(`this terminal reads calm, from ${PATH} — "Calm" is not a schedule`);
   });
 
   it("without the daemon's answer, says the reading is this terminal's", () => {

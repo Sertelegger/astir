@@ -505,8 +505,9 @@ const REMINDERS_MEAN: Record<ReminderSchedule, string> = {
  * from `/healthz`, and wins, because it is the one reminding. They differ for
  * a daemon started by launchd, which never sees an `ASTIR_REMINDERS` exported
  * in a shell, and for the few seconds before the daemon re-reads an edited
- * file. `null` means the daemon could not be asked, and the reading is said
- * to be this terminal's.
+ * file; when they do, this terminal's reading is named too, with any value in
+ * it that is not a schedule. `null` means the daemon could not be asked, and
+ * the reading is said to be this terminal's.
  *
  * Pure for the reason `describeNotifier` is.
  */
@@ -548,9 +549,22 @@ export function describeReminders(
   if (local.problem !== undefined) lines.push(`${pad}${local.problem}, so no setting was read from it`);
   if (daemon === null) {
     lines.push(`${pad}read here — the daemon did not say which it runs`);
-  } else if (local.schedule !== daemon.schedule || local.source !== daemon.source) {
-    lines.push(`${pad}this terminal reads ${local.schedule}, ${from(local.source)} — the daemon's`);
-    lines.push(`${pad}environment is its own, and it re-reads the file every 5 s`);
+  } else if (
+    local.schedule !== daemon.schedule ||
+    local.source !== daemon.source ||
+    (local.rejected !== undefined) !== (daemon.fellBack === true)
+  ) {
+    const reads = `${pad}this terminal reads ${local.schedule}, ${from(local.source)}`;
+    if (local.rejected === undefined) {
+      lines.push(`${reads} — the daemon's`);
+      lines.push(`${pad}environment is its own, and it re-reads the file every 5 s`);
+    } else {
+      // PSH-02 — an unknown value falls back to calm, and doctor says so: here
+      // too, where the daemon's answer is in force and this reading is the
+      // aside. Shown only as "calm", a typo in it went unnoticed.
+      lines.push(`${reads} — ${JSON.stringify(local.rejected)} is not a schedule;`);
+      lines.push(`${pad}the daemon's environment is its own, and it re-reads the file every 5 s`);
+    }
   }
   return lines;
 }
