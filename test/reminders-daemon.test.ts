@@ -217,8 +217,8 @@ describe.skipIf(process.platform === "win32")("PSH-02 — the built daemon runs 
         .filter((s) => s.sessionId === "astir-98-blocked");
       expect(named.length, "no roster listed the blocked session").toBeGreaterThan(0);
       expect(named.at(-1)?.blocked).toEqual(["astir-98-blocked"]);
-      // With how long it has waited, and saying it names every block, so the
-      // far side lists it if it missed the alert and retires it when it ends.
+      // With how long it has waited, so the far side lists it, dated from when
+      // it began, if it missed the alert; and saying it names its blocks.
       expect(named.at(-1)?.blockedForMs).toEqual([expect.any(Number)]);
       expect(rosters.at(-1)?.namesBlocked).toBe(true);
     },

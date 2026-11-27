@@ -29,10 +29,10 @@ export const MAX_BLOCKED_PER_SESSION = 64;
 export interface RosterPayload {
   host: string;
   /**
-   * #98 — this daemon names every agent blocked on its machine in its
-   * sessions' `blocked`, so one it does not name is not blocked there, and
-   * the notifier retires it. Sent on every roster, an empty one too. Absent
-   * from a daemon older than #98, whose rosters say nothing about blocks.
+   * #98 — this daemon names the agents blocked on its machine in its
+   * sessions' `blocked`, and the notifier reads them only from a roster that
+   * says so. Sent on every roster, an empty one too. Absent from a daemon
+   * older than #98, whose rosters say nothing about blocks.
    */
   namesBlocked?: true;
   sessions: Array<{
@@ -48,10 +48,11 @@ export interface RosterPayload {
     attended?: boolean;
     /**
      * #98 — the agents in this session blocked now, announced and not
-     * dismissed there, by id. The notifier lists exactly these for this
-     * machine (`RemoteView.confirm`): from one roster to the next, not from
-     * one reminder to the next, which may be an hour apart or never. Absent
-     * when none is blocked, and from a daemon older than #98.
+     * dismissed there, by id. The notifier lists these and keeps them from
+     * going stale (`RemoteView.confirm`): from one roster to the next, not
+     * from one reminder to the next, which may be an hour apart or never. It
+     * removes none it stops naming; their `resolved` does that, or the TTL.
+     * Absent when none is blocked, and from a daemon older than #98.
      */
     blocked?: string[];
     /**

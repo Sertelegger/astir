@@ -14,11 +14,11 @@
  * until the next reminder: up to an hour under calm, for good under `off`.
  *
  * The roster (DMN-10) already crosses the same tunnel every 10 s. It now names
- * the agents blocked on its machine, and it is what the view's list follows:
- * an agent a roster names is listed, silently if no doorbell announced it
- * here, and one a later roster from the same machine stops naming is retired.
- * Doorbells stay the alert channel, on the daemon's schedule. Silence still
- * means what it meant: a machine whose rosters stop goes stale, then expires.
+ * the agents blocked on its machine: an agent a roster names is listed,
+ * silently if no doorbell announced it here, and kept from going stale. A
+ * roster never removes one. Removal is what it was: a `resolved` doorbell, or
+ * silence — an entry nothing names any more goes stale, then expires. Doorbells
+ * stay the alert channel, on the daemon's schedule.
  *
  * Also here, DOC-2: a notification the notifier raises for another machine is
  * grouped, so a reminder replaces it, and withdrawn on `resolved` — what the
@@ -236,6 +236,8 @@ describe("#98 — the roster, not the reminders, keeps a remote block listed", (
     // Just after calm's +30, so its next reminder is an hour off.
     { schedule: "calm", restartAt: 31 * MIN },
     { schedule: "off", restartAt: 15 * MIN },
+    // Just after a reminder: insistent's next is 5 minutes off.
+    { schedule: "insistent", restartAt: 30 * MIN + 30 * SEC },
   ] as const)(
     "$schedule: a notifier restarted mid-block lists the agent again from the next roster, alerting nothing",
     async ({ schedule, restartAt }) => {
@@ -246,6 +248,8 @@ describe("#98 — the roster, not the reminders, keeps a remote block listed", (
       const rung = far.doorbells.length;
 
       await far.runTo(restartAt + ROSTER_EVERY);
+      // Listed by the roster alone: no doorbell has reached the new notifier.
+      expect(far.doorbells).toHaveLength(rung);
       const [agent, ...rest] = far.view.list(far.clock.t);
       expect(rest).toEqual([]);
       expect(agent).toMatchObject({
@@ -261,8 +265,8 @@ describe("#98 — the roster, not the reminders, keeps a remote block listed", (
       expect(far.clock.t - (agent?.since ?? far.clock.t)).toBeGreaterThanOrEqual(restartAt);
       expect(far.view.blockedCount()).toBe(1);
 
-      // And listed from then on, never as lost contact, with no doorbell
-      // needed: calm's next is at +90, `off` has none.
+      // And listed from then on, never as lost contact. Under calm and off no
+      // doorbell is needed for that: calm's next is at +90, off has none.
       let missing = 0;
       let stale = 0;
       while (far.clock.t < restartAt + 55 * MIN) {
@@ -273,24 +277,38 @@ describe("#98 — the roster, not the reminders, keeps a remote block listed", (
         else if (agents[0]?.stale === true) stale++;
       }
       expect({ missing, stale }).toEqual({ missing: 0, stale: 0 });
-      expect(far.doorbells).toHaveLength(rung);
+      const after = far.doorbells.slice(rung);
+      if (schedule === "insistent") {
+        // Its reminders still alert: the roster listed it undismissed.
+        expect(after.length).toBeGreaterThan(0);
+        expect(after.every((d) => d.kind === "blocked" && d.alerted)).toBe(true);
+      } else {
+        expect(after).toEqual([]);
+      }
     },
     30_000,
   );
 
-  it.each(["calm", "off"] as const)(
-    "%s: a tunnel that comes up after the first alert lists the agent from the next roster, replaying nothing",
-    async (schedule) => {
+  it.each([
+    { schedule: "calm", upAt: 2 * MIN },
+    { schedule: "off", upAt: 2 * MIN },
+    // Between insistent's reminders at +2 and +3 minutes.
+    { schedule: "insistent", upAt: 2 * MIN + 30 * SEC },
+  ] as const)(
+    "$schedule: a tunnel that comes up after the first alert lists the agent from the next roster, replaying nothing",
+    async ({ schedule, upAt }) => {
       const far = farMachine(schedule, { tunnel: false });
       far.block();
-      await far.runTo(2 * MIN);
+      await far.runTo(upAt);
       // The first alert went out and reached no one here.
       expect(far.doorbells).toEqual([]);
       expect(far.view.list(far.clock.t)).toEqual([]);
 
       far.tunnelUp();
-      await far.runTo(2 * MIN + ROSTER_EVERY);
-      expect(far.view.list(far.clock.t)).toHaveLength(1);
+      await far.runTo(upAt + ROSTER_EVERY);
+      expect(far.view.list(far.clock.t)).toMatchObject([
+        { sessionId: "s1", acknowledged: false, stale: false },
+      ]);
       expect(far.view.blockedCount()).toBe(1);
       // Listed, not announced again: the roster is not a doorbell.
       expect(far.doorbells).toEqual([]);
@@ -321,23 +339,39 @@ describe("#98 — the roster, not the reminders, keeps a remote block listed", (
     30_000,
   );
 
-  it("a block that ended while its resolved was lost is retired by the first roster after", async () => {
+  it("a block that ended while its resolved was lost is not removed by a roster: it goes stale, then expires, as on main", async () => {
     const far = farMachine("off");
     far.block();
     await far.runTo(5 * MIN);
     expect(far.view.list(far.clock.t)).toHaveLength(1);
+    // Last heard of in the roster at 5:00, which named it.
+    const lastHeard = far.clock.t;
+    expect(far.view.list(far.clock.t)[0]?.lastSeen).toBe(lastHeard);
 
     far.tunnelDown();
     far.answer();
     await far.runTo(6 * MIN);
     // The `resolved` went out into the dropped tunnel.
     expect(far.doorbells.map((d) => d.kind)).toEqual(["blocked"]);
-    expect(far.view.list(far.clock.t)).toHaveLength(1);
 
+    // The rosters are back, and none names it. None removes it either: only
+    // a `resolved` or silence does.
     far.tunnelUp();
-    await far.runTo(6 * MIN + ROSTER_EVERY);
+    await far.runTo(lastHeard + 20 * MIN - SEC);
+    far.view.prune(far.clock.t);
+    expect(far.view.list(far.clock.t)).toMatchObject([
+      { sessionId: "s1", lastSeen: lastHeard, stale: false },
+    ]);
+    await far.step();
+    expect(far.view.list(far.clock.t)).toMatchObject([{ sessionId: "s1", lastSeen: lastHeard, stale: true }]);
+
+    await far.runTo(lastHeard + 2 * HOUR - SEC);
+    far.view.prune(far.clock.t);
+    expect(far.view.list(far.clock.t)).toHaveLength(1);
+    await far.step();
+    far.view.prune(far.clock.t);
     expect(far.view.list(far.clock.t)).toEqual([]);
-    expect(lineAt(far.view, far.clock.t, far.store).blocked).toBe(0);
+    expect(far.doorbells.map((d) => d.kind)).toEqual(["blocked"]);
   });
 
   it("listed from the roster alone, it still goes stale at 20 minutes and expires at 2 hours when the rosters stop", async () => {
@@ -394,13 +428,13 @@ describe("#98 — what a roster may do to the view", () => {
     ...(forMs === undefined ? {} : { blockedForMs: forMs }),
   });
 
-  it("hears an agent the roster names as blocked: its host matched however either end spells it", () => {
+  it("hears an agent the roster names as blocked: the roster's full hostname is its doorbells' short one", () => {
+    // A daemon's doorbells carry `shortHost(hostname())` and its roster
+    // `hostname()`, so the two routes key one agent alike.
     const view = new RemoteView();
     view.apply(blocked(), 0);
-    view.confirm(roster([session(["a1"])], "MEGABRAIN.example.net"), 30 * MIN);
-    expect(view.list(30 * MIN)).toHaveLength(1);
-    expect(view.list(30 * MIN)[0]?.stale).toBe(false);
-    expect(view.list(30 * MIN)[0]?.lastSeen).toBe(30 * MIN);
+    view.confirm(roster([session(["a1"])], FAR), 30 * MIN);
+    expect(view.list(30 * MIN)).toMatchObject([{ host: "megabrain", lastSeen: 30 * MIN, stale: false }]);
   });
 
   it("lists an agent it names that no doorbell announced here, waiting as long as the roster says", () => {
@@ -432,7 +466,7 @@ describe("#98 — what a roster may do to the view", () => {
 
   it("one agent is one entry, whichever of roster and doorbell came first, and the doorbell still alerts", () => {
     const rosterFirst = new RemoteView();
-    rosterFirst.confirm(roster([session(["a1"])], "MEGABRAIN.example.net"), 0);
+    rosterFirst.confirm(roster([session(["a1"])]), 0);
     expect(rosterFirst.apply(blocked(), SEC).notify).toBe(true);
     expect(rosterFirst.list(SEC)).toHaveLength(1);
 
@@ -442,51 +476,86 @@ describe("#98 — what a roster may do to the view", () => {
     expect(doorbellFirst.list(SEC)).toHaveLength(1);
   });
 
-  it("retires an agent a later roster from its machine no longer names", () => {
-    for (const later of [
+  it("R98-10 — a roster dates a block it names from how long it says it has waited, if that is earlier", () => {
+    // A doorbell dates an entry from when it arrived here: after a notifier
+    // restart that is the first reminder heard, not the block's start.
+    const view = new RemoteView();
+    view.apply(blocked(), HOUR);
+    view.confirm(roster([session(["a1"], [40 * MIN])]), HOUR + ROSTER_EVERY);
+    expect(view.list(HOUR + ROSTER_EVERY)[0]?.since).toBe(HOUR + ROSTER_EVERY - 40 * MIN);
+
+    // Never later: a roster built just before the doorbell crossed it says
+    // less than the entry already knows.
+    view.confirm(roster([session(["a1"], [0])]), HOUR + 2 * ROSTER_EVERY);
+    expect(view.list(HOUR + 2 * ROSTER_EVERY)[0]?.since).toBe(HOUR + ROSTER_EVERY - 40 * MIN);
+    // And a roster without how long leaves it be.
+    view.confirm(roster([session(["a1"])]), HOUR + 3 * ROSTER_EVERY);
+    expect(view.list(HOUR + 3 * ROSTER_EVERY)[0]).toMatchObject({
+      since: HOUR + ROSTER_EVERY - 40 * MIN,
+      lastSeen: HOUR + 3 * ROSTER_EVERY,
+    });
+  });
+
+  it("a refresh is silent and changes nothing else: dismissed stays dismissed, and the doorbell's reason stays", () => {
+    const view = new RemoteView();
+    view.apply(blocked(), 0);
+    view.acknowledge("s1");
+    view.confirm(roster([session(["a1"], [MIN])]), 30 * MIN);
+    expect(view.list(30 * MIN)).toMatchObject([
+      { acknowledged: true, reason: "permission_prompt", lastSeen: 30 * MIN, stale: false },
+    ]);
+    expect(view.blockedCount()).toBe(0);
+    // Its reminders after that show nothing, as for any dismissed agent.
+    expect(view.apply(blocked(), HOUR).notify).toBe(false);
+  });
+
+  it("no roster ever removes an entry, whatever it names or leaves out", () => {
+    const later = [
       roster([session()]),
       roster([{ ...session(["a2"]), status: "idle" }]),
       roster([{ ...session(["a1"]), sessionId: "s2" }]),
       roster([]),
-    ]) {
-      const view = new RemoteView();
-      view.confirm(roster([session(["a1"])]), 0);
-      view.confirm(later, ROSTER_EVERY);
-      expect(view.list(ROSTER_EVERY).filter((a) => a.agentId === "a1" && a.sessionId === "s1")).toEqual([]);
+      roster([], "megabrain"),
+      roster([], "MEGABRAIN"),
+      roster([], "megabrain.other.net"),
+      roster([], "buildbox"),
+      olderRoster([]),
+    ];
+    const listedBy: Record<string, (v: RemoteView) => void> = {
+      doorbell: (v) => v.apply(blocked(), 0),
+      roster: (v) => v.confirm(roster([session(["a1"])]), 0),
+      both: (v) => {
+        v.apply(blocked(), 0);
+        v.confirm(roster([session(["a1"])]), SEC);
+      },
+      dismissed: (v) => {
+        v.apply(blocked(), 0);
+        v.acknowledge();
+      },
+    };
+    for (const [how, list] of Object.entries(listedBy)) {
+      for (const [i, r] of later.entries()) {
+        const view = new RemoteView();
+        list(view);
+        const before = view.list(SEC)[0];
+        // Right after, and much later: tick after tick of it.
+        for (let t = ROSTER_EVERY; t <= 19 * MIN; t += ROSTER_EVERY) view.confirm(r, t);
+        const mine = view.list(19 * MIN).filter((a) => a.sessionId === "s1" && a.agentId === "a1");
+        expect({ how, i, mine }).toEqual({
+          how,
+          i,
+          mine: [{ ...before, stale: false }],
+        });
+      }
     }
   });
 
   /**
-   * How long a doorbell outranks a roster: three of the daemon's roster
+   * How long a `resolved` outranks a roster: three of the daemon's roster
    * ticks, well past its 5 s push timeout. Written out rather than imported,
    * so a change to it fails here.
    */
-  const DOORBELL_WINS = 30 * SEC;
-
-  it("retires a doorbell's block too, once a roster could have heard of it: 30 s on", () => {
-    // A roster built a moment before the block was announced can arrive
-    // after its doorbell; it is not news that the block ended.
-    const view = new RemoteView();
-    view.apply(blocked(), 0);
-    view.confirm(roster([session()]), 2 * SEC);
-    expect(view.list(2 * SEC)).toHaveLength(1);
-    view.confirm(roster([session()]), DOORBELL_WINS - SEC);
-    expect(view.list(DOORBELL_WINS - SEC)).toHaveLength(1);
-    view.confirm(roster([session()]), DOORBELL_WINS);
-    expect(view.list(DOORBELL_WINS)).toEqual([]);
-  });
-
-  it("each reminder outranks a roster again, a block a roster listed included", () => {
-    const view = new RemoteView();
-    view.confirm(roster([session(["a1"])]), 0);
-    expect(view.apply(blocked(), HOUR).notify).toBe(true);
-    view.confirm(roster([session()]), HOUR + 2 * SEC);
-    expect(view.list(HOUR + 2 * SEC)).toHaveLength(1);
-    view.confirm(roster([session()]), HOUR + DOORBELL_WINS - SEC);
-    expect(view.list(HOUR + DOORBELL_WINS - SEC)).toHaveLength(1);
-    view.confirm(roster([session()]), HOUR + DOORBELL_WINS);
-    expect(view.list(HOUR + DOORBELL_WINS)).toEqual([]);
-  });
+  const RESOLVED_WINS = 30 * SEC;
 
   it("does not bring back a block whose resolved overtook the roster, for 30 s", () => {
     const view = new RemoteView();
@@ -494,14 +563,22 @@ describe("#98 — what a roster may do to the view", () => {
     view.apply(blocked({ kind: "resolved" }), MIN);
     view.confirm(roster([session(["a1"])]), MIN + SEC);
     expect(view.list(MIN + SEC)).toEqual([]);
-    view.confirm(roster([session(["a1"])]), MIN + DOORBELL_WINS - SEC);
-    expect(view.list(MIN + DOORBELL_WINS - SEC)).toEqual([]);
+    view.confirm(roster([session(["a1"])]), MIN + RESOLVED_WINS - SEC);
+    expect(view.list(MIN + RESOLVED_WINS - SEC)).toEqual([]);
     // Named again after that, it is blocked again.
-    view.confirm(roster([session(["a1"])]), MIN + DOORBELL_WINS);
-    expect(view.list(MIN + DOORBELL_WINS)).toHaveLength(1);
+    view.confirm(roster([session(["a1"])]), MIN + RESOLVED_WINS);
+    expect(view.list(MIN + RESOLVED_WINS)).toHaveLength(1);
   });
 
-  it("another machine's roster neither hears nor retires it", () => {
+  it("a resolved removes an entry a roster listed, as it does a doorbell's", () => {
+    const view = new RemoteView();
+    view.confirm(roster([session(["a1"], [5 * MIN])]), 0);
+    expect(view.apply(blocked({ kind: "resolved" }), MIN).notify).toBe(false);
+    expect(view.list(MIN)).toEqual([]);
+    expect(view.blockedCount()).toBe(0);
+  });
+
+  it("another machine's roster neither hears nor removes it", () => {
     const view = new RemoteView();
     view.apply(blocked(), 0);
     view.confirm(roster([session(["a1"])], "buildbox"), 30 * MIN);
@@ -519,7 +596,7 @@ describe("#98 — what a roster may do to the view", () => {
     expect(view.list(30 * MIN)[0]?.stale).toBe(true);
   });
 
-  it("an older daemon's roster neither lists, nor hears, nor retires", () => {
+  it("an older daemon's roster neither lists nor hears", () => {
     const view = new RemoteView();
     view.confirm(olderRoster([session(["a1"])]), 0);
     expect(view.list(0)).toEqual([]);
@@ -527,99 +604,55 @@ describe("#98 — what a roster may do to the view", () => {
     view.apply(blocked(), 0);
     view.confirm(olderRoster([session(["a1"])]), 30 * MIN);
     expect(view.list(30 * MIN)[0]?.stale).toBe(true);
-    view.confirm(olderRoster([]), 31 * MIN);
-    expect(view.list(31 * MIN)).toHaveLength(1);
   });
 
-  it("keeps a dismissed agent dismissed", () => {
+  it("a roster does not bring back an entry past its TTL: it lists the agent afresh, undismissed and silent", () => {
+    // Nothing pruned it — no doorbell, no `/state` — but it expired all the
+    // same, as it would have on main.
     const view = new RemoteView();
     view.apply(blocked(), 0);
     view.acknowledge();
-    view.confirm(roster([session(["a1"])]), 30 * MIN);
-    expect(view.list(30 * MIN)[0]?.acknowledged).toBe(true);
-    expect(view.blockedCount()).toBe(0);
+    const t = 2 * HOUR;
+    view.confirm(roster([session(["a1"], [2 * HOUR])]), t);
+    expect(view.list(t)).toMatchObject([{ acknowledged: false, since: 0, lastSeen: t, reason: "blocked" }]);
+    expect(view.blockedCount()).toBe(1);
+
+    // One second short of it, the entry is heard of again, dismissed.
+    const within = new RemoteView();
+    within.apply(blocked(), 0);
+    within.acknowledge();
+    within.confirm(roster([session(["a1"], [2 * HOUR])]), t - SEC);
+    expect(within.list(t - SEC)).toMatchObject([{ acknowledged: true, lastSeen: t - SEC }]);
   });
 
   /**
-   * R98-3 — the far daemon restarts mid-block. Its restored block is not
-   * named again until its loop has announced it again (`announcedAt` is not
-   * persisted), so a roster in between retires the agent here, and the
-   * doorbell that announces it again is the old block's, not a new one.
+   * R98-3 — the far daemon restarts mid-block, with the agent dismissed here.
+   * Its restored block is not named again until its loop has announced it
+   * again (`announcedAt` is not persisted), so for a while its rosters leave
+   * it out. They do not remove it, and the doorbell that announces it again
+   * finds it dismissed, as on main.
    */
-  const dismissedThenRetired = (): RemoteView => {
+  it("R98-3 — a dismissed agent a roster leaves out stays listed and dismissed; announced again, it shows nothing", () => {
     const view = new RemoteView();
     view.apply(blocked(), 0);
     expect(view.acknowledge("s1")).toBe(1);
     view.confirm(roster([session()]), 45 * MIN);
-    expect(view.list(45 * MIN)).toEqual([]);
-    return view;
-  };
-
-  it("a dismissal outlives a roster retiring the agent: announced again, it shows nothing and stays dismissed", () => {
-    const view = dismissedThenRetired();
+    expect(view.list(45 * MIN)).toMatchObject([{ acknowledged: true, since: 0 }]);
     const t = 45 * MIN + 40 * SEC;
     expect(view.apply(blocked(), t).notify).toBe(false);
-    expect(view.list(t)).toMatchObject([{ sessionId: "s1", agentId: "a1", acknowledged: true, since: 0 }]);
+    view.confirm(roster([session(["a1"], [SEC])]), t + ROSTER_EVERY);
+    expect(view.list(t + ROSTER_EVERY)).toMatchObject([{ acknowledged: true, since: 0 }]);
     expect(view.blockedCount()).toBe(0);
-    // And its reminders after that, as for any dismissed agent.
-    expect(view.apply(blocked(), t + 10 * MIN).notify).toBe(false);
   });
 
-  it("a dismissal outlives a roster retiring the agent: named again by a roster first, it is listed dismissed", () => {
-    const view = dismissedThenRetired();
-    const t = 45 * MIN + 40 * SEC;
-    view.confirm(roster([session(["a1"], [t])]), t);
-    expect(view.list(t)).toMatchObject([{ sessionId: "s1", agentId: "a1", acknowledged: true, since: 0 }]);
-    expect(view.blockedCount()).toBe(0);
-    expect(view.apply(blocked(), t + SEC).notify).toBe(false);
-
-    // A roster without how long: waiting since the entry it retired said.
-    const unsure = dismissedThenRetired();
-    unsure.confirm(roster([session(["a1"])]), t);
-    expect(unsure.list(t)).toMatchObject([{ acknowledged: true, since: 0 }]);
-  });
-
-  it("a resolved ends a retired agent's dismissal with its block: the next block alerts", () => {
-    const view = dismissedThenRetired();
+  it("a resolved ends a dismissed agent's block: the next one alerts, as on main", () => {
+    const view = new RemoteView();
+    view.apply(blocked(), 0);
+    view.acknowledge();
     expect(view.apply(blocked({ kind: "resolved" }), 46 * MIN).notify).toBe(false);
     expect(view.apply(blocked(), 50 * MIN).notify).toBe(true);
     expect(view.list(50 * MIN)).toMatchObject([{ acknowledged: false, since: 50 * MIN }]);
     expect(view.blockedCount()).toBe(1);
-  });
-
-  it("forgetting the session ends a retired agent's dismissal, as it does a listed one's", () => {
-    const view = dismissedThenRetired();
-    view.forget("s1");
-    expect(view.apply(blocked(), 46 * MIN).notify).toBe(true);
-    expect(view.blockedCount()).toBe(1);
-  });
-
-  it("a retired agent's dismissal is kept no longer than an entry not heard of would be", () => {
-    const within = dismissedThenRetired();
-    expect(within.apply(blocked(), 45 * MIN + 2 * HOUR - SEC).notify).toBe(false);
-
-    const after = dismissedThenRetired();
-    after.prune(45 * MIN + 2 * HOUR);
-    expect(after.apply(blocked(), 45 * MIN + 2 * HOUR).notify).toBe(true);
-    const unpruned = dismissedThenRetired();
-    expect(unpruned.apply(blocked(), 45 * MIN + 2 * HOUR).notify).toBe(true);
-  });
-
-  it("an agent never dismissed, retired by a roster and announced again, alerts again", () => {
-    const view = new RemoteView();
-    view.apply(blocked(), 0);
-    view.confirm(roster([session()]), 45 * MIN);
-    expect(view.list(45 * MIN)).toEqual([]);
-    expect(view.apply(blocked(), 45 * MIN + 40 * SEC).notify).toBe(true);
-    expect(view.blockedCount()).toBe(1);
-  });
-
-  it("a dismissal is remembered only for its own agent", () => {
-    const view = dismissedThenRetired();
-    expect(view.apply(blocked({ agentId: "a2" }), 46 * MIN).notify).toBe(true);
-    expect(view.apply(blocked({ sessionId: "s2" }), 46 * MIN).notify).toBe(true);
-    expect(view.apply(blocked({ host: "buildbox" }), 46 * MIN).notify).toBe(true);
-    expect(view.apply(blocked(), 46 * MIN).notify).toBe(false);
   });
 });
 
@@ -632,7 +665,9 @@ describe("#98 — what a roster may do to the view", () => {
  * start from nothing, as a new process does. Its restored block is announced
  * again once it has outlasted the dwell, and until then the rosters, every
  * 10 s from each start, do not name it. The dwell is Codex's 30 s, or
- * Claude's 5 s with discovery slow enough for a roster to land first.
+ * Claude's 5 s with discovery slow enough for a roster to land first. A
+ * roster that leaves the agent out removes nothing, so it stays listed and
+ * dismissed throughout, as on main.
  */
 async function dismissedThenFarRestart(schedule: ReminderSchedule, dwellMs: number, discoveryMs: number) {
   const clock = { t: 0 };
@@ -676,6 +711,7 @@ async function dismissedThenFarRestart(schedule: ReminderSchedule, dwellMs: numb
   far.registry.apply(ev("notification", { notificationKind: "agent_needs_input" }), "/srv/astir");
   far.registry.reconcile([disc], { provider: "claude" });
   let discoverFrom: number | null = null;
+  let unnamedAfterRestart = false;
   let unlistedAfterRestart = false;
   while (clock.t < 3 * HOUR) {
     clock.t += SEC;
@@ -693,14 +729,17 @@ async function dismissedThenFarRestart(schedule: ReminderSchedule, dwellMs: numb
     far.registry.tick();
     await far.loop.pulse();
     if (clock.t > far.startedAt && (clock.t - far.startedAt) % ROSTER_EVERY === 0) {
-      view.confirm(rosterOf(far.registry, FAR), clock.t);
+      const roster = rosterOf(far.registry, FAR);
+      if (clock.t > 45 * MIN && !roster.sessions.some((s) => s.blocked?.includes("s1")))
+        unnamedAfterRestart = true;
+      view.confirm(roster, clock.t);
     }
     if (clock.t > 45 * MIN && view.list(clock.t).length === 0) unlistedAfterRestart = true;
   }
-  return { view, alerted, unlistedAfterRestart, t: clock.t };
+  return { view, alerted, unnamedAfterRestart, unlistedAfterRestart, t: clock.t };
 }
 
-describe("#98 — a dismissal here outlives the far daemon restarting", () => {
+describe("#98 — R98-3: a dismissal here outlives the far daemon restarting, as on main", () => {
   it.each([
     { schedule: "calm", dwellMs: 30 * SEC, discoveryMs: SEC },
     { schedule: "calm", dwellMs: 30 * SEC, discoveryMs: 3 * SEC },
@@ -710,15 +749,16 @@ describe("#98 — a dismissal here outlives the far daemon restarting", () => {
   ] as const)(
     "$schedule, dwell $dwellMs ms, discovered $discoveryMs ms after the restart: nothing alerts again",
     async ({ schedule, dwellMs, discoveryMs }) => {
-      const { view, alerted, unlistedAfterRestart, t } = await dismissedThenFarRestart(
+      const { view, alerted, unnamedAfterRestart, unlistedAfterRestart, t } = await dismissedThenFarRestart(
         schedule,
         dwellMs,
         discoveryMs,
       );
       // The first alert, before the dismissal; and the restart did open the
-      // window in which a roster no longer named the agent.
+      // window in which a roster no longer named the agent. It stayed listed.
       expect(alerted.filter((at) => at < 5 * MIN).length).toBeGreaterThan(0);
-      expect(unlistedAfterRestart).toBe(true);
+      expect(unnamedAfterRestart).toBe(true);
+      expect(unlistedAfterRestart).toBe(false);
 
       expect(alerted.filter((at) => at > 5 * MIN).map((at) => `${(at / MIN).toFixed(2)} min`)).toEqual([]);
       const [agent, ...rest] = view.list(t);
@@ -729,6 +769,64 @@ describe("#98 — a dismissal here outlives the far daemon restarting", () => {
     },
     60_000,
   );
+});
+
+/**
+ * R98-7 — dismissed here, the laptop sleeps, the block is answered while the
+ * tunnel is down so its `resolved` is lost, and the same agent blocks again
+ * later. What happens is what happened on main: the dismissed entry is held
+ * until the TTL runs out from when it was last heard of, and a new block
+ * inside that is taken for it; one after it alerts as new.
+ */
+describe("#98 — R98-7: a dismissed block whose resolved was lost, then a new one, as on main", () => {
+  async function sleepThenBlockAgain(upAt: number, blockAgainAt: number) {
+    const far = farMachine("calm");
+    far.block();
+    const stepPruned = async (to: number) => {
+      // The menu bar polls `/state`, which prunes.
+      while (far.clock.t < to) {
+        await far.step();
+        far.view.prune(far.clock.t);
+      }
+    };
+    await stepPruned(5 * MIN);
+    expect(far.view.acknowledge("s1")).toBe(1);
+    await stepPruned(20 * MIN);
+    // Last heard of in the roster at 20:00.
+    const lastHeard = far.clock.t;
+    expect(far.view.list(lastHeard)).toMatchObject([{ acknowledged: true, lastSeen: lastHeard }]);
+    far.tunnelDown();
+    await stepPruned(60 * MIN);
+    far.answer();
+    await stepPruned(upAt);
+    far.tunnelUp();
+    await stepPruned(blockAgainAt);
+    const rung = far.doorbells.length;
+    far.block();
+    await stepPruned(blockAgainAt + 2 * MIN);
+    return { far, lastHeard, again: far.doorbells.slice(rung) };
+  }
+
+  it("blocked again after the TTL from when it was last heard of: alerts, listed as new", async () => {
+    const { far, lastHeard, again } = await sleepThenBlockAgain(110 * MIN, 150 * MIN);
+    expect(lastHeard + 2 * HOUR).toBeLessThan(150 * MIN);
+    expect(again[0]).toMatchObject({ kind: "blocked", alerted: true });
+    const [entry, ...rest] = far.view.list(far.clock.t);
+    expect(rest).toEqual([]);
+    expect(entry?.acknowledged).toBe(false);
+    // Its own wait, not the old block's: dated where the far daemon dates it,
+    // a few seconds before its Notification (MOD-05).
+    expect(entry?.since).toBeGreaterThanOrEqual(150 * MIN - 10 * SEC);
+    expect(entry?.since).toBeLessThanOrEqual(150 * MIN + SEC);
+    expect(far.view.blockedCount()).toBe(1);
+  });
+
+  it("blocked again inside it: taken for the dismissed block, which nothing removed", async () => {
+    const { far, again } = await sleepThenBlockAgain(90 * MIN, 100 * MIN);
+    expect(again[0]).toMatchObject({ kind: "blocked", alerted: false });
+    expect(far.view.list(far.clock.t)).toMatchObject([{ acknowledged: true, since: 0 }]);
+    expect(far.view.blockedCount()).toBe(0);
+  });
 });
 
 describe("#98 — the roster says which agents are blocked", () => {
@@ -765,12 +863,12 @@ describe("#98 — the roster says which agents are blocked", () => {
     expect(rosterOf(registry, FAR).sessions[0]?.blocked).toBeUndefined();
   });
 
-  it("says it names blocked agents even when none is, so the far end can retire one", () => {
+  it("says it names blocked agents even when none is", () => {
     const r = rosterOf(new Registry({ nowMs: () => 0 }), FAR);
     expect(r).toEqual({ host: FAR, namesBlocked: true, sessions: [] });
   });
 
-  it("leaves out an agent dismissed on its own machine: that block is retired, with a resolved", () => {
+  it("leaves out an agent dismissed on its own machine: that block is over there, and its resolved says so", () => {
     const registry = new Registry({ nowMs: () => 0 });
     registry.apply(
       ev("notification", { sessionId: "s1", agentId: "s1", notificationKind: "permission_prompt" }),
@@ -891,11 +989,15 @@ describe("#98 — the notifier's routes, end to end", () => {
   it("a block it hears of from a roster alone is listed and shows nothing; its next reminder shows once", async () => {
     const clock = { t: 5 * HOUR };
     const shown: Notification[] = [];
+    const removed: string[] = [];
     const server = new NotifierServer({
       token: TOKEN,
       notify: async (n) => {
         shown.push(n);
         return { ok: true };
+      },
+      remove: (group) => {
+        removed.push(group);
       },
       host: "the-mac",
       now: () => clock.t,
@@ -922,10 +1024,17 @@ describe("#98 — the notifier's routes, end to end", () => {
     expect(shown.map((n) => n.group)).toEqual(["megabrain/s1:a1"]);
     expect((await state(port)).agents).toHaveLength(1);
 
-    // And the roster that stops naming it, a while on, retires it.
+    // A roster that stops naming it removes nothing; its `resolved` does,
+    // and withdraws its alert.
     clock.t += MIN;
     expect((await post(port, "/roster", { ...blockedRoster(), sessions: [] })).status).toBe(200);
+    expect(await state(port)).toMatchObject({
+      blockedCount: 1,
+      agents: [{ sessionId: "s1", agentId: "a1" }],
+    });
+    expect((await post(port, "/notify", envelope("resolved"))).status).toBe(200);
     expect(await state(port)).toMatchObject({ blockedCount: 0, agents: [] });
+    expect(removed).toEqual(["megabrain/s1:a1"]);
     expect(shown).toHaveLength(1);
   });
 
@@ -980,10 +1089,10 @@ describe("#98 — the notifier's routes, end to end", () => {
     expect(notificationGroup(fromHere, { byHost: true })).toBe("the-mac/s1:a1");
   });
 
-  it("DMN-10 — a roster this machine sent itself neither lists nor retires anything", async () => {
+  it("DMN-10 — a roster this machine sent itself lists nothing", async () => {
     // A daemon reaches the notifier on its own machine too, and its roster is
     // refused there (`ignored: "self"`). The view must be left as it was: no
-    // agent of this machine listed from it, none retired by it.
+    // agent of this machine listed from it.
     const clock = { t: 0 };
     const server = new NotifierServer({
       token: TOKEN,

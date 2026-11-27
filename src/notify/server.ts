@@ -191,11 +191,11 @@ export class NotifierServer {
       }
 
       this.roster.apply(parsed.roster);
-      // #98 — and the agents it names as blocked are the ones listed for that
-      // machine: heard from again, listed if this notifier never heard their
-      // doorbell (it restarted, or the tunnel came up, after it), and retired
-      // when it stops naming them. Silently: alerts come only from `/notify`,
-      // on the daemon's schedule, so nothing here is shown.
+      // #98 — and the agents it names as blocked are heard from again, or
+      // listed if this notifier never heard their doorbell (it restarted, or
+      // the tunnel came up, after it). It removes none: that is `/notify`'s
+      // `resolved`, or the TTL. Silently: alerts come only from `/notify`, on
+      // the daemon's schedule, so nothing here is shown.
       this.view.confirm(parsed.roster, this.now());
       this.counters.rosters++;
       return this.json(res, 200, { ok: true, sessions: parsed.roster.sessions.length });

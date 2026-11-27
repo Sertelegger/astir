@@ -13,20 +13,14 @@
  * and this view is level-triggered: it holds exactly the set of remote agents
  * currently believed to be waiting.
  *
- * #98 — and which agents are waiting is the roster's to say, not the
- * doorbells'. A doorbell arrives once per alert, on the daemon's reminder
- * schedule, which may now be an hour apart or never, and a notifier that
- * restarted, or a tunnel that came up, after the first alert would not hear of
- * the block until the next one. The roster crosses the same tunnel every 10 s
- * and names the agents blocked on its machine, so an agent it names is listed
- * (silently, if no doorbell announced it here) and one a later roster from the
- * same machine stops naming is retired. Doorbells remain the alert channel,
- * and `resolved` still retires at once.
- *
- * A dismissal here (PSH-10) is about the person, not the agent, so it
- * outlives the agent being retired by a roster: the far daemon restarting
- * mid-block stops naming it until it has announced it again, and that
- * announcement is the same block, already dismissed.
+ * #98 — the roster keeps it so between doorbells. Doorbells come on the
+ * daemon's reminder schedule, which may now be an hour apart or never, and a
+ * notifier that restarted, or a tunnel that came up, after a block's first
+ * alert would not hear of it until the next. The roster crosses the same
+ * tunnel every 10 s and names the agents blocked on its machine, so one it
+ * names is listed, silently if no doorbell announced it here, and heard from
+ * again. A roster only adds and refreshes: it never removes an entry, whether
+ * or not it names it. Removal is a `resolved`, or the expiry below.
  *
  * Entries also expire. If the tunnel drops after a `blocked` and before its
  * `resolved`, a stale entry would otherwise persist forever, and a menu bar
@@ -35,18 +29,19 @@
  */
 
 import { basename } from "node:path";
-import { type NotifyEnvelope, sameHost, shortHost } from "./envelope.js";
+import { type NotifyEnvelope, shortHost } from "./envelope.js";
 import type { RosterPayload } from "./roster.js";
 
 /**
- * How long a remote entry survives without being heard of.
+ * How long a remote entry survives without being reconfirmed.
  *
- * An entry is heard of from its machine's roster, which names the agents
- * blocked there and crosses the tunnel every 10 s (`confirm`), and from each
- * doorbell. For a daemon older than #98, whose roster names nobody, the
- * doorbells are all there is, and on its quarter-hourly reminders this was
- * sized for them. Anything past it really has gone quiet: the tunnel is down
- * or the machine is.
+ * A still-blocked agent on a healthy tunnel is re-heard well before this, and
+ * before `DEFAULT_STALE_MS` too, under every reminder schedule (#98): its
+ * machine's roster names it every 10 s (`confirm`). Doorbells re-hear it as
+ * well, but `calm` sends one an hour apart and `off` none after the first. A
+ * daemon older than #98 names nobody in its roster, so for it the doorbells
+ * are all there is, on its quarter-hourly reminders, for which this was sized.
+ * Anything past it really has gone quiet: the tunnel is down, or the machine.
  */
 const DEFAULT_TTL_MS = 2 * 60 * 60_000;
 
@@ -61,16 +56,16 @@ const DEFAULT_TTL_MS = 2 * 60 * 60_000;
 const DEFAULT_STALE_MS = 20 * 60_000;
 
 /**
- * #98 — how long a doorbell outranks a roster.
+ * #98 — how long a `resolved` outranks a roster.
  *
- * A roster and a doorbell travel separately and can cross: a roster built a
- * moment before a block was announced may arrive after its `blocked`, and one
- * built before the block ended may arrive after its `resolved`. Neither is
- * news, so for this long after a doorbell a roster neither retires the block
- * it announced nor lists again the one it resolved. Three of the daemon's
- * roster ticks, well past its 5 s push timeout.
+ * A roster and a doorbell travel separately and can cross: one built a moment
+ * before a block ended may arrive after its `resolved`, still naming it. That
+ * is not news, and since no roster removes an entry, listing it again would
+ * leave it until the TTL. So for this long after a `resolved` a roster does
+ * not list the agent again. Three of the daemon's roster ticks, well past its
+ * 5 s push timeout.
  */
-const DOORBELL_WINS_MS = 30_000;
+const RESOLVED_WINS_MS = 30_000;
 
 /** What a roster-listed block is waiting on: the roster carries no reason. */
 const ROSTER_REASON = "blocked";
@@ -95,37 +90,28 @@ export interface RemoteViewOpts {
   staleAfterMs?: number;
 }
 
-/**
- * One key per agent, whichever route named it. Hosts as `sameHost` compares
- * them: an envelope carries the short name, a roster whatever `hostname()`
- * said, and the same agent must not be listed twice.
- */
 function keyFor(host: string, sessionId: string, agentId: string): string {
-  return `${shortHost(host).toLowerCase()}/${sessionId}:${agentId}`;
+  return `${host}/${sessionId}:${agentId}`;
 }
 
 function keyOf(e: NotifyEnvelope): string {
   return keyFor(e.origin.host, e.session.sessionId, e.session.agentId);
 }
 
-interface Entry extends RemoteAgent {
-  /** When a `blocked` doorbell for it last arrived; absent when only a roster has named it. */
-  rungAt?: number;
-}
-
-/** A dismissed agent a roster retired: when, and what its entry said. */
-interface Dismissal {
-  sessionId: string;
-  since: number;
-  retiredAt: number;
+/**
+ * A roster's agent, keyed as its doorbells are. A daemon's envelopes carry
+ * `shortHost(hostname())` and its roster `hostname()`, so the roster's host is
+ * shortened the same way and nothing else: one agent, one entry, by either
+ * route.
+ */
+function rosterKey(roster: RosterPayload, sessionId: string, agentId: string): string {
+  return keyFor(shortHost(roster.host), sessionId, agentId);
 }
 
 export class RemoteView {
-  private entries = new Map<string, Entry>();
+  private entries = new Map<string, RemoteAgent>();
   /** #98 — when each recently `resolved` agent was resolved, so a crossing roster cannot list it again. */
   private resolvedAt = new Map<string, number>();
-  /** #98 (R98-3) — agents dismissed here that a roster retired, so listed again they are still dismissed. */
-  private dismissed = new Map<string, Dismissal>();
   private readonly ttlMs: number;
   private readonly staleAfterMs: number;
 
@@ -145,8 +131,6 @@ export class RemoteView {
 
     if (envelope.kind === "resolved") {
       this.entries.delete(key);
-      // The block is over, so its dismissal is too: the next one alerts.
-      this.dismissed.delete(key);
       this.resolvedAt.set(key, now);
       return { notify: false };
     }
@@ -159,96 +143,71 @@ export class RemoteView {
     const existing = this.entries.get(key);
     if (existing) {
       existing.lastSeen = now;
-      existing.rungAt = now;
       existing.reason = envelope.reason;
-      // A reminder for something already dismissed here stays dismissed,
-      // whichever route listed it.
+      // A reminder for something already dismissed here stays dismissed.
       return { notify: !existing.acknowledged };
     }
 
-    // Announced again after a roster retired it, dismissed: the far daemon
-    // restarted, and this is the block it was dismissed in, not a new one.
-    const dismissed = this.takeDismissal(key, now);
     this.entries.set(key, {
       host: envelope.origin.host,
       repo: envelope.session.repo,
       sessionId: envelope.session.sessionId,
       agentId: envelope.session.agentId,
       reason: envelope.reason,
-      since: dismissed?.since ?? now,
+      since: now,
       lastSeen: now,
-      acknowledged: dismissed !== undefined,
-      rungAt: now,
+      acknowledged: false,
     });
-    return { notify: dismissed === undefined };
+    return { notify: true };
   }
 
   /**
-   * #98 — fold in a roster: the agents blocked on its machine now, which is
-   * what this view lists for that machine. Never raises a notification, and
-   * so returns nothing to show; alerts are the doorbells' business.
+   * #98 — fold in a roster: the agents blocked on its machine now. Never
+   * raises a notification, and so returns nothing to show; alerts are the
+   * doorbells' business, on the daemon's schedule.
    *
-   * Every agent it names is heard from again, and one not held here is
-   * listed: a notifier that restarted, or a tunnel that came up, after the
-   * block's first alert would otherwise not list it until the next reminder,
-   * an hour off under `calm` and never under `off`. Its wait is counted from
-   * what the roster says (`blockedForMs`, a duration, so the two machines'
-   * clocks need not agree), else from now. An agent held for that machine and
-   * not named is retired: its block is over, and its `resolved` was lost or
-   * is still on its way.
+   * Each agent it names is heard from again, so it neither goes stale nor
+   * expires while its machine keeps naming it, however far apart the
+   * reminders. One not held here is listed, undismissed: a notifier that
+   * restarted, or a tunnel that came up, after the block's first alert would
+   * otherwise not list it until the next reminder, an hour off under `calm`
+   * and never under `off`. Its wait is counted from what the roster says
+   * (`blockedForMs`, a duration, so the two machines' clocks need not agree),
+   * else from now, and a held entry's wait is moved earlier when the roster
+   * says the block began before this view heard of it (R98-10).
    *
-   * Only from a roster that says it names blocked agents (`namesBlocked`). A
-   * daemon older than #98 names none, and its rosters say nothing either way.
-   * A doorbell younger than `DOORBELL_WINS_MS` outranks a roster, which may
-   * have been built before it. Hosts are compared as `sameHost` does.
-   *
-   * An agent dismissed here stays dismissed through being retired: listed
-   * again, by a roster or a doorbell, within the TTL and with no `resolved`
-   * between, it is listed dismissed. A far daemon that restarts mid-block
-   * names it again only once it has announced it again, and a roster in
-   * between would otherwise cost the person their dismissal and restart
-   * every reminder for an agent they had silenced. The cost is the one a
-   * held dismissed entry always had: if a block's `resolved` was lost, the
-   * same agent's next block inside the TTL is taken for it, and stays quiet.
+   * Nothing else about a held entry changes, and no entry is ever removed
+   * here, named or not: removal is its `resolved`, or the TTL, as for any
+   * entry. Entries past the TTL are dropped first, so a roster never revives
+   * one. Only a roster that says it names blocked agents (`namesBlocked`) is
+   * read for them.
    */
   confirm(roster: RosterPayload, now: number): void {
-    this.forgetResolved(now);
+    this.prune(now);
     if (roster.namesBlocked !== true) return;
 
-    const named = new Set<string>();
     for (const session of roster.sessions) {
-      const blocked = session.blocked ?? [];
       const forMs = session.blockedForMs;
-      for (const [i, agentId] of blocked.entries()) {
-        const key = keyFor(roster.host, session.sessionId, agentId);
-        named.add(key);
+      for (const [i, agentId] of (session.blocked ?? []).entries()) {
+        const key = rosterKey(roster, session.sessionId, agentId);
+        const waited = forMs?.[i];
         const existing = this.entries.get(key);
         if (existing) {
           existing.lastSeen = now;
+          if (waited !== undefined) existing.since = Math.min(existing.since, now - waited);
           continue;
         }
         if (this.resolvedAt.has(key)) continue;
-        const waited = forMs?.[i];
-        const dismissed = this.takeDismissal(key, now);
         this.entries.set(key, {
           host: shortHost(roster.host),
           repo: basename(session.cwd) || "unknown",
           sessionId: session.sessionId,
           agentId,
           reason: ROSTER_REASON,
-          since: waited !== undefined ? now - waited : (dismissed?.since ?? now),
+          since: waited === undefined ? now : now - waited,
           lastSeen: now,
-          acknowledged: dismissed !== undefined,
+          acknowledged: false,
         });
-      }
-    }
-
-    for (const [key, entry] of [...this.entries]) {
-      if (named.has(key) || !sameHost(entry.host, roster.host)) continue;
-      if (entry.rungAt !== undefined && now - entry.rungAt < DOORBELL_WINS_MS) continue;
-      this.entries.delete(key);
-      if (entry.acknowledged) {
-        this.dismissed.set(key, { sessionId: entry.sessionId, since: entry.since, retiredAt: now });
       }
     }
   }
@@ -266,11 +225,6 @@ export class RemoteView {
     return n;
   }
 
-  /**
-   * Drop a session's agents, dismissals included. One still blocked comes
-   * back with the next roster from its machine (#98): it is still waiting
-   * there.
-   */
   forget(sessionId: string): boolean {
     let removed = false;
     for (const [key, entry] of [...this.entries]) {
@@ -278,9 +232,6 @@ export class RemoteView {
         this.entries.delete(key);
         removed = true;
       }
-    }
-    for (const [key, d] of [...this.dismissed]) {
-      if (d.sessionId === sessionId) this.dismissed.delete(key);
     }
     return removed;
   }
@@ -290,28 +241,8 @@ export class RemoteView {
     for (const [key, entry] of [...this.entries]) {
       if (now - entry.lastSeen >= this.ttlMs) this.entries.delete(key);
     }
-    for (const [key, d] of [...this.dismissed]) {
-      if (now - d.retiredAt >= this.ttlMs) this.dismissed.delete(key);
-    }
-    this.forgetResolved(now);
-  }
-
-  /**
-   * The dismissal of a retired agent, if one is kept for it, and no longer
-   * kept: it moves to the entry listing the agent again. Kept as long as an
-   * entry not heard of is, the TTL, and whether or not `prune` has run.
-   */
-  private takeDismissal(key: string, now: number): Dismissal | undefined {
-    const d = this.dismissed.get(key);
-    if (d === undefined) return undefined;
-    this.dismissed.delete(key);
-    return now - d.retiredAt < this.ttlMs ? d : undefined;
-  }
-
-  /** Tombstones last only as long as a crossing roster could. */
-  private forgetResolved(now: number): void {
     for (const [key, at] of [...this.resolvedAt]) {
-      if (now - at >= DOORBELL_WINS_MS) this.resolvedAt.delete(key);
+      if (now - at >= RESOLVED_WINS_MS) this.resolvedAt.delete(key);
     }
   }
 
@@ -321,7 +252,7 @@ export class RemoteView {
    * on how recently `prune` happened to run.
    */
   list(now: number = Date.now()): RemoteAgent[] {
-    return [...this.entries.values()].map(({ rungAt: _, ...e }) => ({
+    return [...this.entries.values()].map((e) => ({
       ...e,
       stale: now - e.lastSeen >= this.staleAfterMs,
     }));
