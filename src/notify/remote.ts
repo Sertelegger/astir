@@ -76,7 +76,13 @@ export interface RemoteAgent {
   sessionId: string;
   agentId: string;
   reason: string;
-  /** When this agent was first reported blocked. */
+  /**
+   * When this agent's block began, as near as this view can tell: the earliest
+   * of when it first heard of the agent and when a roster naming it says the
+   * block began, `blockedForMs` before that roster arrived (#98). After a
+   * notifier restart that is the block's start on its machine, not the first
+   * report to reach this view.
+   */
   since: number;
   /** When we last heard anything about it — the basis for expiry. */
   lastSeen: number;

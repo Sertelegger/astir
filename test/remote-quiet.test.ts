@@ -496,6 +496,45 @@ describe("#98 — what a roster may do to the view", () => {
     });
   });
 
+  /**
+   * R98-14 — `blockedForMs` runs parallel to `blocked`, so each agent's wait
+   * is the one at its own index, in its own session. The waits are uneven, so
+   * neither one index for all nor the list read backwards matches by chance.
+   */
+  it("several agents named at once: each is dated by its own wait, listed new or heard again", () => {
+    const t = 5 * HOUR;
+    const several = roster([
+      session(["a1", "a2", "a3"], [40 * MIN, 5 * MIN, 90 * MIN]),
+      { ...session(["b1", "b2"], [20 * MIN, 70 * MIN]), sessionId: "s2", cwd: "/srv/other" },
+    ]);
+    const expected = {
+      "s1:a1": t - 40 * MIN,
+      "s1:a2": t - 5 * MIN,
+      "s1:a3": t - 90 * MIN,
+      "s2:b1": t - 20 * MIN,
+      "s2:b2": t - 70 * MIN,
+    };
+    const sinceOf = (view: RemoteView) =>
+      Object.fromEntries(view.list(t).map((a) => [`${a.sessionId}:${a.agentId}`, a.since]));
+
+    // Listed new, from the roster alone.
+    const fresh = new RemoteView();
+    fresh.confirm(several, t);
+    expect(sinceOf(fresh)).toEqual(expected);
+
+    // Heard of first from doorbells, as by a notifier restarted mid-block:
+    // each dated later than its block began. The roster moves each back to
+    // its own start.
+    const heard = new RemoteView();
+    for (const s of several.sessions) {
+      for (const agentId of s.blocked ?? [])
+        heard.apply(blocked({ sessionId: s.sessionId, agentId }), t - SEC);
+    }
+    expect(Object.values(sinceOf(heard))).toEqual(Object.keys(expected).map(() => t - SEC));
+    heard.confirm(several, t);
+    expect(sinceOf(heard)).toEqual(expected);
+  });
+
   it("a refresh is silent and changes nothing else: dismissed stays dismissed, and the doorbell's reason stays", () => {
     const view = new RemoteView();
     view.apply(blocked(), 0);
@@ -1036,6 +1075,53 @@ describe("#98 — the notifier's routes, end to end", () => {
     expect(await state(port)).toMatchObject({ blockedCount: 0, agents: [] });
     expect(removed).toEqual(["megabrain/s1:a1"]);
     expect(shown).toHaveLength(1);
+  });
+
+  it("R98-14 — each agent a roster names is listed with its own wait, after validation drops what is not an id", async () => {
+    const clock = { t: 5 * HOUR };
+    const server = new NotifierServer({
+      token: TOKEN,
+      notify: () => undefined,
+      host: "the-mac",
+      now: () => clock.t,
+    });
+    open.push(server);
+    const port = await server.listen(0);
+
+    const sent = await post(port, "/roster", {
+      host: FAR,
+      namesBlocked: true,
+      sessions: [
+        {
+          sessionId: "s1",
+          cwd: "/srv/astir",
+          name: null,
+          status: "busy",
+          blocked: ["a1", 7, "a2", "a3"],
+          blockedForMs: [40 * MIN, 1, 5 * MIN, 90 * MIN],
+        },
+        {
+          sessionId: "s2",
+          cwd: "/srv/other",
+          name: null,
+          status: "busy",
+          blocked: ["b1", "b2"],
+          blockedForMs: [20 * MIN, 70 * MIN],
+        },
+      ],
+    });
+    expect(sent.status).toBe(200);
+    const listed = await state(port);
+    expect(
+      Object.fromEntries(listed.agents.map((a) => [`${a.host}/${a.sessionId}:${a.agentId}`, a.since])),
+    ).toEqual({
+      "megabrain/s1:a1": clock.t - 40 * MIN,
+      "megabrain/s1:a2": clock.t - 5 * MIN,
+      "megabrain/s1:a3": clock.t - 90 * MIN,
+      "megabrain/s2:b1": clock.t - 20 * MIN,
+      "megabrain/s2:b2": clock.t - 70 * MIN,
+    });
+    expect(listed.blockedCount).toBe(5);
   });
 
   it("DOC-2 — groups another machine's alert, so a reminder replaces it, and withdraws it on resolved", async () => {
