@@ -98,8 +98,8 @@ export class NotifyLoop {
       //
       // Only the FIRST notification waits. Once announced, the reminder cadence
       // is the policy's business, and a genuine block is minutes long anyway —
-      // this delay is invisible against a one-minute reminder interval, and the
-      // user is by definition not looking yet.
+      // this delay is invisible against even `insistent`'s one-minute reminder
+      // interval (PSH-02), and the user is by definition not looking yet.
       debug("notify", "considering", {
         session: b.sessionId,
         agent: b.agentId,
@@ -161,7 +161,9 @@ export class NotifyLoop {
     }
 
     await this.forgetResolved(live, now);
-    this.opts.policy.prune(now);
+    // PSH-02 — never the entry of an agent still blocked: forgotten, the next
+    // pulse would announce the same block again as new, a day in.
+    this.opts.policy.prune(now, live);
   }
 
   /**

@@ -27,6 +27,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { candidateConfigDirs } from "../discovery/profiles.js";
 import { PROBE_REASON, type ProbeFailure } from "../notify/detect.js";
+import { DEFAULT_REMINDERS, isReminderSchedule, type ReminderSchedule } from "../notify/policy.js";
+import { REMINDERS_ENV, type RemindersReport, type RemindersSetting, reportReminders } from "./reminders.js";
 import { autostartSupported } from "./service.js";
 
 export interface InstalledPlugin {
@@ -472,6 +474,165 @@ export function daemonDeliveryLive(healthz: unknown): string[] | null {
 }
 
 /**
+ * PSH-02 (#98) — the daemon's reminder schedule, from its `/healthz` body, for
+ * `describeReminders`.
+ *
+ * Null for anything that is not a whole, known answer: a daemon older than
+ * #98 has no `reminders`, and "it did not say" must never be read as a
+ * schedule.
+ */
+export function daemonReminders(healthz: unknown): RemindersReport | null {
+  if (typeof healthz !== "object" || healthz === null) return null;
+  const r = (healthz as { reminders?: unknown }).reminders;
+  if (typeof r !== "object" || r === null) return null;
+  const { schedule, source, fellBack } = r as { schedule?: unknown; source?: unknown; fellBack?: unknown };
+  if (!isReminderSchedule(schedule)) return null;
+  if (source !== "default" && source !== "config" && source !== "env") return null;
+  return { schedule, source, ...(fellBack === true ? { fellBack: true as const } : {}) };
+}
+
+const REMINDERS_MEAN: Record<ReminderSchedule, string> = {
+  calm: "the first alert, then +10 and +30 min, then hourly",
+  insistent: "every minute at first, settling at quarter-hourly",
+  off: "the first alert only, no reminders",
+};
+
+/**
+ * PSH-02 (#98) — the reminder schedule in force, and where it came from.
+ *
+ * Two witnesses, as for delivery: `local` is resolved here, from this
+ * terminal's environment and the file; `daemon` is the daemon's own answer
+ * from `/healthz`, and wins, because it is the one reminding. They differ for
+ * a daemon started by launchd, which never sees an `ASTIR_REMINDERS` exported
+ * in a shell, and for the few seconds before the daemon re-reads an edited
+ * file; when they do, this terminal's reading is named too, with any value in
+ * it that is not a schedule. `null` means the daemon could not be asked, and
+ * the reading is said to be this terminal's.
+ *
+ * Pure for the reason `describeNotifier` is.
+ */
+export function describeReminders(
+  local: RemindersSetting,
+  daemon: RemindersReport | null,
+  path: string,
+): string[] {
+  const label = `  ${"reminders".padEnd(16)}`;
+  const pad = `  ${"".padEnd(16)}`;
+  const from = (source: RemindersReport["source"]): string =>
+    source === "default" ? "the default" : source === "config" ? `from ${path}` : `from ${REMINDERS_ENV}`;
+  const inForce = daemon ?? reportReminders(local);
+  const lines: string[] = [];
+
+  if (inForce.fellBack === true) {
+    // The value itself only from this terminal's own reading of the same
+    // place: `/healthz` carries no user text, and the daemon's environment is
+    // not this one.
+    const mine = local.source === inForce.source ? local.rejected : undefined;
+    const what =
+      inForce.source === "env"
+        ? mine !== undefined
+          ? `${REMINDERS_ENV}=${JSON.stringify(mine)}`
+          : `the daemon's ${REMINDERS_ENV}`
+        : mine !== undefined
+          ? `${JSON.stringify(mine)} in ${path}`
+          : `the value in ${path}`;
+    lines.push(`${label}${inForce.schedule} — ${what} is not a schedule`);
+    lines.push(
+      `${pad}(off, calm or insistent), so astir runs ${inForce.schedule}: ${REMINDERS_MEAN[inForce.schedule]}`,
+    );
+  } else {
+    lines.push(`${label}${inForce.schedule}, ${from(inForce.source)} — ${REMINDERS_MEAN[inForce.schedule]}`);
+  }
+  if (inForce.source === "default" || (inForce.fellBack === true && inForce.source === "config")) {
+    lines.push(`${pad}choose with "notify": { "reminders": "off" | "calm" | "insistent" } in ${path}`);
+  }
+  if (local.problem !== undefined) lines.push(`${pad}${local.problem}, so no setting was read from it`);
+  if (daemon === null) {
+    lines.push(`${pad}read here — the daemon did not say which it runs`);
+  } else if (
+    local.schedule !== daemon.schedule ||
+    local.source !== daemon.source ||
+    (local.rejected !== undefined) !== (daemon.fellBack === true)
+  ) {
+    const reads = `${pad}this terminal reads ${local.schedule}, ${from(local.source)}`;
+    if (local.rejected === undefined) {
+      lines.push(`${reads} — the daemon's`);
+      lines.push(`${pad}environment is its own, and it re-reads the file every 5 s`);
+    } else {
+      // PSH-02 — an unknown value falls back to calm, and doctor says so: here
+      // too, where the daemon's answer is in force and this reading is the
+      // aside. Shown only as "calm", a typo in it went unnoticed.
+      lines.push(`${reads} — ${JSON.stringify(local.rejected)} is not a schedule;`);
+      lines.push(`${pad}the daemon's environment is its own, and it re-reads the file every 5 s`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * #98 — what `astir install` says about reminders, in its two columns.
+ *
+ * It described insistent as the only schedule after calm became the default:
+ * the text was written out by hand, so nothing tied it to the setting. The
+ * default and its meaning now come from where doctor reads them.
+ */
+export function installReminderLines(path: string): string[] {
+  const pad = " ".repeat(25);
+  return [
+    "  Desktop notification   always on. This is the floor and needs no setup.",
+    `${pad}A blocked agent gets ${DEFAULT_REMINDERS} reminders by default:`,
+    `${pad}${REMINDERS_MEAN[DEFAULT_REMINDERS]},`,
+    `${pad}for up to a day. For more, or none, set`,
+    `${pad}"notify": { "reminders": "insistent" } (or "off") in`,
+    `${pad}${path}; \`astir doctor\` says which runs.`,
+    `${pad}\`astir dismiss\` stops the reminders without pretending`,
+    `${pad}the agent is unblocked.`,
+  ];
+}
+
+/**
+ * #98 — on macOS, how to make an alert stay on screen until it is dismissed.
+ *
+ * With calm reminders, an alert that slides away after a few seconds (the
+ * Banners style, macOS's default) can go unseen for ten minutes. The Alerts
+ * style keeps it — but only terminal-notifier can then take it down when the
+ * session moves on. Bare `osascript` posts as Script Editor, whose
+ * notifications cannot be replaced or removed, so Alerts there would leave a
+ * pile only the user can clear. The tip says so, rather than send someone to
+ * set Script Editor to Alerts.
+ *
+ * Plain sentences, unindented: the notifier greeting prints them as they are,
+ * and doctor under its own label (`describeAlertStyle`). Nothing anywhere but
+ * macOS, where there is no such setting.
+ */
+export function alertStyleTip(platform: string, backend: string): string[] {
+  if (platform !== "darwin") return [];
+  if (backend === "terminal-notifier") {
+    return [
+      "Set terminal-notifier's notification style to Alerts in",
+      "System Settings → Notifications, so each alert stays until you dismiss it;",
+      "astir still removes it when the session moves on.",
+    ];
+  }
+  return [
+    "Install terminal-notifier (`brew install terminal-notifier`) and set its",
+    "notification style to Alerts in System Settings → Notifications, so each",
+    "alert stays until you dismiss it; astir still removes it when the session",
+    "moves on. Without terminal-notifier, notifications belong to Script Editor",
+    "and cannot be replaced or removed, so the Alerts style would pile them up",
+    "there.",
+  ];
+}
+
+/** `alertStyleTip` as doctor's rows. */
+export function describeAlertStyle(platform: string, backend: string): string[] {
+  const pad = `  ${"".padEnd(16)}`;
+  return alertStyleTip(platform, backend).map((line, i) =>
+    i === 0 ? `  ${"alert style".padEnd(16)}${line}` : `${pad}${line}`,
+  );
+}
+
+/**
  * The watched hosts, and whether polling them achieves anything.
  *
  * `~/.astir/hosts` drives DMN-09's SSH poll and no surface mentioned it. A host
@@ -551,7 +712,13 @@ export function hooksLookUnwired(
  *
  * Pure, so the wording is testable; `runNotifier` binds a socket.
  */
-export function notifierGreeting(port: number, host: string): string[] {
+export function notifierGreeting(
+  port: number,
+  host: string,
+  /** #98 — where it runs and what shows its notifications, for the macOS Alerts tip. */
+  here: { platform?: string; backend?: string } = {},
+): string[] {
+  const tip = alertStyleTip(here.platform ?? process.platform, here.backend ?? "");
   return [
     `astir notifier listening on 127.0.0.1:${port}`,
     "",
@@ -567,5 +734,7 @@ export function notifierGreeting(port: number, host: string): string[] {
     // up. Demoted, because they are not how anyone should start.
     `If you are wiring a tunnel yourself, the daemon also accepts --notify-url`,
     `http://127.0.0.1:${port}/notify with --notify-token.`,
+    // Last: what to do first is `astir pair`.
+    ...(tip.length > 0 ? ["", ...tip] : []),
   ];
 }

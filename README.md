@@ -21,9 +21,9 @@ Astir's first job is to make that not happen. Everything else is secondary.
 - **Claude Code and Codex**, side by side — see [Codex](#codex) for what differs
 - Deterministic subagent parentage — no guessing (see below)
 - Per-agent state including `blocked`, and time accounting that separates **working** from **waiting on a human**
-- An OS notification when an agent becomes blocked, re-reminding every minute for
-  ten minutes, then every two, then every five, then quarter-hourly — a missed
-  alert is never lost, and `astir dismiss` is how you stop it
+- An OS notification when an agent becomes blocked, reminding you again at +10
+  and +30 minutes, then hourly — a missed alert comes back, `astir dismiss` is
+  how you stop it, and the schedule is [yours to choose](#how-often-it-reminds-you)
 - A macOS menu-bar badge, including sessions on other machines
 - `astir status` across all live sessions
 - `astir view` — every session astir knows about, and a live map of where each is working, in a browser
@@ -147,6 +147,33 @@ is: `ingested` climbing means it works; `unauthorizedIngest` climbing means
 directly — it compares `settings.json` against the token file rather than
 checking its own environment, which belongs to your terminal and not to the
 Claude Code being diagnosed.
+
+### How often it reminds you
+
+A blocked agent alerts once, then reminds you at +10 and +30 minutes, then
+hourly, for up to a day. To choose another schedule, set it in
+`~/.astir/config.json`:
+
+```json
+{ "notify": { "reminders": "insistent" } }
+```
+
+- `calm` is the default, as above.
+- `insistent` reminds you every minute for ten minutes, every two to 30, every
+  five to 90, then quarter-hourly: 32 alerts in the first 90 minutes.
+- `off` sends the first alert only.
+
+A running daemon picks up an edit within 5 seconds, without a restart.
+`ASTIR_REMINDERS` overrides the file, for a daemon you start by hand. A value
+that is not one of the three runs `calm`, and `astir doctor`, which shows the
+schedule in force and where it came from, says so.
+
+On macOS, an alert slides away after a few seconds unless its notification style
+is **Alerts**. Install `terminal-notifier` and set its style to Alerts in System
+Settings → Notifications, so each alert stays until you dismiss it; astir still
+removes it when the session moves on. Without terminal-notifier, notifications
+belong to Script Editor and cannot be replaced or removed, so the Alerts style
+would pile them up there.
 
 ## Menu bar (macOS)
 

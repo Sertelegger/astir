@@ -30,7 +30,7 @@ function ev(kind: Kind, over: Partial<AstirEvent> = {}): AstirEvent {
   };
 }
 
-function harness(notifyAfterMs?: number) {
+function harness(notifyAfterMs?: number, policy = new NotifyPolicy()) {
   let t = 0;
   const now = () => t;
   const sent: NotifyEnvelope[] = [];
@@ -45,7 +45,7 @@ function harness(notifyAfterMs?: number) {
   const registry = new Registry({ nowMs: now });
   const loop = new NotifyLoop({
     registry,
-    policy: new NotifyPolicy(),
+    policy,
     dispatcher: new Dispatcher([target]),
     now,
     ...(notifyAfterMs === undefined ? {} : { dwellMs: () => notifyAfterMs }),
@@ -96,8 +96,9 @@ describe("PSH-16 — a block must prove it is real before interrupting anyone", 
 
   it("delays only the first alert, never the reminders", async () => {
     // Once announced, insistence is the policy's business — a reminder must not
-    // be re-gated, or the cadence PSH-02 defines would drift.
-    const h = harness(5_000);
+    // be re-gated, or the cadence PSH-02 defines would drift. Insistent, for a
+    // reminder a minute in.
+    const h = harness(5_000, new NotifyPolicy({ reminders: "insistent" }));
     h.blocked();
     h.advance(6_000);
     await h.loop.pulse();

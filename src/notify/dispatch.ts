@@ -9,7 +9,7 @@
  */
 
 import type { DetectResult } from "./detect.js";
-import { type NotifyEnvelope, notificationText } from "./envelope.js";
+import { type NotifyEnvelope, notificationGroup, notificationText } from "./envelope.js";
 import type { NotifierBackend } from "./notify.js";
 
 export interface DeliveryOutcome {
@@ -77,7 +77,7 @@ export function localTarget(backend: NotifierBackend, invocation?: string[]): De
         return { ok: false, reason: backend.unavailableReason ?? `${backend.name} unavailable` };
       }
       try {
-        const group = `${envelope.session.sessionId}:${envelope.session.agentId}`;
+        const group = notificationGroup(envelope);
 
         // A resolution is not an announcement — it withdraws the banner that is
         // still sitting on screen. Without this, reminders about an agent that

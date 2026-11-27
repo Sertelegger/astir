@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { addWatchedHost, hostsPath, readWatchedHosts, removeWatchedHost } from "../config/hosts.js";
 import {
   astirDir,
+  configPath,
   DEFAULT_PORT,
   readOrCreateToken,
   readTokenIfPresent,
@@ -19,16 +20,27 @@ import {
 } from "../config/paths.js";
 import {
   daemonDeliveryLive,
+  daemonReminders,
+  describeAlertStyle,
   describeDaemonBuild,
   describeDelivery,
   describeHosts,
   describeNotifier,
   describePlugins,
+  describeReminders,
   hooksLookUnwired,
   installedPlugins,
+  installReminderLines,
   notifierGreeting,
 } from "../config/plugin.js";
 import { CLAUDE_CLI, CODEX_CLI, registerPlugin } from "../config/register.js";
+import {
+  type RemindersReport,
+  type RemindersSetting,
+  readReminders,
+  remindersSource,
+  reportReminders,
+} from "../config/reminders.js";
 import { allowLoopback, inspectSandbox, LOOPBACK } from "../config/sandbox.js";
 import {
   autostartSupported,
@@ -56,7 +68,7 @@ import { buildEnvelope } from "../notify/envelope.js";
 import { NotifyLoop } from "../notify/loop.js";
 import { createNotifierBackend } from "../notify/notify.js";
 import { NotifyPolicy } from "../notify/policy.js";
-import { dropSelfSessions, pushRoster, rosterUrlFrom } from "../notify/roster.js";
+import { dropSelfSessions, pushRoster, rosterOf, rosterUrlFrom } from "../notify/roster.js";
 import { NotifierServer } from "../notify/server.js";
 import { fetchRemote, fetchStatus } from "../status/fetch.js";
 import { runStatusLine } from "../status/line.js";
@@ -201,12 +213,8 @@ function runInstall(flags: Args["flags"]): void {
       "",
       "How you will be told an agent is waiting:",
       "",
-      "  Desktop notification   always on. This is the floor and needs no setup.",
-      "                         A blocked agent is re-reminded every minute for ten",
-      "                         minutes, then every two, then every five, then",
-      "                         quarter-hourly — so a missed alert is never lost.",
-      "                         `astir dismiss` stops the reminders without pretending",
-      "                         the agent is unblocked.",
+      // #98 — the default schedule in doctor's words, from one place.
+      ...installReminderLines(configPath()),
       "",
       "  Menu bar (macOS)       optional, and the only always-visible surface.",
       "                         Requires SwiftBar:",
@@ -228,6 +236,15 @@ function runInstall(flags: Args["flags"]): void {
       "",
     ].join("\n"),
   );
+}
+
+/** #98 — the daemon's line for the reminder schedule in force, at start and on every change. */
+function remindersLine(s: RemindersSetting): string {
+  const from =
+    s.source === "default" ? "the default" : s.source === "config" ? configPath() : "ASTIR_REMINDERS";
+  const refused = s.rejected !== undefined ? ` — ${JSON.stringify(s.rejected)} is not a schedule` : "";
+  const problem = s.problem !== undefined ? ` — ${s.problem}` : "";
+  return `reminders: ${s.schedule} (${from})${refused}${problem}`;
 }
 
 async function runDaemon(flags: Args["flags"]): Promise<void> {
@@ -294,7 +311,19 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
     targets.push(remoteTarget(notifyUrl, remoteToken));
   }
   const dispatcher = new Dispatcher(targets);
-  const policy = new NotifyPolicy();
+  // PSH-02 (#98) — how often a blocked agent is reminded: `notify.reminders`
+  // in ~/.astir/config.json, or ASTIR_REMINDERS. The policy asks at every
+  // decision and the source re-reads the file when it changes (stat at most
+  // every 5 s), so an edit applies to a running daemon without a restart.
+  const reminders = remindersSource();
+  let saidReminders = "";
+  const sayReminders = (): void => {
+    const line = remindersLine(reminders());
+    if (line === saidReminders) return;
+    saidReminders = line;
+    process.stdout.write(`${line}\n`);
+  };
+  const policy = new NotifyPolicy({ reminders: () => reminders().schedule });
   const loop = new NotifyLoop({
     registry,
     policy,
@@ -396,6 +425,8 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
         : notifierUrl !== null && stateAnswered
           ? [remoteTargetName(notifierUrl)]
           : [],
+    // #98 — doctor's environment is not this one, so it asks.
+    reminders: () => reportReminders(reminders()),
   });
 
   // A bind that fails is the moment somebody is actually present and looking,
@@ -441,9 +472,12 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
   // PSH-07 / #78 — what can deliver, and what cannot and why. Listing every
   // configured path printed `local` on a machine that could show nothing.
   process.stdout.write(`delivery paths: ${dispatcher.describe()}\n`);
+  // #98 — and again whenever an edit to the config file changes it.
+  sayReminders();
 
   const tick = setInterval(() => {
     registry.tick();
+    sayReminders();
     void loop.pulse();
   }, 1000);
   tick.unref();
@@ -506,28 +540,14 @@ async function runDaemon(flags: Args["flags"]): Promise<void> {
 
   // DMN-10 — announce what THIS machine is running to whichever notifier we can
   // reach, so the far end sees ordinary sessions and not only doorbells.
+  // #98 — it names the agents blocked here too, and the far side lists what
+  // it names: so a block stays listed there between reminders that may now be
+  // an hour apart, or none, and a notifier that missed the first alert still
+  // lists it within 10 s. It is never a reason to alert.
   const rosterTick = setInterval(() => {
     const url = rosterTarget();
     if (url === null) return;
-    const sessions = [
-      ...registry.list().map((r) => ({
-        sessionId: r.sessionId,
-        cwd: r.cwd,
-        name: r.name,
-        status: r.status,
-        ...(r.attended === undefined ? {} : { attended: r.attended }),
-      })),
-      // Sessions we cannot hear are still running here, and the far end has no
-      // other way to learn they exist.
-      ...registry.silent().map((d) => ({
-        sessionId: d.sessionId,
-        cwd: d.cwd,
-        name: d.name,
-        status: d.status,
-        ...(d.attended === undefined ? {} : { attended: d.attended }),
-      })),
-    ];
-    void pushRoster(url, remoteToken, { host: hostname(), sessions });
+    void pushRoster(url, remoteToken, rosterOf(registry, hostname()));
   }, 10_000);
   rosterTick.unref();
 
@@ -774,12 +794,19 @@ async function runNotifier(flags: Args["flags"]): Promise<void> {
     // #78 — the backend answers with what its run did, so a notify-send that
     // exits 1 here is refused to the sender rather than counted as shown.
     notify: backend.notify,
+    // #98 — and withdraws one when its block ends, as the Alerts tip says.
+    remove: backend.remove,
     ...(backend.available ? {} : { cannotShow: backend.unavailableReason ?? "no notifier" }),
     onEvent: (line) => process.stdout.write(`delivered: ${line}\n`),
   });
 
   const bound = await server.listen(port);
-  for (const line of notifierGreeting(bound, hostname())) process.stdout.write(`${line}\n`);
+  for (const line of notifierGreeting(bound, hostname(), {
+    platform: process.platform,
+    backend: backend.name,
+  })) {
+    process.stdout.write(`${line}\n`);
+  }
 
   const shutdown = (): void => {
     void server.close().then(() => process.exit(0));
@@ -945,16 +972,24 @@ async function runDoctor(flags: Args["flags"]): Promise<void> {
   // daemon's own answer comes from its environment, which may not be this
   // terminal's; null when it could not be asked.
   let daemonLive: string[] | null = null;
+  let daemonSchedule: RemindersReport | null = null;
   if (probe.kind === "mine") {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(1_500) });
+      const healthz: unknown = await res.json();
       // An older daemon has no answer; that is "cannot tell", not "nothing".
-      daemonLive = daemonDeliveryLive(await res.json());
+      daemonLive = daemonDeliveryLive(healthz);
+      daemonSchedule = daemonReminders(healthz);
     } catch {
       // Unreachable now is reported above, by the daemon line.
     }
   }
-  for (const line of describeDelivery(createNotifierBackend(), daemonLive)) out(line);
+  const localBackend = createNotifierBackend();
+  for (const line of describeDelivery(localBackend, daemonLive)) out(line);
+  // #98 — on macOS, how to keep an alert on screen until it is dismissed.
+  for (const line of describeAlertStyle(process.platform, localBackend.name)) out(line);
+  // PSH-02 — the reminder schedule in force, and where it came from.
+  for (const line of describeReminders(readReminders(), daemonSchedule, configPath())) out(line);
 
   // #65 — and the hosts it polls, which nothing reported either.
   const watched = readWatchedHosts();

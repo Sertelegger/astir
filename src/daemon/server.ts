@@ -10,6 +10,7 @@ import { defaultNewId, normalizeClaudeHook } from "../adapters/claude/normalize.
 import { watchPathsFor } from "../adapters/claude/watch.js";
 import { normalizeCodexHook } from "../adapters/codex/normalize.js";
 import type { Normalizer, SidecarMeta } from "../adapters/types.js";
+import type { RemindersReport } from "../config/reminders.js";
 import { CAPABILITIES } from "../contract/capabilities.js";
 import { validateEvent } from "../contract/event.js";
 import { candidateConfigDirs } from "../discovery/profiles.js";
@@ -127,6 +128,13 @@ export interface DaemonOpts {
    * the field, which the line reads as an older daemon.
    */
   deliveryAttached?: () => string[];
+  /**
+   * PSH-02 (#98) — the reminder schedule the notify loop is running, and
+   * where it came from. A getter because a changed config file applies
+   * without a restart. Absent means not wired, and `/healthz` omits it, which
+   * doctor reads as a daemon that did not say.
+   */
+  reminders?: () => RemindersReport;
   nowSeconds?: () => number;
   /** Where the built view lives. Injectable so tests need no build output. */
   viewRoot?: string;
@@ -406,6 +414,10 @@ export class Daemon {
           live: this.opts.deliveryLive?.() ?? [],
           ...(this.opts.deliveryAttached !== undefined ? { attached: this.opts.deliveryAttached() } : {}),
         },
+        // #98 — which reminder schedule is in force, for doctor, whose own
+        // environment is not the daemon's. Names only, for the same reason
+        // as `delivery`. Additive.
+        ...(this.opts.reminders !== undefined ? { reminders: this.opts.reminders() } : {}),
         counters: this.counters,
       });
     }

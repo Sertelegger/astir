@@ -17,14 +17,24 @@
  * poll needs nothing installed remotely. Whichever is available wins.
  */
 
+import type { Registry } from "../model/registry.js";
 import type { RemoteSession } from "../status/types.js";
 import { sameHost } from "./envelope.js";
 
 /** A roster is a handful of small records; anything larger is a bug. */
 export const MAX_ROSTER_SESSIONS = 200;
+/** More blocked agents than this in one session is a bug, not a workload. */
+export const MAX_BLOCKED_PER_SESSION = 64;
 
 export interface RosterPayload {
   host: string;
+  /**
+   * #98 — this daemon names the agents blocked on its machine in its
+   * sessions' `blocked`, and the notifier reads them only from a roster that
+   * says so. Sent on every roster, an empty one too. Absent from a daemon
+   * older than #98, whose rosters say nothing about blocks.
+   */
+  namesBlocked?: true;
   sessions: Array<{
     sessionId: string;
     cwd: string;
@@ -36,6 +46,22 @@ export interface RosterPayload {
      * the one route by which a remote background session can be recognised.
      */
     attended?: boolean;
+    /**
+     * #98 — the agents in this session blocked now, announced and not
+     * dismissed there, by id. The notifier lists these and keeps them from
+     * going stale (`RemoteView.confirm`): from one roster to the next, not
+     * from one reminder to the next, which may be an hour apart or never. It
+     * removes none it stops naming; their `resolved` does that, or the TTL.
+     * Absent when none is blocked, and from a daemon older than #98.
+     */
+    blocked?: string[];
+    /**
+     * #98 — how long each agent in `blocked` has been blocked, in the same
+     * order, as of when the roster was built. A duration rather than a time,
+     * since the two machines' clocks need not agree. Absent, the notifier
+     * counts the wait from when it first heard.
+     */
+    blockedForMs?: number[];
   }>;
 }
 
@@ -53,15 +79,96 @@ export function validateRoster(
     if (typeof raw !== "object" || raw === null) continue;
     const s = raw as Record<string, unknown>;
     if (typeof s.sessionId !== "string" || typeof s.cwd !== "string") continue;
+    const { blocked, blockedForMs } = validateBlocked(s.blocked, s.blockedForMs);
     sessions.push({
       sessionId: s.sessionId,
       cwd: s.cwd,
       name: typeof s.name === "string" ? s.name : null,
       status: typeof s.status === "string" ? s.status : null,
       ...(typeof s.attended === "boolean" ? { attended: s.attended } : {}),
+      ...(blocked.length > 0 ? { blocked } : {}),
+      ...(blockedForMs !== undefined && blocked.length > 0 ? { blockedForMs } : {}),
     });
   }
-  return { ok: true, roster: { host: b.host, sessions } };
+  return {
+    ok: true,
+    roster: { host: b.host, ...(b.namesBlocked === true ? { namesBlocked: true as const } : {}), sessions },
+  };
+}
+
+/**
+ * A session's `blocked` ids, and their `blockedForMs` when every one has a
+ * duration that is one. Anything that is not an id is dropped with its
+ * duration, like a malformed session, and the list is bounded rather than
+ * refused. A duration list that does not line up with the ids is not
+ * believed at all: the wait is then counted from when the notifier heard.
+ */
+function validateBlocked(rawIds: unknown, rawForMs: unknown): { blocked: string[]; blockedForMs?: number[] } {
+  if (!Array.isArray(rawIds)) return { blocked: [] };
+  const durations = Array.isArray(rawForMs) && rawForMs.length === rawIds.length ? rawForMs : null;
+  const blocked: string[] = [];
+  const forMs: number[] = [];
+  let believed = durations !== null;
+  for (const [i, id] of rawIds.entries()) {
+    if (typeof id !== "string") continue;
+    if (blocked.length >= MAX_BLOCKED_PER_SESSION) break;
+    blocked.push(id);
+    const ms: unknown = durations?.[i];
+    if (typeof ms === "number" && Number.isFinite(ms) && ms >= 0) forMs.push(ms);
+    else believed = false;
+  }
+  return believed ? { blocked, blockedForMs: forMs } : { blocked };
+}
+
+/**
+ * The roster this machine pushes: every session it runs, heard or not, and in
+ * each the agents blocked now, with how long each has been.
+ *
+ * Blocked means what the notify loop has announced (`blockedAgents` with an
+ * `announcedAt`), which is what the far end lists. A block still inside its
+ * dwell (PSH-16) is left out: it may yet clear itself, and a surface that
+ * listed it would flash what was never announced. So is an agent dismissed
+ * here, since dismissing retires its block and sends the notifier its
+ * `resolved`.
+ */
+export function rosterOf(
+  registry: Pick<Registry, "list" | "silent" | "blockedAgents">,
+  host: string,
+): RosterPayload {
+  const blocked = new Map<string, { ids: string[]; forMs: number[] }>();
+  for (const b of registry.blockedAgents()) {
+    if (b.announcedAt === null) continue;
+    const named = blocked.get(b.sessionId) ?? { ids: [], forMs: [] };
+    if (named.ids.length < MAX_BLOCKED_PER_SESSION) {
+      named.ids.push(b.agentId);
+      named.forMs.push(b.blockedForMs);
+    }
+    blocked.set(b.sessionId, named);
+  }
+  const sessions: RosterPayload["sessions"] = [
+    ...registry.list().map((r) => {
+      const named = blocked.get(r.sessionId);
+      return {
+        sessionId: r.sessionId,
+        cwd: r.cwd,
+        name: r.name,
+        status: r.status,
+        ...(r.attended === undefined ? {} : { attended: r.attended }),
+        ...(named === undefined ? {} : { blocked: named.ids, blockedForMs: named.forMs }),
+      };
+    }),
+    // Sessions we cannot hear are still running here, and the far end has no
+    // other way to learn they exist. Nothing of theirs can be blocked: no
+    // event of theirs has arrived to say so.
+    ...registry.silent().map((d) => ({
+      sessionId: d.sessionId,
+      cwd: d.cwd,
+      name: d.name,
+      status: d.status,
+      ...(d.attended === undefined ? {} : { attended: d.attended }),
+    })),
+  ];
+  return { host, namesBlocked: true, sessions };
 }
 
 /** Matches the SSH poller's, so the two age out of the view identically. */

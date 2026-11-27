@@ -15,7 +15,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { describeHosts, describeNotifier, notifierGreeting } from "../src/config/plugin.js";
+import {
+  alertStyleTip,
+  describeAlertStyle,
+  describeHosts,
+  describeNotifier,
+  notifierGreeting,
+} from "../src/config/plugin.js";
 import { SERVICE_LABELS, servicePath, servicePlist } from "../src/config/service.js";
 import { PROBE_REASON } from "../src/notify/detect.js";
 
@@ -401,4 +407,62 @@ describe("#66 — what `astir notifier` tells you to do", () => {
   it("still says where it is listening", () => {
     expect(greeting(47123)).toContain("127.0.0.1:47123");
   });
+});
+
+describe("#98 — on macOS, the Alerts style keeps an alert on screen", () => {
+  /**
+   * With calm reminders an alert that slides away after a few seconds can go
+   * unseen for ten minutes. macOS's Alerts style keeps it until dismissed,
+   * but only terminal-notifier can then take it down again: bare osascript
+   * posts as Script Editor, whose notifications cannot be replaced or removed,
+   * so Alerts there would leave a pile only the user can clear.
+   */
+  const text = (lines: string[]) => lines.join("\n");
+
+  it("tells an osascript Mac to install terminal-notifier first, and why", () => {
+    const out = text(alertStyleTip("darwin", "osascript"));
+    expect(out).toContain("brew install terminal-notifier");
+    expect(out).toContain("Alerts");
+    expect(out).toContain("System Settings → Notifications");
+    expect(out).toMatch(/stays? until (you )?dismiss/);
+    expect(out).toMatch(/astir still removes/);
+    expect(out).toContain("Script Editor");
+    expect(out).toContain("cannot be replaced or removed");
+    expect(out).toMatch(/pile/);
+  });
+
+  it("tells a terminal-notifier Mac only what is left to do", () => {
+    const out = text(alertStyleTip("darwin", "terminal-notifier"));
+    expect(out).toContain("Alerts");
+    expect(out).toContain("System Settings → Notifications");
+    expect(out).toMatch(/astir still removes/);
+    expect(out).not.toContain("brew install");
+  });
+
+  it("says nothing anywhere but macOS", () => {
+    for (const platform of ["linux", "win32", "freebsd"]) {
+      expect(alertStyleTip(platform, "notify-send")).toEqual([]);
+      expect(describeAlertStyle(platform, "notify-send")).toEqual([]);
+      expect(greeting(platform)).not.toMatch(/Alerts|Script Editor|terminal-notifier/);
+    }
+  });
+
+  it("is in doctor's notifier rows on macOS, under its own label", () => {
+    const lines = describeAlertStyle("darwin", "osascript");
+    expect(lines[0]).toMatch(/^ {2}alert style {5}\S/);
+    for (const line of lines.slice(1)) expect(line).toMatch(/^ {18}\S/);
+    expect(text(lines)).toContain("Script Editor");
+  });
+
+  it("is in the notifier's greeting on macOS, after what to do first", () => {
+    const out = greeting("darwin", "osascript");
+    expect(out).toContain("System Settings → Notifications");
+    expect(out).toContain("Script Editor");
+    // The greeting's job is still `astir pair`; the tip comes after it.
+    expect(out.indexOf("Alerts")).toBeGreaterThan(out.indexOf("astir pair"));
+    expect(greeting("darwin", "terminal-notifier")).not.toContain("brew install");
+  });
+
+  const greeting = (platform: string, backend = "osascript") =>
+    notifierGreeting(47001, "mac", { platform, backend }).join("\n");
 });

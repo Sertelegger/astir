@@ -54,7 +54,7 @@ function ev(kind: Kind, over: Partial<AstirEvent> = {}): AstirEvent {
 
 const DWELL = 5_000;
 
-function harness(start = 1_000_000) {
+function harness(start = 1_000_000, policy = new NotifyPolicy()) {
   let t = start;
   const now = () => t;
   const sent: NotifyEnvelope[] = [];
@@ -69,7 +69,7 @@ function harness(start = 1_000_000) {
   const registry = new Registry({ nowMs: now });
   const loop = new NotifyLoop({
     registry,
-    policy: new NotifyPolicy(),
+    policy,
     dispatcher: new Dispatcher([target]),
     now,
     dwellMs: () => DWELL,
@@ -118,8 +118,8 @@ describe("the loop records when it announced a block", () => {
 
   it("does not move on a reminder", async () => {
     // "Oldest 3m" means three minutes since the user was first told, not since
-    // the last nag.
-    const h = harness();
+    // the last nag. Insistent, for a reminder a minute in.
+    const h = harness(undefined, new NotifyPolicy({ reminders: "insistent" }));
     h.block();
     h.advance(DWELL);
     await h.loop.pulse();

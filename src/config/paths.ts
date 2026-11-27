@@ -16,6 +16,14 @@ export function tokenPath(home: string = homedir()): string {
 }
 
 /**
+ * astir's own settings (PSH-02's `notify.reminders`, #98). Read-only so far:
+ * nothing in astir writes it, so every other key in it is left as it is.
+ */
+export function configPath(home: string = homedir()): string {
+  return join(astirDir(home), "config.json");
+}
+
+/**
  * DMN-07 — write atomically and with a restrictive mode.
  *
  * `writeFileSync`'s `mode` is the *creation* mode: POSIX ignores it when the file
