@@ -287,7 +287,7 @@ describe("PSH-02 — the setting: notify.reminders in ~/.astir/config.json", () 
   };
 
   it("PSH-02 — the file is ~/.astir/config.json", () => {
-    expect(configPath("/h")).toBe("/h/.astir/config.json");
+    expect(configPath("/h")).toBe(join("/h", ".astir", "config.json"));
   });
 
   it("PSH-02 — no file, or no key, is calm from the default", () => {
@@ -516,7 +516,7 @@ describe("PSH-02 — a running daemon picks up an edited file without a restart"
 });
 
 describe("PSH-02 — doctor shows the schedule in force and where it came from", () => {
-  const PATH = "/home/u/.astir/config.json";
+  const PATH = join("/home/u", ".astir", "config.json");
   const text = (lines: string[]) => lines.join("\n");
 
   it("names the schedule, where it came from, and what it does", () => {
@@ -653,14 +653,17 @@ describe("PSH-02 — doctor shows the schedule in force and where it came from",
     // PSH-02: an unknown value falls back to calm, and doctor says so — here
     // too, where the daemon's answer is the one in force and this terminal's
     // reading is the aside. Shown only as "calm", the typo went unnoticed.
+    const hPath = join("/h", ".astir", "config.json");
     const env = text(
       describeReminders(
         { schedule: "calm", source: "env", rejected: "insistant" },
         { schedule: "insistent", source: "config" },
-        "/h/.astir/config.json",
+        hPath,
       ),
     );
-    expect(env).toMatch(/^ {2}reminders {7}insistent, from \/h\/\.astir\/config\.json/);
+    expect(env).toMatch(
+      new RegExp(`^ {2}reminders {7}insistent, from ${hPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
     expect(env).toContain('this terminal reads calm, from ASTIR_REMINDERS — "insistant" is not a schedule');
 
     const file = text(
@@ -684,7 +687,9 @@ describe("PSH-02 — doctor shows the schedule in force and where it came from",
         PATH,
       ),
     );
-    expect(out).toMatch(/^ {2}reminders {7}calm, from \/home\/u\/\.astir\/config\.json/);
+    expect(out).toMatch(
+      new RegExp(`^ {2}reminders {7}calm, from ${PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
     expect(out).toContain(`this terminal reads calm, from ${PATH} — "Calm" is not a schedule`);
   });
 
